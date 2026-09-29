@@ -1,0 +1,90 @@
+name: Release DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: xcode-27
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Validate version tag and Xcode
+        id: version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Release tags must use vX.Y.Z.' >&2
+            exit 1
+          fi
+          xcodebuild -version
+          xcodebuild -version | grep -Eq '^Xcode 27\.'
+          echo "number=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Test Git scanner
+        run: swift test
+
+      - name: Build Release app
+        shell: bash
+        env:
+          VERSION_NUMBER: ${{ steps.version.outputs.number }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project RepoMan.xcodeproj \
+            -scheme RepoMan \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/RepoManDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 \
+            MARKETING_VERSION="$VERSION_NUMBER" \
+            build
+          app="$RUNNER_TEMP/RepoManDerivedData/Build/Products/Release/RepoMan.app"
+          test -f "$app/Contents/Resources/AppIcon.icns"
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$VERSION_NUMBER"
+          test "$(lipo -archs "$app/Contents/MacOS/RepoMan")" = arm64
+
+      - name: Package and checksum DMG
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          filename="RepoMan-${RELEASE_TAG}-macOS-arm64-unsigned.dmg"
+          bash Tools/package-dmg.sh \
+            "$RUNNER_TEMP/RepoManDerivedData/Build/Products/Release/RepoMan.app" \
+            "dist/$filename"
+          (cd dist && shasum -a 256 "$filename" > "$filename.sha256")
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          filename="RepoMan-${RELEASE_TAG}-macOS-arm64-unsigned.dmg"
+          gh release create "$RELEASE_TAG" \
+            "dist/$filename" \
+            "dist/$filename.sha256" \
+            --verify-tag \
+            --generate-notes \
+            --title "RepoMan $RELEASE_TAG" \
+            --notes 'Unsigned build for macOS 27 or later on Apple Silicon. macOS Gatekeeper may require manual approval.'

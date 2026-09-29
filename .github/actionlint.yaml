@@ -1,0 +1,6 @@
+# GitHub offers xcode-27 as a public-preview hosted runner; actionlint 1.7.12
+# does not include that label yet.
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      - 'label "xcode-27" is unknown'
