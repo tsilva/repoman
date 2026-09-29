@@ -33,44 +33,19 @@ jobs:
             exit 1
           fi
           xcodebuild -version
-          xcodebuild -version | grep -Eq '^Xcode 27\.'
+          xcode_version="$(xcodebuild -version)"
+          [[ "$xcode_version" == "Xcode 27."* ]]
           echo "number=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Test Git scanner
-        run: swift test
-
-      - name: Build Release app
+      - name: Build and verify DMG
         shell: bash
         env:
           VERSION_NUMBER: ${{ steps.version.outputs.number }}
         run: |
           set -euo pipefail
-          xcodebuild \
-            -project RepoMan.xcodeproj \
-            -scheme RepoMan \
-            -configuration Release \
-            -destination 'generic/platform=macOS' \
-            -derivedDataPath "$RUNNER_TEMP/RepoManDerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            ARCHS=arm64 \
-            MARKETING_VERSION="$VERSION_NUMBER" \
-            build
-          app="$RUNNER_TEMP/RepoManDerivedData/Build/Products/Release/RepoMan.app"
-          test -f "$app/Contents/Resources/AppIcon.icns"
-          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$VERSION_NUMBER"
-          test "$(lipo -archs "$app/Contents/MacOS/RepoMan")" = arm64
-
-      - name: Package and checksum DMG
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          filename="RepoMan-${RELEASE_TAG}-macOS-arm64-unsigned.dmg"
-          bash Tools/package-dmg.sh \
-            "$RUNNER_TEMP/RepoManDerivedData/Build/Products/Release/RepoMan.app" \
-            "dist/$filename"
-          (cd dist && shasum -a 256 "$filename" > "$filename.sha256")
+          bash .codex/skills/build-release/scripts/build-release.sh \
+            --version "$VERSION_NUMBER" \
+            --output-dir dist
 
       - name: Publish GitHub Release
         shell: bash
@@ -80,11 +55,11 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          filename="RepoMan-${RELEASE_TAG}-macOS-arm64-unsigned.dmg"
+          filename="RepoMan-${RELEASE_TAG}-macOS-arm64-adhoc.dmg"
           gh release create "$RELEASE_TAG" \
             "dist/$filename" \
             "dist/$filename.sha256" \
             --verify-tag \
             --generate-notes \
             --title "RepoMan $RELEASE_TAG" \
-            --notes 'Unsigned build for macOS 27 or later on Apple Silicon. macOS Gatekeeper may require manual approval.'
+            --notes 'Ad-hoc-signed build for macOS 27 or later on Apple Silicon. This app is not notarized; macOS Gatekeeper may require manual approval.'

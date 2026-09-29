@@ -24,13 +24,13 @@ Run `swift test` for the Git scanner integration tests. Launch the app with `--d
 
 ## GitHub releases
 
-After committing and pushing the project, push a version tag in the form `vX.Y.Z` (for example, `v0.1.0`). The [release workflow](.github/workflows/release.yml) runs the tests, builds the macOS app with that version, creates a compressed DMG containing `RepoMan.app` and an Applications shortcut, and publishes the DMG and its SHA-256 checksum as a GitHub Release. The workflow uses GitHub's `xcode-27` Apple Silicon runner, so these builds require macOS 27 or later on Apple Silicon.
+After committing and pushing the project, push a version tag in the form `vX.Y.Z` (for example, `v0.1.0`). The [release workflow](.github/workflows/release.yml) runs the same [build-release helper](.codex/skills/build-release/scripts/build-release.sh) used locally: it tests, builds an arm64 macOS app, signs it ad hoc, creates and verifies a compressed DMG containing `RepoMan.app` and an Applications shortcut, and publishes the DMG and its SHA-256 checksum as a GitHub Release. The workflow uses GitHub's `xcode-27` Apple Silicon runner, so these builds require macOS 27 or later on Apple Silicon.
 
 ```sh
 git tag -a v0.1.0 -m "RepoMan v0.1.0"
 git push origin v0.1.0
 ```
 
-To package a local build without publishing a release, run `bash Tools/package-dmg.sh DerivedData/Build/Products/Release/RepoMan.app dist/RepoMan-local.dmg` after building the Release scheme.
+To build and package locally without publishing, invoke `/build-release` or run `bash .codex/skills/build-release/scripts/build-release.sh`. The helper prints the DMG and checksum paths under `dist/`.
 
-Release builds currently have no Developer ID signature or Apple notarization. macOS Gatekeeper may require manual approval before opening the downloaded app. Add signing and notarization before using this workflow for a frictionless public distribution.
+Release builds have an ad-hoc signature, but no Developer ID signature or Apple notarization. macOS Gatekeeper may require manual approval before opening the downloaded app. Add Developer ID signing and notarization before using this workflow for a frictionless public distribution.

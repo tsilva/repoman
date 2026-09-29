@@ -1,5 +1,9 @@
 # RepoMan contributor instructions
 
+## Project skills
+
+- Use `.codex/skills/build-release/SKILL.md` for `/build-release` and for RepoMan release builds, packaging, or GitHub publication. Local builds do not publish; pushing a version tag is the publication trigger.
+
 ## Project layout
 
 - `RepoMan/` contains the macOS SwiftUI app and its `RepositoryStore` refresh logic.
@@ -14,7 +18,7 @@
 - Run `swift test` after changing `RepoManCore/` or its tests.
 - For app changes, build the `RepoMan` scheme in Xcode. Use `--demo` when reviewing the UI with illustrative data.
 - Keep generated output in `.build/` or `DerivedData/`; do not commit it.
-- `Tools/package-dmg.sh` packages a built `RepoMan.app` into a DMG. The tag-triggered `.github/workflows/release.yml` builds and publishes release assets; `dist/` is generated output.
+- `Tools/package-dmg.sh` packages a built `RepoMan.app` into a DMG. The build-release skill helper drives tests, the Release build, signing, and validation locally and in `.github/workflows/release.yml`; `dist/` is generated output.
 
 ## Behavior to preserve
 
