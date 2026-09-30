@@ -1,7 +1,9 @@
 <p align="center">
   <img src="logo.png" alt="RepoMan logo" width="280" />
   <br />
+  <!-- repo-tagline:start -->
   <strong>🔭 Keep your Git repositories in sight 📂</strong>
+  <!-- repo-tagline:end -->
 </p>
 
 <p align="center">
