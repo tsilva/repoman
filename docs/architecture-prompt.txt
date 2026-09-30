@@ -1,0 +1,26 @@
+Generated with the built-in imagegen tool for the README.
+
+Use case: infographic-diagram
+Asset type: README architecture image for RepoMan, a native macOS Git repository monitor.
+Create a crisp professional technical infographic, landscape 16:9, high resolution, clean off-white background, navy typography, rounded panels, restrained blue and gold accents. Large readable labels. No title or subtitle inside the image.
+Show five main components with clear labeled data-flow arrows:
+Left upper input card "Parent folder" with caption "Direct child Git repositories".
+Top-center main card "RepositoryStore" with captions "Coordinates refreshes" and "Up to 4 concurrent repository tasks".
+Center lower card "RepoManCore" containing "GitRepositoryScanner" and "GitRunner" with caption "Bounded Git subprocesses".
+Right main output card "SwiftUI dashboard" with captions "Branches · Ahead / behind" and "Changes · Commits · Worktrees".
+Small top card "UserDefaults" with caption "Folder and selection".
+Small lower external card "Git remotes" with caption "Configured upstream remote".
+
+Precise directional connections:
+Parent folder → RepositoryStore, labeled "Choose folder".
+RepositoryStore → RepoManCore, labeled "Scan / fetch".
+RepoManCore → RepositoryStore, labeled "Snapshots / errors".
+RepositoryStore → SwiftUI dashboard, labeled "Published state".
+SwiftUI dashboard → RepositoryStore, labeled "Select / refresh".
+RepositoryStore ↔ UserDefaults, labeled "Remember choices".
+RepoManCore → Parent folder, labeled "Read local Git state".
+RepoManCore ↔ Git remotes, labeled "Fetch remote-tracking refs".
+Arrange without crossed arrows; keep all connection labels legible. Use broad spacing.
+Below the flow include a concise timing strip "Local scan: every 2 minutes" and "Remote fetch: initially, then every 10 minutes".
+At bottom include a small plain boundary note "Fetch updates refs; no merge, pull, push, or working-file changes".
+No database, backend server, cloud hosting, people, photos, 3D, logos, file trees, decorative clutter, or invented components. Exact spellings: RepoManCore, RepositoryStore, GitRepositoryScanner, GitRunner, SwiftUI, UserDefaults.

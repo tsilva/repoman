@@ -1,36 +1,62 @@
-# RepoMan
+<p align="center">
+  <img src="logo.png" alt="RepoMan logo" width="280" />
+  <br />
+  <strong>🔭 Keep your Git repositories in sight 📂</strong>
+</p>
 
-<img src="logo.png" alt="RepoMan logo" width="280">
+<p align="center">
+  <a href="https://github.com/tsilva/repoman/blob/main/RepoMan.xcodeproj/project.pbxproj"><img src="https://img.shields.io/badge/macOS-27%2B-blue" alt="Requires macOS 27 or newer" /></a>
+</p>
 
-RepoMan is a native macOS 27 app for monitoring Git checkouts that share a parent folder. Select a folder once, then use the sidebar to compare repositories and the detail pane to inspect a selected checkout.
+RepoMan is a macOS app for developers managing several Git repositories in one parent folder. See uncommitted changes, commits to push or pull, stale branches, and linked worktrees in one dashboard. Build it from source, choose your repositories folder, and select a repository to inspect recent commits and file changes.
 
-![RepoMan demo](docs/repoman-demo.png)
+![RepoMan dashboard with illustrative data](docs/repoman-demo.png)
 
-## Run
+## Install
 
-Open `RepoMan.xcodeproj` in Xcode 27 and run the **RepoMan** scheme on macOS 27 or later. Choose the parent folder containing your repositories. RepoMan remembers that folder and the selected repository between launches.
+Requires **macOS 27 or later**, **Xcode 27**, and Git from the Xcode command line tools.
 
-The app discovers direct child folders with a `.git` directory or file. It shows the current branch, commits ahead of and behind its configured upstream, changed files, stale local branches, and linked worktrees. The detail pane shows recent commits and per-file added and removed line counts.
-
-## Refresh behavior
-
-RepoMan scans local status when you choose a folder and every two minutes while open. It fetches configured upstream remotes after the initial scan and every ten minutes, using at most four concurrent Git tasks. Refreshing updates remote-tracking refs; RepoMan does not merge, pull, push, or modify working files. The refresh button checks the selected repository, and **Refresh All** is available from the toolbar menu or **Repositories** menu.
-
-An absent upstream is shown as a dash in the push and pull cards. A remote failure leaves local status visible and reports that the remote is unavailable. Stale branches are local branches whose last commit is at least 90 days old, excluding `main`, `master`, the current branch, and branches checked out in linked worktrees. The worktree count excludes the primary worktree.
-
-## Development
-
-Run `swift test` for the Git scanner integration tests. Launch the app with `--demo` to show illustrative data for design review. The screenshot above contains illustrative counts and line changes.
-
-## GitHub releases
-
-After committing and pushing the project, push a version tag in the form `vX.Y.Z` (for example, `v0.1.0`). The [release workflow](.github/workflows/release.yml) runs the same [build-release helper](.codex/skills/build-release/scripts/build-release.sh) used locally: it tests, builds an arm64 macOS app, signs it ad hoc, creates and verifies a compressed DMG containing `RepoMan.app` and an Applications shortcut, and publishes the DMG and its SHA-256 checksum as a GitHub Release. The workflow uses GitHub's `xcode-27` Apple Silicon runner, so these builds require macOS 27 or later on Apple Silicon.
-
-```sh
-git tag -a v0.1.0 -m "RepoMan v0.1.0"
-git push origin v0.1.0
+```bash
+git clone https://github.com/tsilva/repoman.git
+cd repoman
+open RepoMan.xcodeproj
 ```
 
-To build and package locally without publishing, invoke `/build-release` or run `bash .codex/skills/build-release/scripts/build-release.sh`. The helper prints the DMG and checksum paths under `dist/`.
+In Xcode, select the **RepoMan** scheme and run it on your Mac. In the app, click **Choose Folder…** and select the parent folder containing your repositories.
 
-Release builds have an ad-hoc signature, but no Developer ID signature or Apple notarization. macOS Gatekeeper may require manual approval before opening the downloaded app. Add Developer ID signing and notarization before using this workflow for a frictionless public distribution.
+Search by repository name, filter by status, or sort by counts to find repositories needing attention. Select one to see its recent commits and per-file added and removed lines. RepoMan remembers your folder and selected repository between launches.
+
+## Commands
+
+Run these from the repository root:
+
+```bash
+swift test  # run core tests, including Git scanner integration tests
+
+# Build the app locally
+xcodebuild -project RepoMan.xcodeproj -scheme RepoMan \
+  -configuration Debug -derivedDataPath DerivedData build
+
+# Show illustrative data for design review
+open DerivedData/Build/Products/Debug/RepoMan.app --args --demo
+
+# Test, build, sign, and verify an Apple Silicon DMG and checksum in dist/
+bash .codex/skills/build-release/scripts/build-release.sh
+```
+
+## Notes
+
+- Discovery checks visible direct child folders containing a `.git` directory or file, including linked worktrees. It does not scan nested folders.
+- Local status refreshes every two minutes. Repositories with an upstream fetch after the initial scan and every ten minutes. **Refresh** checks the selected repository; **Refresh All** checks every repository.
+- Fetch updates remote-tracking refs without merging, pulling, pushing, or changing working files. Git commands have timeouts and disable interactive credential prompts; failed fetches keep local status visible.
+- Push/pull counts show a dash without a configured upstream. Stale branches have a last commit older than 90 days, excluding `main`, `master`, the current branch, and branches checked out in any worktree. Worktree counts exclude the primary worktree.
+- The screenshot and `--demo` mode use illustrative data.
+- Local packaging writes an Apple Silicon DMG and SHA-256 checksum under `dist/`. Pushing a `vX.Y.Z` tag triggers the [release workflow](.github/workflows/release.yml) to publish them. Builds are signed ad hoc without Developer ID signing or Apple notarization; Gatekeeper may require manual approval.
+
+## Architecture
+
+![RepoMan architecture: folder discovery, refresh coordination, Git scanning, and the dashboard](docs/architecture.png)
+
+## License
+
+No license is declared in this repository.
