@@ -101,18 +101,26 @@ public enum GitRepositoryScanner {
             worktrees: linkedWorktrees.sorted(),
             commits: commits,
             detailsLoaded: includeDetails,
-            checkedAt: now
+            checkedAt: now,
+            rootFiles: try? rootFiles(at: url)
         )
     }
 
+    private static func rootFiles(at url: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey])
+            .filter { entry in
+                let directory = try entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+                return !directory || ["xcodeproj", "xcworkspace"].contains(entry.pathExtension.lowercased())
+            }
+            .map(\.lastPathComponent)
+    }
+
     public static func fetch(_ url: URL) throws {
-        let upstream = try? GitRunner.text(
-            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], at: url
-        )
-        let remote = upstream?.split(separator: "/").first.map(String.init) ?? "origin"
+        let branch = try? GitRunner.text(["symbolic-ref", "--quiet", "--short", "HEAD"], at: url)
+        let remote = branch.flatMap { try? GitRunner.text(["config", "--get", "branch.\($0).remote"], at: url) } ?? "origin"
         _ = try GitRunner.run(
             ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15",
-             "fetch", "--quiet", "--no-tags", remote],
+             "fetch", "--quiet", "--no-tags", "--", remote],
             at: url,
             timeout: 45
         )

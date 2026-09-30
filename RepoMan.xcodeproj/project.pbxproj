@@ -16,6 +16,10 @@
 		A10000000000000000000007 /* GitRepositoryScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* GitRepositoryScanner.swift */; };
 		A10000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* Assets.xcassets */; };
 		A10000000000000000000009 /* RepositoryListOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* RepositoryListOptions.swift */; };
+		A10000000000000000000011 /* RepositoryIssues.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* RepositoryIssues.swift */; };
+		A10000000000000000000012 /* RepositoryActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* RepositoryActions.swift */; };
+		A10000000000000000000013 /* RepositoryIssuesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* RepositoryIssuesView.swift */; };
+		A10000000000000000000014 /* RepositoryActionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* RepositoryActionSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -29,6 +33,10 @@
 		B10000000000000000000008 /* RepoMan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RepoMan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B10000000000000000000010 /* RepositoryListOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryListOptions.swift; sourceTree = "<group>"; };
+		B10000000000000000000011 /* RepositoryIssues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryIssues.swift; sourceTree = "<group>"; };
+		B10000000000000000000012 /* RepositoryActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryActions.swift; sourceTree = "<group>"; };
+		B10000000000000000000013 /* RepositoryIssuesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryIssuesView.swift; sourceTree = "<group>"; };
+		B10000000000000000000014 /* RepositoryActionSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryActionSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -48,6 +56,8 @@
 				B10000000000000000000002 /* Theme.swift */,
 				B10000000000000000000003 /* ContentView.swift */,
 				B10000000000000000000004 /* RepositoryStore.swift */,
+				B10000000000000000000014 /* RepositoryActionSession.swift */,
+				B10000000000000000000013 /* RepositoryIssuesView.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
 			);
 			path = RepoMan;
@@ -60,6 +70,8 @@
 				B10000000000000000000010 /* RepositoryListOptions.swift */,
 				B10000000000000000000006 /* GitRunner.swift */,
 				B10000000000000000000007 /* GitRepositoryScanner.swift */,
+				B10000000000000000000012 /* RepositoryActions.swift */,
+				B10000000000000000000011 /* RepositoryIssues.swift */,
 			);
 			path = RepoManCore;
 			sourceTree = "<group>";
@@ -158,6 +170,10 @@
 				A10000000000000000000009 /* RepositoryListOptions.swift in Sources */,
 				A10000000000000000000006 /* GitRunner.swift in Sources */,
 				A10000000000000000000007 /* GitRepositoryScanner.swift in Sources */,
+				A10000000000000000000014 /* RepositoryActionSession.swift in Sources */,
+				A10000000000000000000013 /* RepositoryIssuesView.swift in Sources */,
+				A10000000000000000000012 /* RepositoryActions.swift in Sources */,
+				A10000000000000000000011 /* RepositoryIssues.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

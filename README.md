@@ -10,7 +10,7 @@
   <a href="https://github.com/tsilva/repoman/blob/main/RepoMan.xcodeproj/project.pbxproj"><img src="https://img.shields.io/badge/macOS-27%2B-blue" alt="Requires macOS 27 or newer" /></a>
 </p>
 
-RepoMan is a macOS app for developers who want to keep track of several local Git repositories. One dashboard shows uncommitted changes, commits to push or pull, stale branches, and linked worktrees. Build it from source and choose the folder containing your repositories to get started.
+RepoMan is a macOS app for developers managing several local Git repositories. See uncommitted changes, commits to push or pull, stale branches, linked worktrees, and missing project files in one dashboard. Build it from source, choose your repositories' parent folder, and review issues before applying fixes.
 
 ![RepoMan dashboard with illustrative data](docs/repoman-demo.png)
 
@@ -24,9 +24,23 @@ cd repoman
 open RepoMan.xcodeproj
 ```
 
-In Xcode, select the **RepoMan** scheme and run it on your Mac. Click **Choose Folder…** in the app and select the parent folder containing your repositories.
+In Xcode, select the **RepoMan** scheme and run it on your Mac.
 
-Search, filter, or sort to find repositories needing attention. Select one to inspect recent commits and file changes. RepoMan remembers your folder and selection between launches.
+## Use
+
+Click **Choose Folder…** and select the parent folder containing your repositories. Search, filter, or sort to find repositories needing attention; filter and sort controls sit beside the search field. Select a repository to see its flat **Issues needing attention** list, then select an issue to inspect evidence and available actions.
+
+Issues include evidence and actions you can preview before applying:
+
+- Draft an editable README or a project-specific `.gitignore`.
+- Choose MIT with an explicit copyright holder, or supply custom license text.
+- Select changed files and enter a message to commit their full current contents, preserving other staged files.
+- Review incoming commits before a fast-forward pull, or outgoing commits before a regular push to the configured upstream branch.
+- Ignore a check for one repository, or disable it globally from **Enabled checks** in the toolbar's overflow menu.
+
+File creation leaves files untracked; committing and pushing are separate actions. README drafts are starter templates to edit. Conflicts, staged renames, and diverged histories require review in your Git editor. If a repository changes after a preview, prepare a new preview before applying it.
+
+See [the detector and action architecture](docs/issues.md) for adding checks and fixers.
 
 ## Commands
 
@@ -47,16 +61,17 @@ bash .codex/skills/build-release/scripts/build-release.sh
 ## Notes
 
 - Discovery scans visible direct child folders with a `.git` directory or file, including linked worktrees. Nested folders are not scanned.
+- RepoMan remembers your folder, selected repository, ignored checks, and disabled checks between launches.
 - Local status refreshes every two minutes. Repositories with an upstream fetch after the initial scan and every ten minutes. **Refresh** checks the selected repository; **Refresh All** checks all repositories.
 - Refresh fetches remote-tracking refs without merging, pulling, pushing, or changing working files. Git commands have timeouts and disable credential prompts. Failed fetches keep local status visible, but remote counts may be outdated.
-- Push/pull counts show a dash without an upstream. Stale branches have no commits in 90 days, excluding `main`, `master`, and branches checked out in any worktree. Worktree counts exclude the primary worktree.
-- The screenshot and `--demo` mode use illustrative data.
+- Only an explicitly applied issue action changes working files, commits, or remote branches. Pull and push previews fetch fresh remote refs; pushes never force and pulls require a clean working tree.
+- Push/pull findings require a known upstream comparison. Stale branches have no commits in 90 days, excluding `main`, `master`, and branches checked out in any worktree. Linked worktrees exclude the primary worktree and appear as informational findings.
+- The screenshot and `--demo` mode use illustrative data. Demo mode permits previews but cannot apply actions.
 - Local packaging writes a DMG and checksum under `dist/`. Pushing a `vX.Y.Z` tag publishes them through the [release workflow](.github/workflows/release.yml). Packaged builds are signed ad hoc and are not notarized; Gatekeeper may require manual approval.
+- No license is declared in this repository.
 
 ## Architecture
 
-![RepoMan architecture: folder discovery, refresh coordination, Git scanning, and the dashboard](docs/architecture.png)
+The diagram shows discovery and refresh. The [checks and actions guide](docs/issues.md) explains issue detection, previews, and explicitly applied fixes.
 
-## License
-
-No license is declared in this repository.
+![RepoMan refresh architecture: folder discovery, refresh coordination, Git scanning, and the dashboard](docs/architecture.png)

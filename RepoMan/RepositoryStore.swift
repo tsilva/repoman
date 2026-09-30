@@ -16,10 +16,110 @@ final class RepositoryStore: ObservableObject {
     private var generation = UUID()
     private var monitoringTask: Task<Void, Never>?
     private var lastRemoteRefresh: Date?
-    private let isDemo = ProcessInfo.processInfo.arguments.contains("--demo")
+    let issueCatalog = RepositoryIssueCatalog()
+    let actionCatalog = RepositoryActionCatalog()
+    @Published private(set) var ignoredChecks: [String: [String]] = UserDefaults.standard.dictionary(forKey: "ignoredRepositoryChecks") as? [String: [String]] ?? [:]
+    @Published private(set) var disabledChecks = Set(UserDefaults.standard.stringArray(forKey: "disabledRepositoryChecks") ?? [])
+    @Published private(set) var actionSession: RepositoryActionSession?
+    var isActing: Bool { actionSession?.isPreparing == true || actionSession?.isRunning == true }
+    let isDemo = ProcessInfo.processInfo.arguments.contains("--demo")
 
     var selectedRepository: RepositorySnapshot? {
         repositories.first { $0.id == selectedPath }
+    }
+
+    func findings(in repository: RepositorySnapshot) -> [RepositoryFinding] {
+        issueCatalog.findings(in: repository, disabledChecks: disabledChecks.union(ignoredChecks[repository.id] ?? []))
+    }
+
+    var findings: [RepositoryFinding] { repositories.flatMap { findings(in: $0) } }
+
+    func ignore(_ finding: RepositoryFinding) {
+        var checks = Set(ignoredChecks[finding.repositoryID] ?? [])
+        checks.insert(finding.checkID)
+        ignoredChecks[finding.repositoryID] = checks.sorted()
+        if !isDemo { UserDefaults.standard.set(ignoredChecks, forKey: "ignoredRepositoryChecks") }
+    }
+
+    func restoreChecks(for repository: RepositorySnapshot) {
+        ignoredChecks.removeValue(forKey: repository.id)
+        if !isDemo { UserDefaults.standard.set(ignoredChecks, forKey: "ignoredRepositoryChecks") }
+    }
+
+    func setCheck(_ id: String, enabled: Bool) {
+        if enabled { disabledChecks.remove(id) } else { disabledChecks.insert(id) }
+        if !isDemo { UserDefaults.standard.set(disabledChecks.sorted(), forKey: "disabledRepositoryChecks") }
+    }
+
+    func prepareAction(_ id: String, repositories targets: [RepositorySnapshot], input: RepositoryActionInput = .init()) {
+        guard !isActing, !isScanning, !isFetching, !targets.isEmpty else { return }
+        guard let definition = actionCatalog.action(id), targets.count == 1 || definition.supportsBatch else { return }
+        actionSession = RepositoryActionSession(actionID: id)
+        let sessionID = actionSession!.id
+        let catalog = actionCatalog
+        let demo = isDemo
+        Task {
+            for repository in targets {
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { demo ? try catalog.demonstrationPlan(id, snapshot: repository, input: input)
+                                  : try catalog.prepare(id, at: repository.url, input: input) }
+                }.value
+                guard actionSession?.id == sessionID else { return }
+                var row = RepositoryActionPreview(repositoryName: repository.name, repositoryURL: repository.url)
+                switch result {
+                case .success(let plan): row.plan = plan
+                case .failure(let error): row.error = error.localizedDescription; row.status = "Blocked"
+                }
+                actionSession?.previews.append(row)
+            }
+            actionSession?.isPreparing = false
+        }
+    }
+
+    func editPreview(_ id: UUID, content: String) {
+        guard !isActing, let index = actionSession?.previews.firstIndex(where: { $0.id == id }),
+              actionSession?.previews[index].completed == false else { return }
+        actionSession?.previews[index].plan?.content = content
+    }
+
+    func dismissAction() {
+        guard !isActing else { return }
+        actionSession = nil
+    }
+
+    func executeAction() {
+        guard !isDemo, !isActing, !isScanning, !isFetching, let session = actionSession, !session.finished,
+              actionCatalog.action(session.actionID)?.mutatesRepository == true || session.actionID == "git.refresh" else { return }
+        let plans = session.previews.filter { $0.plan != nil && $0.error == nil && !$0.completed }
+        guard !plans.isEmpty else { return }
+        actionSession?.isRunning = true
+        let catalog = actionCatalog
+        Task {
+            for row in plans {
+                guard let plan = row.plan, actionSession?.id == session.id,
+                      let index = actionSession?.previews.firstIndex(where: { $0.id == row.id }) else { continue }
+                actionSession?.previews[index].status = "Running…"
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try catalog.execute(plan) }
+                }.value
+                guard actionSession?.id == session.id else { return }
+                switch result {
+                case .success(let result):
+                    actionSession?.previews[index].status = result.message
+                    actionSession?.previews[index].completed = true
+                    let fetched = ["git.push", "git.pull", "git.refresh"].contains(plan.actionID)
+                    apply(ScanResult(url: row.repositoryURL, snapshot: result.snapshot, fetchError: result.snapshot.fetchError, didFetch: fetched), preservingFetchState: !fetched)
+                case .failure(let error):
+                    actionSession?.previews[index].error = error.localizedDescription
+                    actionSession?.previews[index].status = "Failed"
+                    let result = await Task.detached(priority: .utility) { Self.scan(row.repositoryURL, includeDetails: true) }.value
+                    apply(result, preservingFetchState: true)
+                }
+            }
+            actionSession?.isRunning = false
+            actionSession?.finished = true
+            if let folder { await scanFolder(folder, fetchRemotes: false, clearFirst: false) }
+        }
     }
 
     func start() {
@@ -43,7 +143,7 @@ final class RepositoryStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 120_000_000_000)
                 guard let self else { break }
                 guard !Task.isCancelled, let folder = self.folder else { continue }
-                guard !self.isScanning, !self.isFetching else { continue }
+                guard !self.isScanning, !self.isFetching, !self.isActing else { continue }
                 await self.scanFolder(folder, fetchRemotes: false, clearFirst: false)
                 if let lastRemoteRefresh = self.lastRemoteRefresh,
                    Date().timeIntervalSince(lastRemoteRefresh) >= 600 {
@@ -54,6 +154,7 @@ final class RepositoryStore: ObservableObject {
     }
 
     func chooseFolder() {
+        guard !isActing else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -61,6 +162,7 @@ final class RepositoryStore: ObservableObject {
         panel.prompt = "Monitor Folder"
         panel.message = "Choose the folder containing your Git repositories."
         if panel.runModal() == .OK, let url = panel.url {
+            actionSession = nil
             generation = UUID()
             isScanning = false
             isFetching = false
@@ -82,12 +184,12 @@ final class RepositoryStore: ObservableObject {
     }
 
     func refreshAll() {
-        guard let folder, !isDemo else { return }
+        guard let folder, !isDemo, !isActing else { return }
         Task { await scanFolder(folder, fetchRemotes: true, clearFirst: false) }
     }
 
     func refreshSelected() {
-        guard let selectedRepository, !isDemo, !isFetching, !isScanning else { return }
+        guard let selectedRepository, !isDemo, !isFetching, !isScanning, !isActing else { return }
         let currentGeneration = generation
         isFetching = true
         Task {
@@ -106,7 +208,7 @@ final class RepositoryStore: ObservableObject {
     }
 
     private func scanFolder(_ url: URL, fetchRemotes: Bool, clearFirst: Bool) async {
-        guard !isScanning else { return }
+        guard !isScanning, !isActing else { return }
         generation = UUID()
         let currentGeneration = generation
         isScanning = true
@@ -166,7 +268,7 @@ final class RepositoryStore: ObservableObject {
     }
 
     private func fetchAllRemotes() async {
-        guard !isFetching, !isDemo else { return }
+        guard !isFetching, !isDemo, !isActing else { return }
         let currentGeneration = generation
         isFetching = true
         for batch in repositories.filter({ $0.upstream != nil }).map(\.url).batches(of: 4) {
@@ -285,7 +387,8 @@ final class RepositoryStore: ObservableObject {
                 worktrees: (0..<value.4).map { "worktree-\($0 + 1)" },
                 commits: name == "repoman" ? commits : [],
                 checkedAt: Date(),
-                fetchedAt: Date()
+                fetchedAt: Date(),
+                rootFiles: name == "repoman" ? ["Package.swift", "README.md"] : (name == "notebook2md" ? ["pyproject.toml"] : ["package.json", "LICENSE"])
             )
         }
     }

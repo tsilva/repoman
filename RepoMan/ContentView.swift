@@ -57,6 +57,9 @@ struct ContentView: View {
         .toolbarBackground(Theme.sidebar, for: .windowToolbar)
         .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .onAppear { store.start() }
+        .sheet(isPresented: Binding(get: { store.actionSession != nil }, set: { if !$0 { store.dismissAction() } })) {
+            RepositoryActionSheet().environmentObject(store)
+        }
     }
 
     private func topBar(sidebarWidth: CGFloat) -> some View {
@@ -71,7 +74,6 @@ struct ContentView: View {
                 .accessibilityValue(sidebarVisible ? "Visible" : "Hidden")
                 if sidebarVisible {
                     Spacer(minLength: 12)
-                    repositoryListMenus
                 }
             }
             .frame(width: sidebarVisible ? max(0, sidebarWidth - toolbarLeadingInset) : 34)
@@ -107,7 +109,7 @@ struct ContentView: View {
                 ) {
                     store.refreshSelected()
                 }
-                .disabled(store.selectedRepository == nil || store.isFetching || store.isScanning)
+                .disabled(store.selectedRepository == nil || store.isFetching || store.isScanning || store.isActing)
                 ToolbarActionButton(symbol: "folder", title: "Open in Finder") {
                     if let repository = store.selectedRepository {
                         NSWorkspace.shared.open(repository.url)
@@ -218,38 +220,34 @@ struct ContentView: View {
     private var filteredRepositories: [RepositorySnapshot] {
         repositorySort.repositories(
             store.repositories,
-            filter: repositoryFilter,
+            filter: repositoryFilter == .needsAttention ? .all : repositoryFilter,
             search: search,
             ascending: sortAscending
-        )
+        ).filter { repositoryFilter != .needsAttention || !store.findings(in: $0).isEmpty }
     }
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(Theme.secondary)
-                TextField("Search repositories…", text: $search)
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(Theme.primary)
-                    .font(.system(size: 11.5))
-                    .focused($searchFocused)
-                    .accessibilityLabel("Search repositories")
+            HStack(spacing: 6) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(Theme.secondary)
+                    TextField("Search repositories…", text: $search)
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(Theme.primary)
+                        .font(.system(size: 11.5))
+                        .focused($searchFocused)
+                        .accessibilityLabel("Search repositories")
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(Theme.field, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(searchFocused ? Theme.secondary : Theme.border, lineWidth: 1))
+                repositoryListMenus
             }
-            .padding(.horizontal, 14)
-            .frame(height: 34)
-            .background(Theme.field, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(searchFocused ? Theme.secondary : Theme.border, lineWidth: 1))
             .padding(.horizontal, 18)
             .padding(.top, 18)
             .padding(.bottom, 12)
-
-            Text("Repositories")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Theme.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.bottom, 8)
 
             if let error = store.errorMessage, !store.repositories.isEmpty {
                 Text(error)
@@ -274,12 +272,8 @@ struct ContentView: View {
             CodexScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredRepositories) { repository in
-                        RepositoryRow(
-                            repository: repository,
-                            isSelected: store.selectedPath == repository.id
-                        ) {
-                            store.select(repository)
-                        }
+                        RepositoryRow(repository: repository, issueCount: store.findings(in: repository).count,
+                                      isSelected: store.selectedPath == repository.id) { store.select(repository) }
                     }
                     if filteredRepositories.isEmpty, !store.repositories.isEmpty {
                         Text("No matching repositories")
@@ -335,8 +329,18 @@ struct ContentView: View {
     @ViewBuilder
     private var repositoryOptions: some View {
         Button("Choose Folder…", systemImage: "folder.badge.plus") { store.chooseFolder() }
+            .disabled(store.isActing)
         Button("Refresh All", systemImage: "arrow.clockwise") { store.refreshAll() }
-            .disabled(store.folder == nil || store.isScanning || store.isFetching)
+            .disabled(store.folder == nil || store.isScanning || store.isFetching || store.isActing)
+        Menu("Enabled checks") {
+            ForEach(store.issueCatalog.checks) { check in
+                Toggle(check.title, isOn: Binding(get: { !store.disabledChecks.contains(check.id) },
+                                                 set: { store.setCheck(check.id, enabled: $0) }))
+            }
+        }
+        if let repository = store.selectedRepository, !(store.ignoredChecks[repository.id] ?? []).isEmpty {
+            Button("Restore ignored checks") { store.restoreChecks(for: repository) }
+        }
         if let repository = store.selectedRepository,
            let remoteURL = repository.remoteWebURL {
             Divider()
@@ -355,7 +359,7 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let repository = store.selectedRepository {
-            RepositoryDetail(repository: repository)
+            RepositoryDetail(repository: repository).id(repository.id)
         } else if store.isScanning {
             ProgressView("Scanning repositories…")
                 .tint(Theme.primary)
@@ -475,6 +479,7 @@ private struct SidebarResizeHandle: NSViewRepresentable {
 private struct RepositoryRow: View {
     @State private var isHovered = false
     let repository: RepositorySnapshot
+    let issueCount: Int
     let isSelected: Bool
     let action: () -> Void
 
@@ -502,25 +507,14 @@ private struct RepositoryRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(-1)
 
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(36), spacing: 5, alignment: .trailing), count: min(3, statusCount)), alignment: .trailing, spacing: 6) {
-                    if let ahead = repository.ahead, ahead > 0 {
-                        StatusBadge(symbol: "arrow.up", value: ahead, color: Theme.blue, label: "commits to push")
-                    }
-                    if let behind = repository.behind, behind > 0 {
-                        StatusBadge(symbol: "arrow.down", value: behind, color: Theme.green, label: "commits to pull")
-                    }
-                    if repository.changedFileCount > 0 {
-                        StatusBadge(symbol: "circle.fill", value: repository.changedFileCount, color: Theme.amber, label: "changed files")
-                    }
-                    if !repository.staleBranches.isEmpty {
-                        StatusBadge(symbol: "arrow.triangle.branch", value: repository.staleBranches.count, color: Theme.purple, label: "stale branches")
-                    }
-                    if !repository.worktrees.isEmpty {
-                        StatusBadge(symbol: "square.on.square", value: repository.worktrees.count, color: Theme.cyan, label: "worktrees")
-                    }
+                if issueCount > 0 {
+                    Text(issueCount.formatted())
+                        .font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(Theme.amber)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Theme.control, in: Capsule())
+                        .help("\(issueCount) findings from enabled checks")
+                        .padding(.trailing, 8)
                 }
-                .frame(width: statusCount == 0 ? 0 : CGFloat(min(3, statusCount) * 41 - 5))
-                .padding(.trailing, 4)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
@@ -534,7 +528,7 @@ private struct RepositoryRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(repository.name), \(repository.branch), \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
+        .accessibilityLabel("\(repository.name), \(repository.branch), \(issueCount) findings, \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
         .overlay(alignment: .bottom) {
             if !isSelected {
                 Rectangle()
@@ -545,10 +539,6 @@ private struct RepositoryRow: View {
         }
     }
 
-    private var statusCount: Int {
-        [repository.ahead ?? 0, repository.behind ?? 0, repository.changedFileCount,
-         repository.staleBranches.count, repository.worktrees.count].filter { $0 > 0 }.count
-    }
 }
 
 private struct StatusBadge: View {
@@ -596,146 +586,15 @@ private struct NativeTooltip: NSViewRepresentable {
 }
 
 private struct RepositoryDetail: View {
-    @EnvironmentObject private var store: RepositoryStore
     let repository: RepositorySnapshot
-    @State private var showAllCommits = false
-    @State private var showModified = true
-    @State private var showUntracked = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let fetchError = repository.fetchError {
-                Label("Remote unavailable · local status shown", systemImage: "exclamationmark.circle")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Theme.amber)
-                    .help(fetchError)
-            }
-            summaryStrip
-            HStack(alignment: .top, spacing: 12) {
-                commitsPanel
-                workingTreePanel
-            }
-            .frame(maxHeight: .infinity)
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 24)
-        .padding(.bottom, 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Theme.background)
-    }
-
-    private var summaryStrip: some View {
-        HStack(spacing: 0) {
-            SummaryMetric(title: "To push", symbol: "arrow.up", color: Theme.blue, value: repository.ahead, unit: repository.upstream == nil ? "no upstream" : "commits")
-            summaryDivider
-            SummaryMetric(title: "To pull", symbol: "arrow.down", color: Theme.green, value: repository.behind, unit: repository.upstream == nil ? "no upstream" : "commits")
-            summaryDivider
-            SummaryMetric(title: "Changed files", symbol: "circle.fill", color: Theme.amber, value: repository.changedFileCount, unit: "files")
-            summaryDivider
-            SummaryMetric(title: "Stale branches", symbol: "arrow.triangle.branch", color: Theme.purple, value: repository.staleBranches.count, unit: "branches")
-                .help("Local branches inactive for 90 days, excluding main, master, and branches checked out in worktrees")
-            summaryDivider
-            SummaryMetric(title: "Worktrees", symbol: "square.on.square", color: Theme.cyan, value: repository.worktrees.count, unit: "worktrees")
-                .help("Additional linked Git worktrees")
-        }
-        .padding(.vertical, 18)
-        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, lineWidth: 1))
-    }
-
-    private var summaryDivider: some View {
-        Rectangle().fill(Theme.border).frame(width: 1, height: 64)
-    }
-
-    private var commitsPanel: some View {
-        Panel {
-            HStack {
-                Text("Commits")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Theme.primary)
-                Spacer()
-                if repository.commits.count > 4 {
-                    Button(showAllCommits ? "Show less" : "View all") {
-                        showAllCommits.toggle()
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Theme.blue)
-                    .font(.system(size: 12))
-                }
-            }
-        } content: {
-            if !repository.detailsLoaded {
-                ProgressView("Loading commits…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if repository.commits.isEmpty {
-                EmptyPanelText(text: "No commits yet")
-            } else {
-                CodexScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(repository.commits.prefix(showAllCommits ? repository.commits.count : 4))) { commit in
-                            HStack(alignment: .center, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(commit.hash)
-                                        .font(.system(size: 11.5, design: .monospaced))
-                                        .foregroundStyle(Theme.secondary)
-                                    Text(commit.subject)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Theme.primary)
-                                        .lineLimit(2)
-                                        .help(commit.subject)
-                                }
-                                Spacer(minLength: 8)
-                                Text(commit.relativeDate)
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(Theme.secondary)
-                                    .lineLimit(1)
-                            }
-                            .padding(.vertical, 12)
-                            .frame(minHeight: 64)
-                            .overlay(alignment: .bottom) {
-                                Rectangle().fill(Theme.border.opacity(0.55)).frame(height: 1)
-                            }
-                        }
-                    }
-                    .padding(.leading, 18)
-                    .padding(.trailing, 28)
-                }
-            }
-        }
-    }
-
-    private var workingTreePanel: some View {
-        Panel {
-            Text("Working tree")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Theme.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } content: {
-            if !repository.detailsLoaded {
-                ProgressView("Loading file changes…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if repository.changes.isEmpty {
-                EmptyPanelText(text: "Working tree is clean")
-            } else {
-                CodexScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ChangeGroup(
-                            title: "Modified",
-                            changes: repository.changes.filter { $0.kind == .modified },
-                            isExpanded: $showModified
-                        )
-                        ChangeGroup(
-                            title: "Untracked",
-                            changes: repository.changes.filter { $0.kind == .untracked },
-                            isExpanded: $showUntracked
-                        )
-                    }
-                    .padding(.leading, 18)
-                    .padding(.trailing, 28)
-                    .padding(.vertical, 12)
-                }
-            }
-        }
+        RepositoryIssuesView(repository: repository, checkID: nil)
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Theme.background)
     }
 }
 
@@ -763,7 +622,7 @@ private struct ToolbarActionButton: View {
     }
 }
 
-private struct RepositoryButtonStyle: ButtonStyle {
+struct RepositoryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
@@ -778,46 +637,7 @@ private struct RepositoryButtonStyle: ButtonStyle {
     }
 }
 
-private struct SummaryMetric: View {
-    let title: String
-    let symbol: String
-    let color: Color
-    let value: Int?
-    let unit: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: symbol == "circle.fill" ? 14 : 20, weight: .medium))
-                .foregroundStyle(color)
-                .frame(width: 32, height: 32)
-                .background(color.opacity(0.12), in: Circle())
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.primary)
-                    .lineLimit(1)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(value.map(String.init) ?? "—")
-                        .font(.system(size: 28, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.primary)
-                    Text(unit)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct Panel<Header: View, Content: View>: View {
+struct Panel<Header: View, Content: View>: View {
     @ViewBuilder let header: Header
     @ViewBuilder let content: Content
 
@@ -841,82 +661,8 @@ private struct Panel<Header: View, Content: View>: View {
     }
 }
 
-private struct EmptyPanelText: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 11))
-            .foregroundStyle(Theme.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct ChangeGroup: View {
-    let title: String
-    let changes: [WorkingTreeChange]
-    @Binding var isExpanded: Bool
-
-    var body: some View {
-        if !changes.isEmpty {
-            VStack(spacing: 0) {
-                Button { isExpanded.toggle() } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .rotationEffect(.degrees(isExpanded ? 0 : -90))
-                        Text(title)
-                            .font(.system(size: 12, weight: .medium))
-                        Text("\(changes.count)")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(Theme.secondary)
-                            .padding(.horizontal, 8)
-                            .frame(height: 20)
-                            .background(Theme.control, in: Capsule())
-                        Spacer()
-                    }
-                    .foregroundStyle(Theme.primary)
-                    .frame(height: 30)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                if isExpanded {
-                    ForEach(changes) { change in
-                        HStack(spacing: 10) {
-                            Image(systemName: "doc")
-                                .font(.system(size: 13, weight: .light))
-                                .foregroundStyle(Theme.secondary)
-                                .frame(width: 20)
-                            Text(change.path)
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .help(change.path)
-                            Spacer(minLength: 3)
-                            if let added = change.added, added > 0 {
-                                Text("+\(added)")
-                                    .foregroundStyle(Theme.green)
-                            }
-                            if let removed = change.removed, removed > 0 {
-                                Text("−\(removed)")
-                                    .foregroundStyle(Theme.red)
-                            }
-                        }
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .frame(height: 42)
-                        .overlay(alignment: .bottom) {
-                            Rectangle().fill(Theme.border.opacity(0.48)).frame(height: 1)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Keeps native scrolling while using the thin, trackless indicators of the Codex theme.
-private struct CodexScrollView<Content: View>: View {
+struct CodexScrollView<Content: View>: View {
     @ViewBuilder let content: Content
     @State private var position = ScrollPosition()
     @State private var metrics = ScrollbarMetrics()

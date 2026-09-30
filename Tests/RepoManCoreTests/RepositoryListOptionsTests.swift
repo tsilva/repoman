@@ -90,12 +90,12 @@ final class RepositoryListOptionsTests: XCTestCase {
     ) -> RepositorySnapshot {
         RepositorySnapshot(
             url: URL(fileURLWithPath: "/\(directory)/\(name)"), name: name,
-            branch: "main", upstream: "origin/main", remoteURL: nil,
+            branch: "main", upstream: name == "no-upstream" ? nil : "origin/main", remoteURL: nil,
             ahead: ahead, behind: behind,
             changes: (0..<changes).map { WorkingTreeChange(path: "file\($0)", kind: .modified, added: nil, removed: nil) },
             staleBranches: (0..<staleBranches).map { "branch\($0)" },
             worktrees: (0..<worktrees).map { "worktree\($0)" },
-            commits: [], fetchError: fetchError
+            commits: [], fetchError: fetchError, rootFiles: ["README.md", ".gitignore", "LICENSE"]
         )
     }
 }

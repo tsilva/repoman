@@ -14,6 +14,8 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
     public let worktrees: [String]
     public let commits: [RepositoryCommit]
     public let detailsLoaded: Bool
+    /// Nil means root inspection failed; detectors must not interpret that as missing files.
+    public let rootFiles: [String]?
     public let checkedAt: Date
     public var fetchedAt: Date?
     public var fetchError: String?
@@ -35,7 +37,8 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
         detailsLoaded: Bool = true,
         checkedAt: Date = Date(),
         fetchedAt: Date? = nil,
-        fetchError: String? = nil
+        fetchError: String? = nil,
+        rootFiles: [String]? = nil
     ) {
         self.url = url
         self.name = name
@@ -49,6 +52,7 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
         self.worktrees = worktrees
         self.commits = commits
         self.detailsLoaded = detailsLoaded
+        self.rootFiles = rootFiles
         self.checkedAt = checkedAt
         self.fetchedAt = fetchedAt
         self.fetchError = fetchError
