@@ -4,50 +4,224 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var store: RepositoryStore
     @State private var search = ""
+    @State private var repositoryFilter: RepositoryFilter = .all
+    @State private var repositorySort: RepositorySort = .name
+    @State private var sortAscending = true
+    @AppStorage("sidebarWidth") private var sidebarWidth = 340.0
+    @AppStorage("sidebarVisible") private var sidebarVisible = true
+    @FocusState private var searchFocused: Bool
+
+    private let toolbarLeadingInset: CGFloat = 96
 
     var body: some View {
         GeometryReader { geometry in
+            let resizeHandleWidth: CGFloat = 9
+            let maximumSidebarWidth = min(520, max(280, geometry.size.width - 800 - resizeHandleWidth))
+            let visibleSidebarWidth = min(maximumSidebarWidth, max(280, sidebarWidth))
             HStack(spacing: 0) {
-                sidebar
-                    .frame(width: min(560, max(500, geometry.size.width * 0.34)))
-                Rectangle()
-                    .fill(Theme.border.opacity(0.75))
-                    .frame(width: 1)
+                if sidebarVisible {
+                    sidebar
+                        .frame(width: visibleSidebarWidth)
+                    SidebarResizeHandle(width: visibleSidebarWidth, maximumWidth: maximumSidebarWidth) { width in
+                        sidebarWidth = min(maximumSidebarWidth, max(280, width))
+                    }
+                    .frame(width: resizeHandleWidth)
+                    .background {
+                        HStack(spacing: 0) {
+                            Theme.sidebar
+                            Theme.background
+                        }
+                        .overlay {
+                            Rectangle()
+                                .fill(Theme.border.opacity(0.75))
+                                .frame(width: 1)
+                        }
+                        .ignoresSafeArea(.container, edges: .top)
+                    }
+                }
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Theme.background)
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("Choose Folder…", systemImage: "folder.badge.plus") {
-                        store.chooseFolder()
-                    }
-                    Button("Refresh All", systemImage: "arrow.clockwise") {
-                        store.refreshAll()
-                    }
-                    .disabled(store.folder == nil || store.isScanning || store.isFetching)
-                    if let folder = store.folder {
-                        Divider()
-                        Button("Open Monitored Folder", systemImage: "folder") {
-                            NSWorkspace.shared.open(folder)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(Theme.secondary)
+            .toolbar {
+                // Recreate the native item on width changes so AppKit updates its minimum size.
+                ToolbarItem(id: "repository-topbar-\(Int(geometry.size.width))", placement: .navigation) {
+                    topBar(sidebarWidth: visibleSidebarWidth)
+                        // The native toolbar reserves the leading space for window controls.
+                        .frame(width: max(0, geometry.size.width - toolbarLeadingInset - 8))
                 }
-                .help("Repository options")
+                .sharedBackgroundVisibility(.hidden)
             }
         }
+        .font(.system(size: 12))
+        .toolbarBackground(Theme.sidebar, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .onAppear { store.start() }
     }
 
+    private func topBar(sidebarWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 8) {
+                ToolbarActionButton(
+                    symbol: "sidebar.left",
+                    title: sidebarVisible ? "Hide sidebar" : "Show sidebar"
+                ) {
+                    sidebarVisible.toggle()
+                }
+                .accessibilityValue(sidebarVisible ? "Visible" : "Hidden")
+                if sidebarVisible {
+                    Spacer(minLength: 12)
+                    repositoryListMenus
+                }
+            }
+            .frame(width: sidebarVisible ? max(0, sidebarWidth - toolbarLeadingInset) : 34)
+            .padding(.trailing, sidebarVisible ? 9 : 12)
+
+            HStack(spacing: 12) {
+                if let repository = store.selectedRepository {
+                    branchMenu(repository)
+                    Text(repository.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(repository.name)
+                        .frame(maxWidth: 260, alignment: .leading)
+                        .layoutPriority(1)
+                } else {
+                    Text("RepoMan")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.primary)
+                }
+                Spacer(minLength: 16)
+                Text(statusText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help(statusText)
+                ToolbarActionButton(
+                    symbol: "arrow.clockwise",
+                    title: "Refresh repository",
+                    isRotating: store.isFetching || store.isScanning
+                ) {
+                    store.refreshSelected()
+                }
+                .disabled(store.selectedRepository == nil || store.isFetching || store.isScanning)
+                ToolbarActionButton(symbol: "folder", title: "Open in Finder") {
+                    if let repository = store.selectedRepository {
+                        NSWorkspace.shared.open(repository.url)
+                    }
+                }
+                .disabled(store.selectedRepository == nil)
+                Rectangle().fill(Theme.border).frame(width: 1, height: 20)
+                ToolbarIconMenu(symbol: "ellipsis", title: "Repository options", value: "") {
+                    repositoryOptions
+                }
+            }
+            .padding(.leading, sidebarVisible ? 24 : 0)
+        }
+        .frame(height: 36)
+    }
+
+    private var repositoryListMenus: some View {
+        HStack(spacing: 6) {
+            ToolbarIconMenu(
+                symbol: "line.3.horizontal.decrease",
+                title: "Filter repositories",
+                value: repositoryFilter.rawValue,
+                isActive: repositoryFilter != .all
+            ) {
+                ForEach(RepositoryFilter.allCases, id: \.self) { filter in
+                    Button {
+                        repositoryFilter = filter
+                    } label: {
+                        menuChoice(filter.rawValue, isSelected: repositoryFilter == filter)
+                    }
+                    if filter == .all || filter == .needsAttention {
+                        Divider()
+                    }
+                }
+            }
+            ToolbarIconMenu(
+                symbol: "arrow.up.arrow.down",
+                title: "Sort repositories",
+                value: "\(repositorySort.rawValue), \(sortAscending ? "ascending" : "descending")"
+            ) {
+                ForEach(RepositorySort.allCases, id: \.self) { sort in
+                    Button {
+                        if repositorySort != sort {
+                            repositorySort = sort
+                            sortAscending = sort == .name
+                        }
+                    } label: {
+                        menuChoice(sort.rawValue, isSelected: repositorySort == sort)
+                    }
+                }
+                Divider()
+                Button { sortAscending = true } label: {
+                    menuChoice("Ascending", isSelected: sortAscending)
+                }
+                Button { sortAscending = false } label: {
+                    menuChoice("Descending", isSelected: !sortAscending)
+                }
+            }
+        }
+    }
+
+    private func branchMenu(_ repository: RepositorySnapshot) -> some View {
+        Menu {
+            Text("Current branch: \(repository.branch)")
+            if !repository.staleBranches.isEmpty {
+                Divider()
+                Text("Stale branches")
+                ForEach(repository.staleBranches, id: \.self) { branch in
+                    Text(branch)
+                }
+            }
+        } label: {
+            Label(repository.branch, systemImage: "arrow.triangle.branch")
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .labelStyle(.titleAndIcon)
+        .foregroundStyle(Theme.primary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.trailing, 18)
+        .frame(width: min(180, ceil((repository.branch as NSString).size(
+            withAttributes: [.font: NSFont.systemFont(ofSize: 12)]
+        ).width) + 76), height: 28, alignment: .leading)
+        // Native Menu normalizes its label, so draw the single chevron outside it.
+        .overlay(alignment: .trailing) {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9))
+                .foregroundStyle(Theme.secondary)
+                .padding(.trailing, 3)
+                .allowsHitTesting(false)
+        }
+        .help("Current branch: \(repository.branch)")
+        .accessibilityLabel("Current branch")
+        .accessibilityValue(repository.branch)
+    }
+
+    private var statusText: String {
+        if store.isFetching { return "Checking remotes…" }
+        if store.isScanning { return "Checking repositories…" }
+        guard let repository = store.selectedRepository else { return "" }
+        let minutes = Int(Date().timeIntervalSince(repository.checkedAt) / 60)
+        return minutes < 1 ? "Last checked just now" : "Last checked \(minutes) min ago"
+    }
+
     private var filteredRepositories: [RepositorySnapshot] {
-        guard !search.isEmpty else { return store.repositories }
-        return store.repositories.filter { $0.name.localizedCaseInsensitiveContains(search) }
+        repositorySort.repositories(
+            store.repositories,
+            filter: repositoryFilter,
+            search: search,
+            ascending: sortAscending
+        )
     }
 
     private var sidebar: some View {
@@ -58,38 +232,46 @@ struct ContentView: View {
                 TextField("Search repositories…", text: $search)
                     .textFieldStyle(.plain)
                     .foregroundStyle(Theme.primary)
-                    .font(.system(size: 14))
+                    .font(.system(size: 11.5))
+                    .focused($searchFocused)
                     .accessibilityLabel("Search repositories")
             }
             .padding(.horizontal, 14)
-            .frame(height: 42)
-            .background(Theme.field, in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, lineWidth: 1))
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
+            .frame(height: 34)
+            .background(Theme.field, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(searchFocused ? Theme.secondary : Theme.border, lineWidth: 1))
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
             .padding(.bottom, 12)
+
+            Text("Repositories")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 8)
 
             if let error = store.errorMessage, !store.repositories.isEmpty {
                 Text(error)
-                    .font(.system(size: 12))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(Theme.amber)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .help(error)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 7)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
             }
 
             if store.isScanning, !store.scanProgress.isEmpty {
                 Text(store.scanProgress)
-                    .font(.system(size: 12))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(Theme.subtle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 7)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
             }
 
-            ScrollView {
+            CodexScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredRepositories) { repository in
                         RepositoryRow(
@@ -99,21 +281,75 @@ struct ContentView: View {
                             store.select(repository)
                         }
                     }
+                    if filteredRepositories.isEmpty, !store.repositories.isEmpty {
+                        Text("No matching repositories")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.secondary)
+                            .padding(20)
+                        if repositoryFilter != .all {
+                            Button("Clear filter") { repositoryFilter = .all }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Theme.blue)
+                                .padding(.bottom, 12)
+                        }
+                    } else if store.folder != nil, store.repositories.isEmpty, !store.isScanning {
+                        Text("No Git repositories found in this folder.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.secondary)
+                            .padding(20)
+                    }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 14)
                 .padding(.bottom, 12)
             }
-            .scrollIndicators(.visible)
 
-            if store.folder != nil, store.repositories.isEmpty, !store.isScanning {
-                Text("No Git repositories found in this folder.")
-                    .font(.system(size: 13))
+            Button { store.chooseFolder() } label: {
+                Text(store.folder?.abbreviatedPath ?? "Choose a folder…")
+                    .font(.system(size: 11))
                     .foregroundStyle(Theme.secondary)
-                    .padding(20)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .help("Choose monitored folder")
+            .padding(.horizontal, 24)
+            .frame(height: 40)
+            .overlay(alignment: .top) {
+                Rectangle().fill(Theme.border).frame(height: 1)
             }
         }
         .frame(maxHeight: .infinity)
         .background(Theme.sidebar)
+    }
+
+    @ViewBuilder
+    private func menuChoice(_ title: String, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+
+    @ViewBuilder
+    private var repositoryOptions: some View {
+        Button("Choose Folder…", systemImage: "folder.badge.plus") { store.chooseFolder() }
+        Button("Refresh All", systemImage: "arrow.clockwise") { store.refreshAll() }
+            .disabled(store.folder == nil || store.isScanning || store.isFetching)
+        if let repository = store.selectedRepository,
+           let remoteURL = repository.remoteWebURL {
+            Divider()
+            Button("Open Remote Repository", systemImage: "network") {
+                NSWorkspace.shared.open(remoteURL)
+            }
+        }
+        if let folder = store.folder {
+            Divider()
+            Button("Open Monitored Folder", systemImage: "folder") {
+                NSWorkspace.shared.open(folder)
+            }
+        }
     }
 
     @ViewBuilder
@@ -122,7 +358,7 @@ struct ContentView: View {
             RepositoryDetail(repository: repository)
         } else if store.isScanning {
             ProgressView("Scanning repositories…")
-                .tint(Theme.blue)
+                .tint(Theme.primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             emptyState
@@ -130,26 +366,114 @@ struct ContentView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             Image(systemName: "externaldrive")
-                .font(.system(size: 42, weight: .thin))
-                .foregroundStyle(Theme.blue)
+                .font(.system(size: 28, weight: .thin))
+                .foregroundStyle(Theme.secondary)
             Text(store.folder == nil ? "Monitor your repositories" : "No repositories to show")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Theme.primary)
             Text(store.errorMessage ?? "Choose a folder containing your Git repositories.")
-                .font(.system(size: 14))
+                .font(.system(size: 11.5))
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
             Button("Choose Folder…") { store.chooseFolder() }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.blue)
+                .buttonStyle(RepositoryButtonStyle())
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
+private struct ToolbarIconMenu<Content: View>: View {
+    let symbol: String
+    let title: String
+    let value: String
+    var isActive = false
+    @ViewBuilder let content: () -> Content
+    @State private var isHovered = false
+
+    var body: some View {
+        Menu(content: content) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(isActive ? Theme.blue : Theme.secondary)
+                .frame(width: 26, height: 26)
+                .background(isHovered || isActive ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { isHovered = $0 }
+        .help(value.isEmpty ? title : "\(title): \(value)")
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+    }
+}
+
+private struct SidebarResizeHandle: NSViewRepresentable {
+    let width: CGFloat
+    let maximumWidth: CGFloat
+    let onResize: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ResizeView {
+        let view = ResizeView()
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.splitter)
+        view.setAccessibilityLabel("Resize repository sidebar")
+        view.toolTip = "Drag to resize sidebar"
+        return view
+    }
+
+    func updateNSView(_ view: ResizeView, context: Context) {
+        view.sidebarWidth = width
+        view.onResize = onResize
+        view.setAccessibilityValue(width)
+        view.setAccessibilityMinValue(280)
+        view.setAccessibilityMaxValue(maximumWidth)
+    }
+
+    final class ResizeView: NSView {
+        var sidebarWidth: CGFloat = 340
+        var onResize: ((CGFloat) -> Void)?
+        private var dragStart: (x: CGFloat, width: CGFloat)?
+
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .resizeLeftRight)
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            dragStart = (event.locationInWindow.x, sidebarWidth)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let dragStart else { return }
+            onResize?(dragStart.width + event.locationInWindow.x - dragStart.x)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            mouseDragged(with: event)
+            dragStart = nil
+        }
+
+        override func accessibilityPerformIncrement() -> Bool {
+            onResize?(sidebarWidth + 20)
+            return true
+        }
+
+        override func accessibilityPerformDecrement() -> Bool {
+            onResize?(sidebarWidth - 20)
+            return true
+        }
+    }
+}
+
 private struct RepositoryRow: View {
+    @State private var isHovered = false
     let repository: RepositorySnapshot
     let isSelected: Bool
     let action: () -> Void
@@ -157,24 +481,28 @@ private struct RepositoryRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(repository.name)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .help(repository.name)
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.triangle.branch")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                         Text(repository.branch)
                             .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(repository.branch)
                     }
-                    .font(.system(size: 12.5))
+                    .font(.system(size: 11.5))
                     .foregroundStyle(isSelected ? Theme.primary.opacity(0.85) : Theme.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(-1)
 
-                HStack(spacing: 10) {
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(36), spacing: 5, alignment: .trailing), count: min(3, statusCount)), alignment: .trailing, spacing: 6) {
                     if let ahead = repository.ahead, ahead > 0 {
                         StatusBadge(symbol: "arrow.up", value: ahead, color: Theme.blue, label: "commits to push")
                     }
@@ -191,20 +519,21 @@ private struct RepositoryRow: View {
                         StatusBadge(symbol: "square.on.square", value: repository.worktrees.count, color: Theme.cyan, label: "worktrees")
                     }
                 }
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.trailing, 12)
+                .frame(width: statusCount == 0 ? 0 : CGFloat(min(3, statusCount) * 41 - 5))
+                .padding(.trailing, 4)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Theme.secondary)
-                    .frame(width: 16, alignment: .trailing)
+                    .frame(width: 8, alignment: .trailing)
             }
-            .padding(.horizontal, 12)
-            .frame(height: 67)
-            .background(isSelected ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 14)
+            .frame(height: 52)
+            .background(isSelected ? Theme.selection : (isHovered ? Theme.control : .clear), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .accessibilityLabel("\(repository.name), \(repository.branch), \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
         .overlay(alignment: .bottom) {
             if !isSelected {
@@ -214,6 +543,11 @@ private struct RepositoryRow: View {
                     .padding(.horizontal, 12)
             }
         }
+    }
+
+    private var statusCount: Int {
+        [repository.ahead ?? 0, repository.behind ?? 0, repository.changedFileCount,
+         repository.staleBranches.count, repository.worktrees.count].filter { $0 > 0 }.count
     }
 }
 
@@ -226,16 +560,38 @@ private struct StatusBadge: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: symbol)
-                .font(.system(size: symbol == "circle.fill" ? 9 : 13, weight: .medium))
+                .font(.system(size: symbol == "circle.fill" ? 8 : 11, weight: .medium))
                 .frame(width: 13)
                 .foregroundStyle(color)
             Text(value.formatted())
-                .font(.system(size: 12.5, weight: .medium, design: .rounded))
+                .font(.system(size: 11, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(Theme.primary)
         }
         .accessibilityLabel("\(value) \(label)")
-        .help("\(value) \(label)")
+        .overlay {
+            NativeTooltip(text: "\(value) \(label)")
+        }
+    }
+}
+
+/// Native tooltip tracking works for individual badges inside a SwiftUI button label.
+private struct NativeTooltip: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> TooltipView {
+        let view = TooltipView()
+        view.toolTip = text
+        return view
+    }
+
+    func updateNSView(_ view: TooltipView, context: Context) {
+        view.toolTip = text
+    }
+
+    final class TooltipView: NSView {
+        // Tooltip tracking is independent of hit testing; clicks still select the row.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
@@ -247,130 +603,55 @@ private struct RepositoryDetail: View {
     @State private var showUntracked = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            HStack(spacing: 16) {
-                SummaryCard(title: "To push", value: repository.ahead, unit: repository.upstream == nil ? "no upstream" : "commits", symbol: "arrow.up", accent: Theme.blue)
-                SummaryCard(title: "To pull", value: repository.behind, unit: repository.upstream == nil ? "no upstream" : "commits", symbol: "arrow.down", accent: Theme.green)
-                SummaryCard(title: "Working tree", value: repository.changedFileCount, unit: "changed files", symbol: "circle.fill", accent: Theme.amber)
+        VStack(alignment: .leading, spacing: 14) {
+            if let fetchError = repository.fetchError {
+                Label("Remote unavailable · local status shown", systemImage: "exclamationmark.circle")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.amber)
+                    .help(fetchError)
             }
-            .frame(height: 128)
-
-            HStack(spacing: 16) {
-                SummaryCard(title: "Stale branches", value: repository.staleBranches.count, unit: nil, symbol: "arrow.triangle.branch", accent: Theme.purple, compact: true)
-                    .help("Local branches inactive for 90 days, excluding main, master, and branches checked out in worktrees")
-                SummaryCard(title: "Worktrees", value: repository.worktrees.count, unit: nil, symbol: "square.on.square", accent: Theme.cyan, compact: true)
-                    .help("Additional linked Git worktrees")
-            }
-            .frame(height: 94)
-
-            HStack(alignment: .top, spacing: 16) {
+            summaryStrip
+            HStack(alignment: .top, spacing: 12) {
                 commitsPanel
                 workingTreePanel
             }
             .frame(maxHeight: .infinity)
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 22)
-        .padding(.bottom, 12)
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.background)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(repository.name)
-                        .font(.system(size: 33, weight: .bold))
-                        .foregroundStyle(Theme.primary)
-                        .lineLimit(1)
-                    Text(repository.url.abbreviatedPath)
-                        .font(.system(size: 16))
-                        .foregroundStyle(Theme.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
-                }
-                Spacer(minLength: 16)
-                VStack(alignment: .trailing, spacing: 8) {
-                    HStack(spacing: 10) {
-                        IconButton(symbol: "arrow.clockwise", label: "Refresh repository") {
-                            store.refreshSelected()
-                        }
-                        .disabled(store.isFetching || store.isScanning)
-                        IconButton(symbol: "folder", label: "Open in Finder") {
-                            NSWorkspace.shared.open(repository.url)
-                        }
-                    }
-                    Text(statusText)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(repository.fetchError == nil ? Theme.secondary : Theme.amber)
-                        .lineLimit(1)
-                        .help(repository.fetchError ?? "Repository status checked locally")
-                }
-            }
-            HStack(spacing: 14) {
-                Menu {
-                    Text("Current branch: \(repository.branch)")
-                    if !repository.staleBranches.isEmpty {
-                        Divider()
-                        Text("Stale branches")
-                        ForEach(repository.staleBranches, id: \.self) { branch in
-                            Text(branch)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: "arrow.triangle.branch")
-                        Text(repository.branch).lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.leading, 6)
-                    }
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.primary)
-                    .padding(.horizontal, 12)
-                    .frame(height: 38)
-                    .background(Theme.control, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
-                }
-                .menuStyle(.borderlessButton)
-                if let remote = repository.remoteDisplayName, let remoteURL = repository.remoteWebURL {
-                    Button {
-                        NSWorkspace.shared.open(remoteURL)
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: "network")
-                                .font(.system(size: 17))
-                                .foregroundStyle(Theme.primary)
-                            Text(remote)
-                                .lineLimit(1)
-                                .foregroundStyle(Theme.secondary)
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Theme.secondary)
-                        }
-                        .font(.system(size: 14))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open remote repository")
-                }
-            }
+    private var summaryStrip: some View {
+        HStack(spacing: 0) {
+            SummaryMetric(title: "To push", symbol: "arrow.up", color: Theme.blue, value: repository.ahead, unit: repository.upstream == nil ? "no upstream" : "commits")
+            summaryDivider
+            SummaryMetric(title: "To pull", symbol: "arrow.down", color: Theme.green, value: repository.behind, unit: repository.upstream == nil ? "no upstream" : "commits")
+            summaryDivider
+            SummaryMetric(title: "Changed files", symbol: "circle.fill", color: Theme.amber, value: repository.changedFileCount, unit: "files")
+            summaryDivider
+            SummaryMetric(title: "Stale branches", symbol: "arrow.triangle.branch", color: Theme.purple, value: repository.staleBranches.count, unit: "branches")
+                .help("Local branches inactive for 90 days, excluding main, master, and branches checked out in worktrees")
+            summaryDivider
+            SummaryMetric(title: "Worktrees", symbol: "square.on.square", color: Theme.cyan, value: repository.worktrees.count, unit: "worktrees")
+                .help("Additional linked Git worktrees")
         }
+        .padding(.vertical, 18)
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, lineWidth: 1))
     }
 
-    private var statusText: String {
-        if store.isFetching { return "Checking remotes…" }
-        if repository.fetchError != nil { return "Remote unavailable · local status shown" }
-        let minutes = Int(Date().timeIntervalSince(repository.checkedAt) / 60)
-        return minutes < 1 ? "Checked just now" : "Checked \(minutes) min ago"
+    private var summaryDivider: some View {
+        Rectangle().fill(Theme.border).frame(width: 1, height: 64)
     }
 
     private var commitsPanel: some View {
         Panel {
             HStack {
                 Text("Commits")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.primary)
                 Spacer()
                 if repository.commits.count > 4 {
@@ -379,7 +660,7 @@ private struct RepositoryDetail: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.blue)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                 }
             }
         } content: {
@@ -389,32 +670,35 @@ private struct RepositoryDetail: View {
             } else if repository.commits.isEmpty {
                 EmptyPanelText(text: "No commits yet")
             } else {
-                ScrollView {
+                CodexScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(repository.commits.prefix(showAllCommits ? 8 : 5))) { commit in
+                        ForEach(Array(repository.commits.prefix(showAllCommits ? repository.commits.count : 4))) { commit in
                             HStack(alignment: .center, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(commit.hash)
-                                        .font(.system(size: 12, design: .monospaced))
+                                        .font(.system(size: 11.5, design: .monospaced))
                                         .foregroundStyle(Theme.secondary)
                                     Text(commit.subject)
-                                        .font(.system(size: 13))
+                                        .font(.system(size: 12))
                                         .foregroundStyle(Theme.primary)
-                                        .lineLimit(1)
+                                        .lineLimit(2)
+                                        .help(commit.subject)
                                 }
                                 Spacer(minLength: 8)
                                 Text(commit.relativeDate)
-                                    .font(.system(size: 12))
+                                    .font(.system(size: 11.5))
                                     .foregroundStyle(Theme.secondary)
                                     .lineLimit(1)
                             }
-                            .frame(minHeight: 62)
+                            .padding(.vertical, 12)
+                            .frame(minHeight: 64)
                             .overlay(alignment: .bottom) {
                                 Rectangle().fill(Theme.border.opacity(0.55)).frame(height: 1)
                             }
                         }
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.leading, 18)
+                    .padding(.trailing, 28)
                 }
             }
         }
@@ -423,7 +707,7 @@ private struct RepositoryDetail: View {
     private var workingTreePanel: some View {
         Panel {
             Text("Working tree")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Theme.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } content: {
@@ -433,7 +717,7 @@ private struct RepositoryDetail: View {
             } else if repository.changes.isEmpty {
                 EmptyPanelText(text: "Working tree is clean")
             } else {
-                ScrollView {
+                CodexScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ChangeGroup(
                             title: "Modified",
@@ -446,7 +730,8 @@ private struct RepositoryDetail: View {
                             isExpanded: $showUntracked
                         )
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.leading, 18)
+                    .padding(.trailing, 28)
                     .padding(.vertical, 12)
                 }
             }
@@ -454,61 +739,81 @@ private struct RepositoryDetail: View {
     }
 }
 
-private struct IconButton: View {
+private struct ToolbarActionButton: View {
     let symbol: String
-    let label: String
+    let title: String
+    var isRotating = false
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(Theme.primary)
-                .frame(width: 44, height: 40)
-                .background(Theme.control, in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, lineWidth: 1))
+                .font(.system(size: 15, weight: .regular))
+                .symbolEffect(.rotate.clockwise, isActive: isRotating)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(label)
-        .help(label)
+        .foregroundStyle(Theme.secondary)
+        .background(isHovered ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(title)
+        .help(title)
     }
 }
 
-private struct SummaryCard: View {
+private struct RepositoryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Theme.primary)
+            .padding(.horizontal, 16)
+            .frame(height: 34)
+            .background(configuration.isPressed ? Theme.selection : Theme.control, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, lineWidth: 1))
+            .opacity(isEnabled ? 1 : 0.45)
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+private struct SummaryMetric: View {
     let title: String
-    let value: Int?
-    let unit: String?
     let symbol: String
-    let accent: Color
-    var compact = false
+    let color: Color
+    let value: Int?
+    let unit: String
 
     var body: some View {
-        HStack(alignment: compact ? .center : .top, spacing: 14) {
+        HStack(spacing: 8) {
             Image(systemName: symbol)
-                .font(.system(size: compact ? 24 : 25, weight: .medium))
-                .foregroundStyle(accent)
-                .frame(width: compact ? 49 : 54, height: compact ? 49 : 54)
-                .background(accent.opacity(0.13), in: Circle())
-            VStack(alignment: .leading, spacing: compact ? 2 : 4) {
+                .font(.system(size: symbol == "circle.fill" ? 14 : 20, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: 32, height: 32)
+                .background(color.opacity(0.12), in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12))
                     .foregroundStyle(Theme.primary)
                     .lineLimit(1)
-                Text(value.map(String.init) ?? "—")
-                    .font(.system(size: compact ? 29 : 32, weight: .semibold))
-                    .foregroundStyle(Theme.primary)
-                if let unit, !compact {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(value.map(String.init) ?? "—")
+                        .font(.system(size: 28, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.primary)
                     Text(unit)
-                        .font(.system(size: 13))
+                        .font(.system(size: 11))
                         .foregroundStyle(Theme.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                 }
             }
-            Spacer(minLength: 0)
         }
-        .padding(compact ? 18 : 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(accent.opacity(0.065), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(accent.opacity(0.26), lineWidth: 1))
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -524,15 +829,15 @@ private struct Panel<Header: View, Content: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.horizontal, 20)
-                .frame(height: 54)
+                .padding(.horizontal, 18)
+                .frame(height: 46)
             Rectangle().fill(Theme.border.opacity(0.7)).frame(height: 1)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.border, lineWidth: 1))
     }
 }
 
@@ -541,7 +846,7 @@ private struct EmptyPanelText: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13))
+            .font(.system(size: 11))
             .foregroundStyle(Theme.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -558,20 +863,20 @@ private struct ChangeGroup: View {
                 Button { isExpanded.toggle() } label: {
                     HStack(spacing: 9) {
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                             .rotationEffect(.degrees(isExpanded ? 0 : -90))
                         Text(title)
-                            .font(.system(size: 14, weight: .medium))
-                        Text("\(changes.count)")
                             .font(.system(size: 12, weight: .medium))
+                        Text("\(changes.count)")
+                            .font(.system(size: 10.5, weight: .medium))
                             .foregroundStyle(Theme.secondary)
                             .padding(.horizontal, 8)
-                            .frame(height: 25)
+                            .frame(height: 20)
                             .background(Theme.control, in: Capsule())
                         Spacer()
                     }
                     .foregroundStyle(Theme.primary)
-                    .frame(height: 38)
+                    .frame(height: 30)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -579,14 +884,15 @@ private struct ChangeGroup: View {
                     ForEach(changes) { change in
                         HStack(spacing: 10) {
                             Image(systemName: "doc")
-                                .font(.system(size: 17, weight: .light))
-                                .foregroundStyle(Theme.blue)
+                                .font(.system(size: 13, weight: .light))
+                                .foregroundStyle(Theme.secondary)
                                 .frame(width: 20)
                             Text(change.path)
-                                .font(.system(size: 12.5))
+                                .font(.system(size: 12))
                                 .foregroundStyle(Theme.primary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                .help(change.path)
                             Spacer(minLength: 3)
                             if let added = change.added, added > 0 {
                                 Text("+\(added)")
@@ -597,9 +903,8 @@ private struct ChangeGroup: View {
                                     .foregroundStyle(Theme.red)
                             }
                         }
-                        .font(.system(size: 12.5, design: .monospaced))
-                        .frame(height: 43)
-                        .padding(.leading, 27)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .frame(height: 42)
                         .overlay(alignment: .bottom) {
                             Rectangle().fill(Theme.border.opacity(0.48)).frame(height: 1)
                         }
@@ -608,4 +913,95 @@ private struct ChangeGroup: View {
             }
         }
     }
+}
+
+/// Keeps native scrolling while using the thin, trackless indicators of the Codex theme.
+private struct CodexScrollView<Content: View>: View {
+    @ViewBuilder let content: Content
+    @State private var position = ScrollPosition()
+    @State private var metrics = ScrollbarMetrics()
+    @State private var dragStartOffset: CGFloat?
+    @State private var isHovered = false
+
+    var body: some View {
+        ScrollView {
+            content
+        }
+        // `.hidden` can still show native scrollers when macOS is set to Always.
+        .scrollIndicators(.never)
+        .scrollPosition($position)
+        .onScrollGeometryChange(for: ScrollbarMetrics.self) { geometry in
+            ScrollbarMetrics(
+                contentHeight: geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom,
+                viewportHeight: geometry.containerSize.height,
+                offset: geometry.contentOffset.y + geometry.contentInsets.top,
+                topInset: geometry.contentInsets.top
+            )
+        } action: { _, newValue in
+            metrics = newValue
+        }
+        .overlay(alignment: .trailing) {
+            if metrics.maximumOffset > 0 {
+                GeometryReader { geometry in
+                    let trackHeight = max(0, geometry.size.height - 8)
+                    let thumbHeight = min(trackHeight, max(28, trackHeight * metrics.viewportHeight / metrics.contentHeight))
+                    let travel = trackHeight - thumbHeight
+                    let thumbOffset = travel * metrics.progress
+
+                    ZStack(alignment: .top) {
+                        Color.clear
+                        Capsule()
+                            .fill(isHovered || dragStartOffset != nil ? Theme.scrollbarHover : Theme.scrollbar)
+                            .frame(width: 6, height: thumbHeight)
+                            .offset(y: thumbOffset)
+                    }
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+                    .onHover { isHovered = $0 }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                guard travel > 0 else { return }
+                                if dragStartOffset == nil {
+                                    let startY = value.startLocation.y - 4
+                                    let isOnThumb = startY >= thumbOffset && startY <= thumbOffset + thumbHeight
+                                    dragStartOffset = isOnThumb
+                                        ? metrics.clampedOffset
+                                        : min(metrics.maximumOffset, max(0, (startY - thumbHeight / 2) / travel * metrics.maximumOffset))
+                                }
+                                scroll(to: (dragStartOffset ?? 0) + value.translation.height / travel * metrics.maximumOffset)
+                            }
+                            .onEnded { _ in dragStartOffset = nil }
+                    )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Vertical scroll bar")
+                    .accessibilityValue("\(Int(metrics.progress * 100)) percent")
+                    .accessibilityAdjustableAction { direction in
+                        switch direction {
+                        case .increment: scroll(to: metrics.clampedOffset + metrics.viewportHeight * 0.8)
+                        case .decrement: scroll(to: metrics.clampedOffset - metrics.viewportHeight * 0.8)
+                        @unknown default: break
+                        }
+                    }
+                }
+                .frame(width: 12)
+                .padding(.trailing, 2)
+            }
+        }
+    }
+
+    private func scroll(to offset: CGFloat) {
+        position.scrollTo(y: min(metrics.maximumOffset, max(0, offset)) - metrics.topInset)
+    }
+}
+
+private struct ScrollbarMetrics: Equatable {
+    var contentHeight: CGFloat = 0
+    var viewportHeight: CGFloat = 0
+    var offset: CGFloat = 0
+    var topInset: CGFloat = 0
+
+    var maximumOffset: CGFloat { max(0, contentHeight - viewportHeight) }
+    var clampedOffset: CGFloat { min(maximumOffset, max(0, offset)) }
+    var progress: CGFloat { maximumOffset > 0 ? clampedOffset / maximumOffset : 0 }
 }

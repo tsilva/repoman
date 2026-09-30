@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 @main
 struct RepoManApp: App {
+    @NSApplicationDelegateAdaptor(RepoManAppDelegate.self) private var appDelegate
     @StateObject private var store = RepositoryStore()
 
     var body: some Scene {
@@ -12,7 +14,8 @@ struct RepoManApp: App {
                 .preferredColorScheme(.dark)
         }
         .defaultSize(width: 1_586, height: 990)
-        .windowToolbarStyle(.unifiedCompact)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified)
         .commands {
             CommandMenu("Repositories") {
                 Button("Choose Folder…") { store.chooseFolder() }
@@ -22,5 +25,14 @@ struct RepoManApp: App {
                     .disabled(store.folder == nil || store.isScanning || store.isFetching)
             }
         }
+    }
+}
+
+private final class RepoManAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Apply the bundled artwork even when the Dock has cached a placeholder.
+        guard let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+              let icon = NSImage(contentsOf: url) else { return }
+        NSApplication.shared.applicationIconImage = icon
     }
 }
