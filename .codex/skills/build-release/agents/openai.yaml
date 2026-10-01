@@ -1,4 +1,4 @@
 interface:
   display_name: "Build Release"
-  short_description: "Build and verify RepoMan macOS releases"
-  default_prompt: "Use $build-release to build and verify a RepoMan DMG locally."
+  short_description: "Build, verify, and publish RepoMan macOS releases"
+  default_prompt: "Use $build-release to build, verify, and publish a RepoMan GitHub Release with its DMG and checksum."

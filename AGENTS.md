@@ -2,7 +2,7 @@
 
 ## Project skills
 
-- Use `.codex/skills/build-release/SKILL.md` for `/build-release` and for RepoMan release builds, packaging, or GitHub publication. Local builds do not publish; pushing a version tag is the publication trigger.
+- Use `.codex/skills/build-release/SKILL.md` for `/build-release` and for RepoMan release builds, packaging, or GitHub publication. A bare invocation builds, verifies, and publishes a GitHub Release; explicitly local builds do not publish. Pushing a version tag is the publication trigger.
 
 ## Project layout
 

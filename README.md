@@ -54,6 +54,10 @@ See [the detector, recipe, and task architecture](docs/issues.md) for extending 
 
 ## Commands
 
+In Codex, `$build-release` or `/build-release` builds, verifies, and publishes a
+GitHub Release. Request a local build explicitly to keep the artifacts local.
+The shell helper below builds local artifacts without publishing.
+
 ```bash
 swift test  # run core and Git integration tests
 
