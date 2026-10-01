@@ -11,9 +11,45 @@ public enum GitRepositoryScanner {
             guard (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
                 return false
             }
-            return FileManager.default.fileExists(atPath: child.appendingPathComponent(".git").path)
+            var isGitDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(
+                atPath: child.appendingPathComponent(".git").path,
+                isDirectory: &isGitDirectory
+            ) else { return false }
+            if isGitDirectory.boolValue { return true }
+
+            // A .git file can identify either a linked worktree or a primary
+            // repository with separate metadata. Only linked worktrees have
+            // different per-worktree and common Git directories.
+            // Discovery only reads metadata; never wait for a Git subprocess here.
+            guard let pointer = try? metadataText(at: child.appendingPathComponent(".git")),
+                  pointer.hasPrefix("gitdir: ") else { return false }
+            let path = String(pointer.dropFirst("gitdir: ".count))
+            guard !path.isEmpty else { return false }
+            let directory = URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: child.path, isDirectory: true))
+                .standardizedFileURL.resolvingSymlinksInPath()
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  FileManager.default.fileExists(atPath: directory.appendingPathComponent("HEAD").path) else { return false }
+            let commonFile = directory.appendingPathComponent("commondir")
+            guard FileManager.default.fileExists(atPath: commonFile.path) else { return true }
+            guard let commonPath = try? metadataText(at: commonFile), !commonPath.isEmpty else { return false }
+            let common = URL(fileURLWithPath: commonPath, relativeTo: URL(fileURLWithPath: directory.path, isDirectory: true))
+                .standardizedFileURL.resolvingSymlinksInPath()
+            return directory.path == common.path
         }
         .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private static func metadataText(at url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 4_097) ?? Data()
+        guard data.count <= 4_096, let text = String(data: data, encoding: .utf8) else {
+            throw GitError.failed("Invalid Git directory metadata.")
+        }
+        return text.trimmingCharacters(in: .newlines)
     }
 
     public static func scan(
@@ -21,6 +57,11 @@ public enum GitRepositoryScanner {
         now: Date = Date(),
         includeDetails: Bool = true
     ) throws -> RepositorySnapshot {
+        var inspectionErrors: [String: String] = [:]
+        func inspect(_ key: String, _ arguments: [String]) -> String {
+            do { return try GitRunner.text(arguments, at: url) }
+            catch { inspectionErrors[key] = error.localizedDescription; return "" }
+        }
         let branch = (try? GitRunner.text(["symbolic-ref", "--quiet", "--short", "HEAD"], at: url))
             ?? (try? GitRunner.text(["rev-parse", "--short", "HEAD"], at: url))
             ?? "No commits"
@@ -55,7 +96,7 @@ public enum GitRepositoryScanner {
             includeLineCounts: includeDetails
         )
 
-        let worktreeText = (try? GitRunner.text(["worktree", "list", "--porcelain"], at: url)) ?? ""
+        let worktreeText = inspect("worktrees", ["worktree", "list", "--porcelain"])
         let allWorktrees = worktreeText.split(separator: "\n")
             .filter { $0.hasPrefix("worktree ") }
             .map { String($0.dropFirst("worktree ".count)) }
@@ -64,9 +105,7 @@ public enum GitRepositoryScanner {
             .map { String($0.dropFirst("branch refs/heads/".count)) })
         let linkedWorktrees = Array(allWorktrees.dropFirst()).map { URL(fileURLWithPath: $0).lastPathComponent }
 
-        let branchText = (try? GitRunner.text(
-            ["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)", "refs/heads"], at: url
-        )) ?? ""
+        let branchText = inspect("branches", ["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)", "refs/heads"])
         let staleCutoff = now.addingTimeInterval(-90 * 24 * 60 * 60).timeIntervalSince1970
         let staleBranches = branchText.split(separator: "\n").compactMap { line -> String? in
             let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
@@ -85,8 +124,11 @@ public enum GitRepositoryScanner {
                 ["log", "-n", "8", "--format=%h%x1f%s%x1f%cr%x1e"], at: url
             )) ?? Data()) : Data()
         let commits = parseCommits(log)
-        let remoteURL = includeDetails
-            ? (try? GitRunner.text(["config", "--get", "remote.origin.url"], at: url)) : nil
+        // CI checks also run during summary scans. Use the tracked remote when available.
+        let remote = (try? GitRunner.text(["config", "--get", "branch.\(branch).remote"], at: url)) ?? "origin"
+        let configuredURL = try? GitRunner.text(["config", "--get", "remote.\(remote).url"], at: url)
+        let remoteNames = (try? GitRunner.text(["remote"], at: url))?.split(separator: "\n").map(String.init) ?? []
+        let remoteURL = configuredURL ?? remoteNames.first.flatMap { try? GitRunner.text(["config", "--get", "remote.\($0).url"], at: url) }
 
         return RepositorySnapshot(
             url: url,
@@ -102,7 +144,8 @@ public enum GitRepositoryScanner {
             commits: commits,
             detailsLoaded: includeDetails,
             checkedAt: now,
-            rootFiles: try? rootFiles(at: url)
+            rootFiles: try? rootFiles(at: url),
+            inspectionErrors: inspectionErrors
         )
     }
 
@@ -116,14 +159,20 @@ public enum GitRepositoryScanner {
     }
 
     public static func fetch(_ url: URL) throws {
-        let branch = try? GitRunner.text(["symbolic-ref", "--quiet", "--short", "HEAD"], at: url)
-        let remote = branch.flatMap { try? GitRunner.text(["config", "--get", "branch.\($0).remote"], at: url) } ?? "origin"
-        _ = try GitRunner.run(
-            ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15",
-             "fetch", "--quiet", "--no-tags", "--", remote],
-            at: url,
-            timeout: 45
-        )
+        let remotes = try GitRunner.text(["remote"], at: url).split(separator: "\n").map(String.init)
+        guard remotes.count <= 16 else { throw GitError.failed("More than 16 remotes need refreshing.") }
+        let deadline = Date().addingTimeInterval(45)
+        for remote in remotes {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { throw GitError.failed("Remote refresh exceeded its 45-second limit.") }
+            // Explicit destinations keep custom/mirror fetch settings from updating local branches or tags.
+            _ = try GitRunner.run(
+                ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15",
+                 "fetch", "--quiet", "--prune", "--no-prune-tags", "--no-tags", "--no-recurse-submodules", "--refmap=",
+                 "--", remote, "+refs/heads/*:refs/remotes/\(remote)/*"],
+                at: url, timeout: remaining
+            )
+        }
     }
 
     private static func workingTreeChanges(

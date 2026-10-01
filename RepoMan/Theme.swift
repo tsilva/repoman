@@ -1,5 +1,20 @@
 import SwiftUI
 
+struct RepositoryCheckProgressRing: View {
+    let progress: RepositoryCheckProgress
+
+    var body: some View {
+        Circle().stroke(Theme.secondary.opacity(0.25), lineWidth: 2)
+            .overlay {
+                Circle().trim(from: 0, to: progress.fraction)
+                    .stroke(Theme.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .accessibilityLabel("Repository checks")
+            .accessibilityValue("\(progress.completed) of \(progress.total) completed, \(progress.remaining) remaining")
+    }
+}
+
 enum Theme {
     static let background = color(0x181818)
     static let sidebar = color(0x212121)
@@ -7,6 +22,7 @@ enum Theme {
     static let control = color(0x282828)
     static let field = color(0x282828)
     static let selection = color(0x333333)
+    static let scrollbarWidth: CGFloat = 6
     static let scrollbar = color(0x383838)
     static let scrollbarHover = color(0x505050)
     static let border = color(0x353535)

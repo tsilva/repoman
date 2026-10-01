@@ -5,6 +5,16 @@ description: Build and verify RepoMan macOS DMGs, and coordinate version-tagged 
 
 # Build Release
 
+Read and apply the shared `$release-workflow` skill at
+`/Users/tsilva/.codex/skills/release-workflow/SKILL.md` before execution.
+It owns common preflight, publication safeguards, `$push` integration,
+workflow monitoring, verification, and reporting. The rules below are this
+project's adapter; they retain its invocation default and required gates.
+If the shared skill is unavailable, stop and report the missing dependency.
+
+A bare `$build-release` or `/build-release` invocation builds local artifacts.
+Publication requires the explicit release or tag-push request described below.
+
 Use the repository-owned helper for local builds and for the tag-triggered GitHub workflow. A local build does not create a tag or publish a release.
 
 ## Local build
@@ -21,6 +31,6 @@ For an install request, use the DMG printed by the helper. Stop the running Repo
 
 ## GitHub publication
 
-Only publish when the user asks for a GitHub Release or explicitly authorizes a tag push. Require a clean current `main`, synchronize with `origin/main`, and check that the `vX.Y.Z` tag and release do not already exist. The [release workflow](../../../.github/workflows/release.yml) runs this same helper when a version tag is pushed, then uploads the DMG and checksum. Monitor the workflow and confirm the release URL and exact asset names. Do not tag, push, replace assets, or publish as a side effect of a local build request.
+Only publish when the user asks for a GitHub Release or explicitly authorizes a tag push. Require a clean current `main`, synchronize with `origin/main`, and check that the `vX.Y.Z` tag and release do not already exist. The [release workflow](../../../.github/workflows/release.yml) runs this same helper when a version tag is pushed, then uploads the DMG and checksum. Follow shared monitoring for the exact tag-push SHA and require the DMG and checksum on its GitHub Release.
 
 These builds are ad-hoc signed and not notarized. Report that status with the artifact path or release URL.

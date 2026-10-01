@@ -5,7 +5,6 @@ import XCTest
 final class RepositoryIssuesTests: XCTestCase {
     private var root: URL!
     private let issues = RepositoryIssueCatalog()
-    private let actions = RepositoryActionCatalog()
 
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("RepoManIssues-" + UUID().uuidString)
@@ -28,15 +27,47 @@ final class RepositoryIssuesTests: XCTestCase {
         XCTAssertEqual(issues.findings(in: unknown).map(\.checkID), ["inspection.files"])
     }
 
+    func testFinishedLicenseRepairRemainsInIssueListAfterRefreshAndReload() throws {
+        let repo = try repository("license", initialFiles: ["README.md", ".gitignore"])
+        let before = try GitRepositoryScanner.scan(repo)
+        let finding = try XCTUnwrap(issues.findings(in: before).first { $0.checkID == "files.license" })
+        var task = RepairTask(finding: finding, repository: before, prompt: "Add MIT License")
+        task.state = .running
+        let running = RepositoryIssueListItem.items(findings: issues.findings(in: before), tasks: [task], includeCompleted: true)
+        XCTAssertEqual(running.first { $0.finding.id == finding.id }?.task?.id, task.id)
+
+        try write("LICENSE", "MIT License", in: repo)
+        let after = try GitRepositoryScanner.scan(repo)
+        let verification = issues.verify(finding, in: after)
+        guard case .absent = verification else { return XCTFail("License finding should be resolved") }
+        task.state = .resolved
+        task.verification = verification
+        task.upsertConversation(RepairConversationEntry(id: "reply", kind: .assistant, text: "Added LICENSE."))
+        let storage = RepairTaskStorage(url: root.appendingPathComponent("repairs/tasks.json"))
+        try storage.save([task])
+
+        let currentFindings = issues.findings(in: after)
+        let visible = RepositoryIssueListItem.items(findings: currentFindings, tasks: try storage.load(), includeCompleted: true)
+        let finished = try XCTUnwrap(visible.first { $0.task?.id == task.id })
+        XCTAssertEqual(finished.finding, finding)
+        XCTAssertEqual(finished.task?.state, .resolved)
+        XCTAssertEqual(finished.task?.conversation, task.conversation)
+        XCTAssertFalse(finished.isArchived)
+        XCTAssertEqual(visible.filter { $0.finding.id == finding.id }.count, 1)
+        // Finished rows remain selectable without becoming outstanding findings again.
+        XCTAssertFalse(RepositoryIssueListItem.items(findings: currentFindings, tasks: [task])
+            .contains { $0.finding.id == finding.id })
+    }
+
     func testDivergenceProducesOneFindingAndWorktreesAreInformational() {
         let snapshot = RepositorySnapshot(url: root, name: "repo", branch: "feature", upstream: "origin/feature", remoteURL: nil,
                                            ahead: 2, behind: 3, changes: [], staleBranches: ["old"], worktrees: ["linked"], commits: [],
                                            rootFiles: ["README.md", ".gitignore", "LICENSE"])
         XCTAssertEqual(issues.findings(in: snapshot).map(\.checkID), ["git.diverged", "git.staleBranches", "git.worktrees"])
-        XCTAssertEqual(issues.findings(in: snapshot).first?.actionIDs, ["git.inspect"])
+        XCTAssertEqual(issues.findings(in: snapshot).first?.recipeIDs, ["git.inspect"])
         let informational = issues.findings(in: snapshot, disabledChecks: ["git.diverged"])
         XCTAssertEqual(informational.count, 2)
-        XCTAssertTrue(informational.allSatisfy { $0.severity == .information && $0.actionIDs.isEmpty })
+        XCTAssertTrue(informational.allSatisfy { $0.severity == .information })
         XCTAssertTrue(informational[0].evidence.contains("old"))
         XCTAssertTrue(informational[1].evidence.contains("linked"))
     }
@@ -48,8 +79,6 @@ final class RepositoryIssuesTests: XCTestCase {
         let findings = issues.findings(in: try GitRepositoryScanner.scan(repo))
         XCTAssertTrue(findings.contains { $0.checkID == "files.readme" })
         XCTAssertTrue(findings.contains { $0.checkID == "files.gitignore" })
-        XCTAssertThrowsError(try actions.prepare("files.readme", at: repo))
-        XCTAssertThrowsError(try actions.prepare("files.gitignore", at: repo))
     }
 
     func testUnknownUpstreamCountsRemainVisibleAsUnknown() {
@@ -72,161 +101,54 @@ final class RepositoryIssuesTests: XCTestCase {
         XCTAssertEqual(Set(first.map(\.id)).count, 2)
     }
 
-    func testFilePreviewIsReadOnlyAndEditableDraftIsVerifiedAfterExecution() throws {
-        let repo = try repository("python")
-        try write("pyproject.toml", "[project]\nname = 'example'\n", in: repo)
-        var plan = try actions.prepare("files.gitignore", at: repo)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent(".gitignore").path))
-        XCTAssertTrue(plan.content!.contains(".venv/"))
-        XCTAssertFalse(plan.content!.contains("node_modules/"))
-        plan.content! += "local-output/\n"
-        let result = try actions.execute(plan)
-        XCTAssertTrue(try String(contentsOf: repo.appendingPathComponent(".gitignore"), encoding: .utf8).contains("local-output/"))
-        XCTAssertFalse(issues.findings(in: result.snapshot).contains { $0.checkID == "files.gitignore" })
-        XCTAssertTrue(issues.findings(in: result.snapshot).contains { $0.checkID == "git.changes" })
-        XCTAssertThrowsError(try actions.execute(plan))
-    }
-
-    func testAlternateIgnoredReadmeCreatedAfterPreviewIsNotOverwritten() throws {
-        let repo = try repository("readme")
-        let plan = try actions.prepare("files.readme", at: repo)
-        try write(".git/info/exclude", "README.rst\n", in: repo)
-        try write("README.rst", "Keep this", in: repo)
-        XCTAssertThrowsError(try actions.execute(plan))
-        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("README.rst"), encoding: .utf8), "Keep this")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("README.md").path))
-    }
-
-    func testExistingIgnoredSymlinkIsNeverOverwritten() throws {
-        let repo = try repository("symlink")
-        let plan = try actions.prepare("files.gitignore", at: repo)
-        let outside = root.appendingPathComponent("outside.txt")
-        try "Keep outside".write(to: outside, atomically: true, encoding: .utf8)
-        try FileManager.default.createSymbolicLink(at: repo.appendingPathComponent(".gitignore"), withDestinationURL: outside)
-        XCTAssertThrowsError(try actions.execute(plan))
-        XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "Keep outside")
-    }
-
-    func testSelectedCommitPreservesOtherStagedChangesAndUsesLiteralPaths() throws {
-        let repo = try repository("commit", initialFiles: ["a.txt", "b.txt"])
-        try write("a.txt", "selected\n", in: repo)
-        try write("b.txt", "leave staged\n", in: repo)
-        try git(["add", "b.txt"], at: repo)
-        try write("literal[1].txt", "new\n", in: repo)
-        let plan = try actions.prepare("git.commit", at: repo, input: .init(paths: ["a.txt", "literal[1].txt"], message: "Selected files"))
-        XCTAssertTrue(plan.preview.contains("+new"))
-        let result = try actions.execute(plan)
-        XCTAssertEqual(try text(["show", "HEAD:a.txt"], at: repo), "selected")
-        XCTAssertEqual(try text(["show", "HEAD:b.txt"], at: repo), "initial")
-        XCTAssertEqual(try text(["diff", "--cached", "--name-only"], at: repo), "b.txt")
-        XCTAssertEqual(result.snapshot.changedFileCount, 1)
-    }
-
-    func testPartialStagingIncludesFullSelectedContents() throws {
-        let repo = try repository("partial", initialFiles: ["a.txt"])
-        try write("a.txt", "staged\n", in: repo)
-        try git(["add", "a.txt"], at: repo)
-        try write("a.txt", "full working copy\n", in: repo)
-        let plan = try actions.prepare("git.commit", at: repo, input: .init(paths: ["a.txt"], message: "Full file"))
-        XCTAssertTrue(plan.preview.contains("full working copy"))
-        _ = try actions.execute(plan)
-        XCTAssertEqual(try text(["show", "HEAD:a.txt"], at: repo), "full working copy")
-    }
-
-    func testFileContentChangeInvalidatesCommitPreviewEvenWhenStatusIsUnchanged() throws {
-        let repo = try repository("stale", initialFiles: ["a.txt"])
-        try write("a.txt", "first\n", in: repo)
-        let plan = try actions.prepare("git.commit", at: repo, input: .init(paths: ["a.txt"], message: "Preview"))
-        let before = try text(["status", "--porcelain"], at: repo)
-        try write("a.txt", "second\n", in: repo)
-        XCTAssertEqual(try text(["status", "--porcelain"], at: repo), before)
-        XCTAssertThrowsError(try actions.execute(plan))
-        XCTAssertEqual(try text(["log", "-1", "--format=%s"], at: repo), "Initial")
-    }
-
-    func testInitialCommitCannotIncludeUnselectedStagedFiles() throws {
-        let repo = try repository("initial")
-        try write("a.txt", "a", in: repo)
-        try write("b.txt", "b", in: repo)
-        try git(["add", "b.txt"], at: repo)
-        XCTAssertThrowsError(try actions.prepare("git.commit", at: repo, input: .init(paths: ["a.txt"], message: "Initial")))
-        let plan = try actions.prepare("git.commit", at: repo, input: .init(paths: ["a.txt", "b.txt"], message: "Initial"))
-        _ = try actions.execute(plan)
-        XCTAssertEqual(try text(["ls-tree", "--name-only", "HEAD"], at: repo), "a.txt\nb.txt")
-    }
-
-    func testRenameAndDetachedHeadCommitAreBlockedBeforeStaging() throws {
-        let repo = try repository("rename", initialFiles: ["a.txt"])
-        try git(["mv", "a.txt", "renamed.txt"], at: repo)
-        XCTAssertThrowsError(try actions.prepare("git.commit", at: repo, input: .init(paths: ["renamed.txt"], message: "Rename")))
-        try git(["reset", "--hard", "HEAD"], at: repo)
-        try git(["checkout", "--detach"], at: repo)
-        try write("a.txt", "change", in: repo)
-        XCTAssertThrowsError(try actions.prepare("git.commit", at: repo, input: .init(paths: ["a.txt"], message: "Detached")))
-    }
-
-    func testFastForwardPullAndPushUseConfiguredUpstream() throws {
-        let (repo, other) = try remoteRepositories()
-        try write("remote.txt", "remote\n", in: other)
-        try git(["add", "."], at: other)
-        try git(["commit", "-m", "Remote change"], at: other)
-        try git(["push"], at: other)
-        let pull = try actions.prepare("git.pull", at: repo)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("remote.txt").path))
-        let pulled = try actions.execute(pull)
-        XCTAssertEqual(pulled.snapshot.behind, 0)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("remote.txt").path))
-        try write("local.txt", "local\n", in: repo)
-        try git(["add", "."], at: repo)
-        try git(["commit", "-m", "Local change"], at: repo)
-        let push = try actions.prepare("git.push", at: repo)
-        XCTAssertTrue(push.preview.contains("Local change"))
-        XCTAssertEqual(try actions.execute(push).snapshot.ahead, 0)
-        try git(["fetch"], at: other)
-        XCTAssertEqual(try text(["rev-parse", "origin/main"], at: other), try text(["rev-parse", "HEAD"], at: repo))
-    }
-
-    func testPullBlocksDirtyTreeAndNewRemoteCommitsAfterPreview() throws {
-        let (repo, other) = try remoteRepositories()
-        try write("remote.txt", "first\n", in: other)
-        try git(["add", "."], at: other)
-        try git(["commit", "-m", "First remote"], at: other)
-        try git(["push"], at: other)
-        try write("a.txt", "dirty", in: repo)
-        XCTAssertThrowsError(try actions.prepare("git.pull", at: repo))
-        try git(["restore", "a.txt"], at: repo)
-        let plan = try actions.prepare("git.pull", at: repo)
-        let originalHead = try text(["rev-parse", "HEAD"], at: repo)
-        try write("remote.txt", "second\n", in: other)
-        try git(["add", "."], at: other)
-        try git(["commit", "-m", "Second remote"], at: other)
-        try git(["push"], at: other)
-        XCTAssertThrowsError(try actions.execute(plan))
-        XCTAssertEqual(try text(["rev-parse", "HEAD"], at: repo), originalHead)
-    }
-
-    func testLicenseRequiresExplicitInputAndDemoCannotExecute() throws {
-        let repo = try repository("license")
-        XCTAssertThrowsError(try actions.prepare("files.license", at: repo))
-        let plan = try actions.prepare("files.license", at: repo, input: .init(copyrightHolder: "Example Author"))
-        XCTAssertTrue(plan.content!.contains("Example Author"))
-        XCTAssertTrue(plan.content!.contains("MIT License"))
-        _ = try actions.execute(plan)
-        let demo = try actions.demonstrationPlan("files.readme", snapshot: GitRepositoryScanner.scan(repo), input: .init())
-        XCTAssertThrowsError(try actions.execute(demo))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("README.md").path))
-    }
-
-    func testActionRegistryCanBeExtendedWithoutChangingTheRunner() throws {
-        let repo = try repository("extended")
-        let custom = RepositoryActionDefinition(id: "custom.inspect", title: "Custom", applyTitle: "Inspect", mutatesRepository: false,
-                                                prepare: { url, input in
-            try RepositoryActionPlan.capture(at: url, actionID: "custom.inspect", title: "Custom", explanation: "Read-only", preview: "Custom preview", input: input)
-        }, execute: { plan in
-            RepositoryActionResult(message: "Custom result", snapshot: try GitRepositoryScanner.scan(plan.repositoryURL))
+    func testInspectionReportsProgressAndFindingsBeforeSlowChecksFinish() async {
+        let snapshot = RepositorySnapshot(url: root, name: "progress", branch: "main", upstream: nil, remoteURL: nil,
+                                          ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
+        let gate = InspectionTestGate()
+        // Unblock on failure too, so a scheduler regression fails instead of hanging the suite.
+        let watchdog = Task {
+            do { try await Task.sleep(for: .seconds(2)); await gate.open() } catch {}
+        }
+        defer { watchdog.cancel() }
+        let recorder = InspectionProgressRecorder()
+        let catalog = RepositoryIssueCatalog(checks: [
+            RepositoryCheck(id: "fast", title: "Fast", category: .setup, symbol: "doc", inspect: { context in
+                [RepositoryFinding(repositoryID: context.snapshot.id, checkID: "fast", title: "Found early",
+                                   evidence: "Evidence", category: .setup, symbol: "doc")]
+            }),
+            RepositoryCheck(id: "slow", title: "Slow", category: .setup, symbol: "doc", inspect: { _ in
+                await gate.wait()
+                return []
+            }),
+            RepositoryCheck(id: "unavailable", title: "Unavailable", category: .setup, symbol: "doc", inspect: { _ in
+                throw GitError.failed("Unavailable")
+            }),
+            RepositoryCheck(id: "empty", title: "Empty", category: .setup, symbol: "doc", detect: { _ in [] }),
+            RepositoryCheck(id: "next-batch", title: "Next batch", category: .setup, symbol: "doc", detect: { _ in [] })
+        ])
+        let final = await catalog.inspect(snapshot, onProgress: { report in
+            await recorder.append(report)
+            if report.results["next-batch"] != nil { await gate.open() }
         })
-        let catalog = RepositoryActionCatalog(actions: [custom])
-        XCTAssertEqual(try catalog.execute(catalog.prepare("custom.inspect", at: repo)).message, "Custom result")
+        let reports = await recorder.reports
+        XCTAssertEqual(reports.map { $0.results.count }, Array(0...5))
+        XCTAssertTrue(reports.allSatisfy { $0.checkOrder.count == 5 })
+        XCTAssertTrue(reports.contains { !$0.findings().isEmpty && $0.results["slow"] == nil })
+        XCTAssertTrue(reports.contains { $0.results["next-batch"] != nil && $0.results["slow"] == nil })
+        XCTAssertEqual(final.unavailableChecks["unavailable"], "Unavailable")
+        XCTAssertEqual(final.findings().map(\.title), ["Found early"])
+        XCTAssertEqual(reports.last?.results.count, final.results.count)
+    }
+
+    func testEmptyInspectionReportsZeroChecks() async {
+        let snapshot = RepositorySnapshot(url: root, name: "empty", branch: "main", upstream: nil, remoteURL: nil,
+                                          ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
+        let recorder = InspectionProgressRecorder()
+        let report = await RepositoryIssueCatalog(checks: []).inspect(snapshot, onProgress: { await recorder.append($0) })
+        let reports = await recorder.reports
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertTrue(report.results.isEmpty)
+        XCTAssertTrue(report.checkOrder.isEmpty)
     }
 
     private func repository(_ name: String, initialFiles: [String] = []) throws -> URL {
@@ -266,4 +188,23 @@ final class RepositoryIssuesTests: XCTestCase {
     }
     private func git(_ arguments: [String], at repo: URL) throws { _ = try GitRunner.run(arguments, at: repo) }
     private func text(_ arguments: [String], at repo: URL) throws -> String { try GitRunner.text(arguments, at: repo) }
+}
+
+private actor InspectionProgressRecorder {
+    var reports: [RepositoryInspectionReport] = []
+    func append(_ report: RepositoryInspectionReport) { reports.append(report) }
+}
+
+private actor InspectionTestGate {
+    private var isOpen = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func open() {
+        isOpen = true
+        continuation?.resume()
+        continuation = nil
+    }
 }

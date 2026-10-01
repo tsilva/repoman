@@ -4,9 +4,10 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var store: RepositoryStore
     @State private var search = ""
-    @State private var repositoryFilter: RepositoryFilter = .all
-    @State private var repositorySort: RepositorySort = .name
-    @State private var sortAscending = true
+    @State private var showsRepositoryChanges = false
+    @AppStorage("repositoryFilter") private var repositoryFilter: RepositoryFilter = .all
+    @AppStorage("repositorySort") private var repositorySort: RepositorySort = .name
+    @AppStorage("repositorySortAscending") private var sortAscending = true
     @AppStorage("sidebarWidth") private var sidebarWidth = 340.0
     @AppStorage("sidebarVisible") private var sidebarVisible = true
     @FocusState private var searchFocused: Bool
@@ -28,7 +29,7 @@ struct ContentView: View {
                     .frame(width: resizeHandleWidth)
                     .background {
                         HStack(spacing: 0) {
-                            Theme.sidebar
+                            SidebarBackground()
                             Theme.background
                         }
                         .overlay {
@@ -41,8 +42,8 @@ struct ContentView: View {
                 }
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.background, ignoresSafeAreaEdges: [])
             }
-            .background(Theme.background)
             .toolbar {
                 // Recreate the native item on width changes so AppKit updates its minimum size.
                 ToolbarItem(id: "repository-topbar-\(Int(geometry.size.width))", placement: .navigation) {
@@ -54,12 +55,11 @@ struct ContentView: View {
             }
         }
         .font(.system(size: 12))
-        .toolbarBackground(Theme.sidebar, for: .windowToolbar)
+        .containerBackground(.clear, for: .window)
+        .toolbarBackground(.thickMaterial, for: .windowToolbar)
         .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .onAppear { store.start() }
-        .sheet(isPresented: Binding(get: { store.actionSession != nil }, set: { if !$0 { store.dismissAction() } })) {
-            RepositoryActionSheet().environmentObject(store)
-        }
+
     }
 
     private func topBar(sidebarWidth: CGFloat) -> some View {
@@ -81,41 +81,49 @@ struct ContentView: View {
 
             HStack(spacing: 12) {
                 if let repository = store.selectedRepository {
-                    branchMenu(repository)
                     Text(repository.name)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(repository.name)
-                        .frame(maxWidth: 260, alignment: .leading)
+                        .frame(width: min(260, ceil((repository.name as NSString).size(
+                            withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]
+                        ).width)), alignment: .leading)
                         .layoutPriority(1)
+                    if !repository.branch.isEmpty {
+                        Text("/")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.secondary)
+                            .accessibilityHidden(true)
+                        branchMenu(repository)
+                    }
                 } else {
                     Text("RepoMan")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.primary)
                 }
                 Spacer(minLength: 16)
-                Text(statusText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .help(statusText)
-                ToolbarActionButton(
-                    symbol: "arrow.clockwise",
-                    title: "Refresh repository",
-                    isRotating: store.isFetching || store.isScanning
-                ) {
-                    store.refreshSelected()
-                }
-                .disabled(store.selectedRepository == nil || store.isFetching || store.isScanning || store.isActing)
                 ToolbarActionButton(symbol: "folder", title: "Open in Finder") {
                     if let repository = store.selectedRepository {
                         NSWorkspace.shared.open(repository.url)
                     }
                 }
                 .disabled(store.selectedRepository == nil)
+                ToolbarActionButton(symbol: "terminal", title: "Open in Terminal") {
+                    store.openSelectedRepositoryInTerminal()
+                }
+                .disabled(store.selectedRepository == nil)
+                ToolbarActionButton(
+                    symbol: "doc.text.magnifyingglass",
+                    title: showsRepositoryChanges ? "Hide uncommitted changes" : "Show uncommitted changes",
+                    foregroundColor: showsRepositoryChanges ? Theme.primary : Theme.secondary
+                ) {
+                    showsRepositoryChanges.toggle()
+                }
+                .disabled(store.selectedRepository == nil)
+                .accessibilityValue(showsRepositoryChanges ? "Visible" : "Hidden")
+                .accessibilityIdentifier("repository-changes-button")
                 Rectangle().fill(Theme.border).frame(width: 1, height: 20)
                 ToolbarIconMenu(symbol: "ellipsis", title: "Repository options", value: "") {
                     repositoryOptions
@@ -168,77 +176,81 @@ struct ContentView: View {
                     menuChoice("Descending", isSelected: !sortAscending)
                 }
             }
+            ToolbarActionButton(
+                symbol: "arrow.clockwise",
+                title: "Refresh repository",
+                isRotating: store.isFetching || store.isScanning,
+                foregroundColor: Theme.primary
+            ) {
+                store.refreshSelected()
+            }
+            .disabled(store.selectedRepository == nil || store.isFetching || store.isScanning)
         }
     }
 
     private func branchMenu(_ repository: RepositorySnapshot) -> some View {
-        Menu {
-            Text("Current branch: \(repository.branch)")
-            if !repository.staleBranches.isEmpty {
-                Divider()
-                Text("Stale branches")
-                ForEach(repository.staleBranches, id: \.self) { branch in
-                    Text(branch)
-                }
-            }
-        } label: {
-            Label(repository.branch, systemImage: "arrow.triangle.branch")
-                .font(.system(size: 12))
+        let hasBranches = !repository.staleBranches.isEmpty
+
+        return HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.branch")
+                .fixedSize()
+            Text(repository.branch)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .layoutPriority(1)
+            if hasBranches {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.secondary)
+                    .fixedSize()
+                    .padding(.leading, 2)
+            }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .labelStyle(.titleAndIcon)
+        .font(.system(size: 12))
         .foregroundStyle(Theme.primary)
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.trailing, 18)
+        .padding(.trailing, hasBranches ? 3 : 0)
         .frame(width: min(180, ceil((repository.branch as NSString).size(
             withAttributes: [.font: NSFont.systemFont(ofSize: 12)]
-        ).width) + 76), height: 28, alignment: .leading)
-        // Native Menu normalizes its label, so draw the single chevron outside it.
-        .overlay(alignment: .trailing) {
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9))
-                .foregroundStyle(Theme.secondary)
-                .padding(.trailing, 3)
-                .allowsHitTesting(false)
-        }
-        .help("Current branch: \(repository.branch)")
+        ).width) + (hasBranches ? 46 : 22)), height: 28, alignment: .leading)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Current branch")
         .accessibilityValue(repository.branch)
-    }
-
-    private var statusText: String {
-        if store.isFetching { return "Checking remotes…" }
-        if store.isScanning { return "Checking repositories…" }
-        guard let repository = store.selectedRepository else { return "" }
-        let minutes = Int(Date().timeIntervalSince(repository.checkedAt) / 60)
-        return minutes < 1 ? "Last checked just now" : "Last checked \(minutes) min ago"
+        .accessibilityHidden(hasBranches)
+        // Cover the entire label, including its padding and chevron, with one native control.
+        .overlay {
+            if hasBranches {
+                BranchMenuTrigger(branch: repository.branch, staleBranches: repository.staleBranches)
+            }
+        }
     }
 
     private var filteredRepositories: [RepositorySnapshot] {
         repositorySort.repositories(
             store.repositories,
-            filter: repositoryFilter == .needsAttention ? .all : repositoryFilter,
+            filter: .all,
             search: search,
             ascending: sortAscending
-        ).filter { repositoryFilter != .needsAttention || !store.findings(in: $0).isEmpty }
+        ).filter {
+            repositoryFilter != .needsAttention || store.loadingRepositoryIDs.contains($0.id)
+                || !store.findings(in: $0).isEmpty
+        }
     }
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                HStack(spacing: 10) {
+            HStack(spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(Theme.secondary)
-                    TextField("Search repositories…", text: $search)
+                    TextField("Search repos...", text: $search)
                         .textFieldStyle(.plain)
                         .foregroundStyle(Theme.primary)
-                        .font(.system(size: 11.5))
                         .focused($searchFocused)
                         .accessibilityLabel("Search repositories")
                 }
+                .font(.system(size: 11.5))
                 .padding(.horizontal, 12)
                 .frame(height: 34)
                 .background(Theme.field, in: RoundedRectangle(cornerRadius: 10))
@@ -260,19 +272,12 @@ struct ContentView: View {
                     .padding(.bottom, 8)
             }
 
-            if store.isScanning, !store.scanProgress.isEmpty {
-                Text(store.scanProgress)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Theme.subtle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 8)
-            }
-
             CodexScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(filteredRepositories) { repository in
-                        RepositoryRow(repository: repository, issueCount: store.findings(in: repository).count,
+                        RepositoryRow(repository: repository, statusCounts: store.issueStatusCounts(in: repository),
+                                      isLoading: store.loadingRepositoryIDs.contains(repository.id),
+                                      checkProgress: store.repositoryCheckProgress[repository.id],
                                       isSelected: store.selectedPath == repository.id) { store.select(repository) }
                     }
                     if filteredRepositories.isEmpty, !store.repositories.isEmpty {
@@ -297,24 +302,38 @@ struct ContentView: View {
                 .padding(.bottom, 12)
             }
 
-            Button { store.chooseFolder() } label: {
-                Text(store.folder?.abbreviatedPath ?? "Choose a folder…")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                Button { store.chooseFolder() } label: {
+                    Text(store.folder?.abbreviatedPath ?? "Choose a folder…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help("Choose monitored folder")
+
+                SettingsLink {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Settings (⌘,)")
+                .accessibilityLabel("Open settings")
             }
-            .buttonStyle(.plain)
-            .help("Choose monitored folder")
-            .padding(.horizontal, 24)
+            .padding(.leading, 24)
+            .padding(.trailing, 16)
             .frame(height: 40)
             .overlay(alignment: .top) {
                 Rectangle().fill(Theme.border).frame(height: 1)
             }
         }
         .frame(maxHeight: .infinity)
-        .background(Theme.sidebar)
+        .background { SidebarBackground() }
     }
 
     @ViewBuilder
@@ -329,14 +348,10 @@ struct ContentView: View {
     @ViewBuilder
     private var repositoryOptions: some View {
         Button("Choose Folder…", systemImage: "folder.badge.plus") { store.chooseFolder() }
-            .disabled(store.isActing)
         Button("Refresh All", systemImage: "arrow.clockwise") { store.refreshAll() }
-            .disabled(store.folder == nil || store.isScanning || store.isFetching || store.isActing)
-        Menu("Enabled checks") {
-            ForEach(store.issueCatalog.checks) { check in
-                Toggle(check.title, isOn: Binding(get: { !store.disabledChecks.contains(check.id) },
-                                                 set: { store.setCheck(check.id, enabled: $0) }))
-            }
+            .disabled(store.folder == nil || store.isScanning || store.isFetching)
+        SettingsLink {
+            Label("Settings…", systemImage: "gearshape")
         }
         if let repository = store.selectedRepository, !(store.ignoredChecks[repository.id] ?? []).isEmpty {
             Button("Restore ignored checks") { store.restoreChecks(for: repository) }
@@ -359,7 +374,11 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if let repository = store.selectedRepository {
-            RepositoryDetail(repository: repository).id(repository.id)
+            if repository.branch.isEmpty {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                RepositoryDetail(repository: repository, showsRepositoryChanges: $showsRepositoryChanges).id(repository.id)
+            }
         } else if store.isScanning {
             ProgressView("Scanning repositories…")
                 .tint(Theme.primary)
@@ -385,6 +404,81 @@ struct ContentView: View {
                 .buttonStyle(RepositoryButtonStyle())
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct SidebarBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        Group {
+            if reduceTransparency {
+                Theme.sidebar
+            } else {
+                SidebarVisualEffect()
+                    .overlay(Theme.sidebar.opacity(0.45))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct SidebarVisualEffect: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        // Sample the desktop behind the window instead of the opaque detail pane.
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+private struct BranchMenuTrigger: NSViewRepresentable {
+    let branch: String
+    let staleBranches: [String]
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(title: "", target: context.coordinator,
+                              action: #selector(Coordinator.showMenu(_:)))
+        button.isBordered = false
+        button.isTransparent = true
+        button.setAccessibilityLabel("Current branch")
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(withTitle: "Current branch: \(branch)", action: nil, keyEquivalent: "").isEnabled = false
+        if !staleBranches.isEmpty {
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Stale branches", action: nil, keyEquivalent: "").isEnabled = false
+            for title in staleBranches {
+                menu.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
+            }
+        }
+        button.menu = menu
+        button.toolTip = "Current branch: \(branch)"
+        button.setAccessibilityValue(branch)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.intrinsicContentSize.width, height: proposal.height ?? 28)
+    }
+
+    final class Coordinator: NSObject {
+        @objc func showMenu(_ sender: NSButton) {
+            guard let window = sender.window else { return }
+            // Screen coordinates increase upward, regardless of whether the button's view is flipped.
+            let buttonFrame = window.convertToScreen(sender.convert(sender.bounds, to: nil))
+            sender.menu?.popUp(positioning: nil, at: NSPoint(x: buttonFrame.minX, y: buttonFrame.minY - 8),
+                               in: nil)
+        }
     }
 }
 
@@ -479,7 +573,9 @@ private struct SidebarResizeHandle: NSViewRepresentable {
 private struct RepositoryRow: View {
     @State private var isHovered = false
     let repository: RepositorySnapshot
-    let issueCount: Int
+    let statusCounts: [RepositoryIssueStatus: Int]
+    let isLoading: Bool
+    let checkProgress: RepositoryCheckProgress?
     let isSelected: Bool
     let action: () -> Void
 
@@ -493,28 +589,34 @@ private struct RepositoryRow: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .help(repository.name)
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.triangle.branch")
-                            .font(.system(size: 10, weight: .medium))
-                        Text(repository.branch)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .help(repository.branch)
+                    if !repository.branch.isEmpty || isLoading {
+                        HStack(spacing: 6) {
+                            if !repository.branch.isEmpty {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .font(.system(size: 10, weight: .medium))
+                                    Text(repository.branch)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help(repository.branch)
+                                }
+                                .layoutPriority(-1)
+                            }
+                            if isLoading {
+                                RepositoryActivityBadge(symbol: "magnifyingglass",
+                                    value: checkProgress.map { "\($0.percentage)%" } ?? "…",
+                                    color: Theme.blue, help: scanningHelp)
+                            }
+                        }
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(isSelected ? Theme.primary.opacity(0.85) : Theme.secondary)
                     }
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(isSelected ? Theme.primary.opacity(0.85) : Theme.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(-1)
 
-                if issueCount > 0 {
-                    Text(issueCount.formatted())
-                        .font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(Theme.amber)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(Theme.control, in: Capsule())
-                        .help("\(issueCount) findings from enabled checks")
-                        .padding(.trailing, 8)
-                }
+                RepositoryIssueStatusBadges(counts: statusCounts)
+                    .padding(.horizontal, 8)
 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
@@ -528,7 +630,8 @@ private struct RepositoryRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(repository.name), \(repository.branch), \(issueCount) findings, \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
+        .accessibilityValue(activityDescription)
+        .accessibilityLabel("\(repository.name), \(repository.branch), \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
         .overlay(alignment: .bottom) {
             if !isSelected {
                 Rectangle()
@@ -539,6 +642,46 @@ private struct RepositoryRow: View {
         }
     }
 
+    private var scanningHelp: String {
+        checkProgress.map {
+            "Scanning for issues: \($0.percentage)%, \($0.completed) of \($0.total) checks completed, \($0.remaining) remaining"
+        } ?? "Scanning for issues"
+    }
+
+    private var activityDescription: String {
+        var descriptions = RepositoryIssueStatus.allCases.compactMap { status -> String? in
+            guard let count = statusCounts[status], count > 0 else { return nil }
+            return "\(status.title): \(count)"
+        }
+        if isLoading { descriptions.append(scanningHelp) }
+        return descriptions.joined(separator: ", ")
+    }
+}
+
+private struct RepositoryActivityBadge: View {
+    let symbol: String
+    let value: String
+    let color: Color
+    let help: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .medium))
+            Text(value)
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .frame(height: 20)
+        .background(color.opacity(0.12), in: Capsule())
+        .overlay { Capsule().strokeBorder(color.opacity(0.2), lineWidth: 1) }
+        .fixedSize()
+        .overlay { NativeTooltip(text: help) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(help)
+    }
 }
 
 private struct StatusBadge: View {
@@ -566,7 +709,7 @@ private struct StatusBadge: View {
 }
 
 /// Native tooltip tracking works for individual badges inside a SwiftUI button label.
-private struct NativeTooltip: NSViewRepresentable {
+struct NativeTooltip: NSViewRepresentable {
     let text: String
 
     func makeNSView(context: Context) -> TooltipView {
@@ -587,21 +730,23 @@ private struct NativeTooltip: NSViewRepresentable {
 
 private struct RepositoryDetail: View {
     let repository: RepositorySnapshot
+    @Binding var showsRepositoryChanges: Bool
 
     var body: some View {
-        RepositoryIssuesView(repository: repository, checkID: nil)
+        RepositoryIssuesView(repository: repository, checkID: nil, showsRepositoryChanges: $showsRepositoryChanges)
             .padding(.horizontal, 24)
             .padding(.top, 24)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Theme.background)
+            .background(Theme.background, ignoresSafeAreaEdges: [])
     }
 }
 
-private struct ToolbarActionButton: View {
+struct ToolbarActionButton: View {
     let symbol: String
     let title: String
     var isRotating = false
+    var foregroundColor: Color = Theme.secondary
     let action: () -> Void
     @State private var isHovered = false
 
@@ -614,7 +759,7 @@ private struct ToolbarActionButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Theme.secondary)
+        .foregroundStyle(foregroundColor)
         .background(isHovered ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
         .onHover { isHovered = $0 }
         .accessibilityLabel(title)
@@ -665,9 +810,9 @@ struct Panel<Header: View, Content: View>: View {
 struct CodexScrollView<Content: View>: View {
     @ViewBuilder let content: Content
     @State private var position = ScrollPosition()
-    @State private var metrics = ScrollbarMetrics()
-    @State private var dragStartOffset: CGFloat?
-    @State private var isHovered = false
+    // Keep a stable reference without observing it here. Scroll offsets must only
+    // invalidate the indicator, not rebuild the scroll container every frame.
+    @State private var scrollbar = ScrollbarState()
 
     var body: some View {
         ScrollView {
@@ -684,55 +829,72 @@ struct CodexScrollView<Content: View>: View {
                 topInset: geometry.contentInsets.top
             )
         } action: { _, newValue in
-            metrics = newValue
+            scrollbar.metrics = newValue
         }
         .overlay(alignment: .trailing) {
-            if metrics.maximumOffset > 0 {
-                GeometryReader { geometry in
-                    let trackHeight = max(0, geometry.size.height - 8)
-                    let thumbHeight = min(trackHeight, max(28, trackHeight * metrics.viewportHeight / metrics.contentHeight))
-                    let travel = trackHeight - thumbHeight
-                    let thumbOffset = travel * metrics.progress
+            CodexScrollbar(state: scrollbar, position: $position)
+        }
+    }
+}
 
-                    ZStack(alignment: .top) {
-                        Color.clear
-                        Capsule()
-                            .fill(isHovered || dragStartOffset != nil ? Theme.scrollbarHover : Theme.scrollbar)
-                            .frame(width: 6, height: thumbHeight)
-                            .offset(y: thumbOffset)
-                    }
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                    .onHover { isHovered = $0 }
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                guard travel > 0 else { return }
-                                if dragStartOffset == nil {
-                                    let startY = value.startLocation.y - 4
-                                    let isOnThumb = startY >= thumbOffset && startY <= thumbOffset + thumbHeight
-                                    dragStartOffset = isOnThumb
-                                        ? metrics.clampedOffset
-                                        : min(metrics.maximumOffset, max(0, (startY - thumbHeight / 2) / travel * metrics.maximumOffset))
-                                }
-                                scroll(to: (dragStartOffset ?? 0) + value.translation.height / travel * metrics.maximumOffset)
+private final class ScrollbarState: ObservableObject {
+    @Published var metrics = ScrollbarMetrics()
+}
+
+private struct CodexScrollbar: View {
+    @ObservedObject var state: ScrollbarState
+    @Binding var position: ScrollPosition
+    @State private var dragStartOffset: CGFloat?
+    @State private var isHovered = false
+
+    private var metrics: ScrollbarMetrics { state.metrics }
+
+    var body: some View {
+        if metrics.maximumOffset > 0 {
+            GeometryReader { geometry in
+                let trackHeight = max(0, geometry.size.height - 8)
+                let thumbHeight = min(trackHeight, max(28, trackHeight * metrics.viewportHeight / metrics.contentHeight))
+                let travel = trackHeight - thumbHeight
+                let thumbOffset = travel * metrics.progress
+
+                ZStack(alignment: .top) {
+                    Color.clear
+                    Capsule()
+                        .fill(isHovered || dragStartOffset != nil ? Theme.scrollbarHover : Theme.scrollbar)
+                        .frame(width: Theme.scrollbarWidth, height: thumbHeight)
+                        .offset(y: thumbOffset)
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onHover { isHovered = $0 }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            guard travel > 0 else { return }
+                            if dragStartOffset == nil {
+                                let startY = value.startLocation.y - 4
+                                let isOnThumb = startY >= thumbOffset && startY <= thumbOffset + thumbHeight
+                                dragStartOffset = isOnThumb
+                                    ? metrics.clampedOffset
+                                    : min(metrics.maximumOffset, max(0, (startY - thumbHeight / 2) / travel * metrics.maximumOffset))
                             }
-                            .onEnded { _ in dragStartOffset = nil }
-                    )
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Vertical scroll bar")
-                    .accessibilityValue("\(Int(metrics.progress * 100)) percent")
-                    .accessibilityAdjustableAction { direction in
-                        switch direction {
-                        case .increment: scroll(to: metrics.clampedOffset + metrics.viewportHeight * 0.8)
-                        case .decrement: scroll(to: metrics.clampedOffset - metrics.viewportHeight * 0.8)
-                        @unknown default: break
+                            scroll(to: (dragStartOffset ?? 0) + value.translation.height / travel * metrics.maximumOffset)
                         }
+                        .onEnded { _ in dragStartOffset = nil }
+                )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Vertical scroll bar")
+                .accessibilityValue("\(Int(metrics.progress * 100)) percent")
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: scroll(to: metrics.clampedOffset + metrics.viewportHeight * 0.8)
+                    case .decrement: scroll(to: metrics.clampedOffset - metrics.viewportHeight * 0.8)
+                    @unknown default: break
                     }
                 }
-                .frame(width: 12)
-                .padding(.trailing, 2)
             }
+            .frame(width: 12)
+            .padding(.trailing, 2)
         }
     }
 
@@ -750,4 +912,132 @@ private struct ScrollbarMetrics: Equatable {
     var maximumOffset: CGFloat { max(0, contentHeight - viewportHeight) }
     var clampedOffset: CGFloat { min(maximumOffset, max(0, offset)) }
     var progress: CGFloat { maximumOffset > 0 ? clampedOffset / maximumOffset : 0 }
+}
+
+/// Plain-text editing that fits wrapped content; the surrounding panel handles scrolling.
+struct CodexTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let accessibilityLabel: String
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text, onSubmit: onSubmit) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+
+        let editor = NSTextView(frame: scrollView.contentView.bounds)
+        editor.isRichText = false
+        editor.allowsUndo = true
+        editor.drawsBackground = false
+        editor.font = .systemFont(ofSize: 12)
+        editor.textColor = NSColor(Theme.primary)
+        editor.insertionPointColor = NSColor(Theme.primary)
+        editor.textContainerInset = NSSize(width: 4, height: 4)
+        editor.isVerticallyResizable = true
+        editor.isHorizontallyResizable = false
+        editor.autoresizingMask = [.width]
+        editor.minSize = .zero
+        editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        editor.textContainer?.widthTracksTextView = true
+        editor.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        editor.isAutomaticQuoteSubstitutionEnabled = false
+        editor.isAutomaticDashSubstitutionEnabled = false
+        editor.delegate = context.coordinator
+        editor.setAccessibilityLabel(accessibilityLabel)
+        editor.string = text
+        scrollView.documentView = editor
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.onSubmit = onSubmit
+        guard let editor = scrollView.documentView as? NSTextView else { return }
+        if editor.string != text {
+            editor.string = text
+            editor.setSelectedRange(NSRange(location: 0, length: 0))
+            editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0,
+              let editor = nsView.documentView as? NSTextView else { return nil }
+        let font = editor.font ?? .systemFont(ofSize: 12)
+        let storage = NSTextStorage(string: text, attributes: [.font: font])
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(
+            width: max(1, width - editor.textContainerInset.width * 2), height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = editor.textContainer?.lineFragmentPadding ?? 5
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        layout.ensureLayout(for: container)
+        let contentHeight = max(layout.usedRect(for: container).maxY, layout.extraLineFragmentRect.maxY)
+        let height = ceil(max(layout.defaultLineHeight(for: font), contentHeight) + editor.textContainerInset.height * 2)
+        return CGSize(width: width, height: height)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        var onSubmit: () -> Void
+        init(text: Binding<String>, onSubmit: @escaping () -> Void) {
+            self.text = text
+            self.onSubmit = onSubmit
+        }
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+                  NSApp.currentEvent?.modifierFlags.contains(.shift) != true,
+                  !textView.hasMarkedText() else { return false }
+            text.wrappedValue = textView.string
+            onSubmit()
+            return true
+        }
+        func textDidChange(_ notification: Notification) {
+            guard let editor = notification.object as? NSTextView else { return }
+            text.wrappedValue = editor.string
+        }
+    }
+}
+
+/// A native popup that accepts the full width proposed by its SwiftUI container.
+struct CodexPresetPicker: NSViewRepresentable {
+    @Binding var selection: String
+    let options: [(id: String, title: String)]
+
+    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        button.font = .systemFont(ofSize: 12)
+        button.controlSize = .large
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.selectPreset(_:))
+        button.setAccessibilityLabel("Repair preset")
+        return button
+    }
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.selection = $selection
+        if button.itemArray.map({ $0.representedObject as? String }) != options.map({ Optional($0.id) }) ||
+            button.itemTitles != options.map(\.title) {
+            button.removeAllItems()
+            for option in options {
+                button.addItem(withTitle: option.title)
+                button.lastItem?.representedObject = option.id
+            }
+        }
+        if let index = options.firstIndex(where: { $0.id == selection }) { button.selectItem(at: index) }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.intrinsicContentSize.width, height: 30)
+    }
+    final class Coordinator: NSObject {
+        var selection: Binding<String>
+        init(selection: Binding<String>) { self.selection = selection }
+        @objc func selectPreset(_ sender: NSPopUpButton) {
+            if let id = sender.selectedItem?.representedObject as? String { selection.wrappedValue = id }
+        }
+    }
 }

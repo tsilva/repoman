@@ -22,7 +22,14 @@
 
 ## Behavior to preserve
 
-- Discover only direct child directories containing a `.git` file or directory, including linked worktrees.
+- Discover only visible direct child repositories containing a `.git` file or directory. Exclude linked worktrees from the repository list; keep their details on the primary repository.
 - Keep repository inspection responsive: Git work runs off the main actor, and batches use at most four concurrent tasks.
 - Refresh may fetch remote-tracking refs, but must not merge, pull, push, or change working files in monitored repositories.
 - Preserve useful local status when a remote fetch fails, and keep Git prompts and operations bounded by timeouts.
+
+## Shared release procedure
+
+The project `build-release` skill composes `$release-workflow` from
+`/Users/tsilva/.codex/skills/release-workflow/SKILL.md`.
+Read both for release work; keep project commands, version policy, artifact
+requirements, and approval gates in the project adapter.

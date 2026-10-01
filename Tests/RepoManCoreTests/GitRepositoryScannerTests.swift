@@ -40,6 +40,7 @@ final class GitRepositoryScannerTests: XCTestCase {
         XCTAssertTrue(names.contains("repo"))
         XCTAssertTrue(names.contains("other"))
         XCTAssertFalse(names.contains("origin.git"))
+        XCTAssertFalse(names.contains("linked-worktree"))
 
         let snapshot = try GitRepositoryScanner.scan(repo)
         XCTAssertEqual(snapshot.branch, "main")
@@ -58,6 +59,35 @@ final class GitRepositoryScannerTests: XCTestCase {
         XCTAssertNil(summary.changes.first(where: { $0.path == "tracked.txt" })?.added)
     }
 
+    func testDiscoveryKeepsSeparateGitDirectoryAndExcludesWorktreesWithoutTheirMainRepository() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("repositories")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let repo = folder.appendingPathComponent("repo")
+        let gitDirectory = root.appendingPathComponent("metadata")
+        try git(["init", "-b", "main", "--separate-git-dir", gitDirectory.path, repo.path], in: root)
+        try git(["commit", "--allow-empty", "-m", "Initial"], in: repo)
+        let linked = folder.appendingPathComponent("linked-worktree")
+        try git(["worktree", "add", "-b", "scratch", linked.path], in: repo)
+
+        let outside = root.appendingPathComponent("outside")
+        try git(["init", "-b", "main", outside.path], in: root)
+        try git(["commit", "--allow-empty", "-m", "Initial"], in: outside)
+        let detached = folder.appendingPathComponent("detached-worktree")
+        try git(["worktree", "add", "--detach", detached.path], in: outside)
+
+        let nested = folder.appendingPathComponent("container/nested")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try git(["init", nested.path], in: root)
+        let hidden = folder.appendingPathComponent(".hidden-repo")
+        try git(["init", hidden.path], in: root)
+
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder).map(\.lastPathComponent), ["repo"])
+        XCTAssertEqual(try GitRepositoryScanner.scan(repo).worktrees, ["linked-worktree"])
+    }
+
     func testRenameAppearsOnceUnderItsNewName() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -71,6 +101,33 @@ final class GitRepositoryScannerTests: XCTestCase {
         let snapshot = try GitRepositoryScanner.scan(root)
         XCTAssertEqual(snapshot.changes.map(\.path), ["new.txt"])
         XCTAssertEqual(snapshot.changes.first?.kind, .modified)
+    }
+
+    func testDiscoveryReadsRelativeGitMetadataAndRejectsInvalidPointers() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("repositories")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let repo = folder.appendingPathComponent("repo with spaces")
+        let metadata = root.appendingPathComponent("metadata with spaces")
+        try git(["init", "-b", "main", "--separate-git-dir", metadata.path, repo.path], in: root)
+        try "gitdir: ../../metadata with spaces\n".write(
+            to: repo.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        try ".\n".write(to: metadata.appendingPathComponent("commondir"), atomically: true, encoding: .utf8)
+
+        for (name, pointer) in [
+            ("missing", "gitdir: ../../missing\n"),
+            ("malformed", "not a git pointer\n"),
+            ("empty", "gitdir: \n"),
+            ("oversized", "gitdir: " + String(repeating: "a", count: 5_000))
+        ] {
+            let directory = folder.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try pointer.write(to: directory.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        }
+
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder).map(\.lastPathComponent), ["repo with spaces"])
+        XCTAssertEqual(try GitRepositoryScanner.scan(repo).branch, "main")
     }
 
     private func git(_ arguments: [String], in directory: URL) throws {

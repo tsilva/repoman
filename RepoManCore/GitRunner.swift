@@ -18,7 +18,8 @@ public enum GitError: Error, LocalizedError {
 }
 
 enum GitRunner {
-    static func run(_ arguments: [String], at directory: URL, timeout: TimeInterval = 20) throws -> Data {
+    static func run(_ arguments: [String], at directory: URL, timeout: TimeInterval = 20,
+                    successfulExitCodes: Set<Int32> = [0], maximumOutputBytes: Int? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", directory.path] + arguments
@@ -49,6 +50,9 @@ enum GitRunner {
             guard process.isRunning else { return }
             state.markTimedOut()
             process.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
         }
         timer.resume()
 
@@ -56,22 +60,36 @@ enum GitRunner {
         let errorCapture = LockedData()
         let errorDrain = DispatchGroup()
         errorDrain.enter()
-        DispatchQueue.global(qos: .utility).async {
-            errorCapture.set(errorPipe.fileHandleForReading.readDataToEndOfFile())
+        // A dedicated reader must not wait behind Swift's cooperative inspection tasks.
+        // Those tasks can all be blocked on subprocess completion at the same time.
+        Thread.detachNewThread {
+            errorCapture.set(drain(errorPipe.fileHandleForReading, limit: maximumOutputBytes))
             errorDrain.leave()
         }
-        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = drain(outputPipe.fileHandleForReading, limit: maximumOutputBytes)
         process.waitUntilExit()
         errorDrain.wait()
         timer.cancel()
 
         if state.didTimeOut { throw GitError.timedOut }
-        guard process.terminationStatus == 0 else {
+        if let limit = maximumOutputBytes, output.count > limit || errorCapture.data.count > limit {
+            throw GitError.failed("Git output exceeded the inspection limit.")
+        }
+        guard successfulExitCodes.contains(process.terminationStatus) else {
             let message = String(decoding: errorCapture.data, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             throw GitError.failed(message)
         }
         return output
+    }
+
+    private static func drain(_ handle: FileHandle, limit: Int?) -> Data {
+        var data = Data()
+        while let chunk = try? handle.read(upToCount: 65_536), !chunk.isEmpty {
+            if let limit { data.append(chunk.prefix(max(0, limit + 1 - data.count))) }
+            else { data.append(chunk) }
+        }
+        return data
     }
 
     static func text(_ arguments: [String], at directory: URL, timeout: TimeInterval = 20) throws -> String {
