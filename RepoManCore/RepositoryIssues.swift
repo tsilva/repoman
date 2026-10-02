@@ -41,20 +41,35 @@ public struct RepositoryFinding: Identifiable, Equatable, Codable, Sendable {
     }
 }
 
-/// A detected issue and its optional stored conversation, including archived occurrences.
+/// A detected issue, stored conversation, or incomplete check for the shared issue list.
 public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
     public let finding: RepositoryFinding
     public let task: RepairTask?
+    /// Incomplete checks use finding metadata for presentation, but are not confirmed findings.
+    public let incompleteReason: String?
+    public var isIncomplete: Bool { incompleteReason != nil }
     public var isArchived: Bool { task?.isArchived == true }
+    // Check availability is shown on the row; summary badges track repair state.
     public var status: RepositoryIssueStatus { RepositoryIssueStatus(state: task?.state) }
     // Recurrences share a detector identity, but each completed or archived conversation has its own identity.
     public var id: String {
+        if isIncomplete { return "incomplete::" + finding.id }
         if let task, task.state.isClosed || task.isArchived { return "conversation::\(task.id)" }
         return finding.id
     }
 
     public init(finding: RepositoryFinding, task: RepairTask? = nil) {
         self.finding = finding; self.task = task
+        incompleteReason = nil
+    }
+
+    public init(incompleteCheck check: RepositoryCheck, repositoryID: String, reason: String) {
+        finding = RepositoryFinding(repositoryID: repositoryID, checkID: check.id,
+            title: check.id == "dependencies.lockfileDrift" ? "Manifest and lockfile consistency" : check.title,
+            evidence: "Could not finish: " + reason, category: check.category,
+            symbol: check.id == "dependencies.lockfileDrift" ? "lock" : check.symbol)
+        task = nil
+        incompleteReason = reason
     }
 
     public static func items(findings: [RepositoryFinding], tasks: [RepairTask],
@@ -80,15 +95,14 @@ public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
 
 /// Shared row and badge categories; each visible issue belongs to exactly one status.
 public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
-    case pending, processing, waiting, completed, error
+    case pending, processing, waiting, completed
 
     public init(state: RepairTaskState?) {
         switch state {
         case nil: self = .pending
         case .queued, .running, .checking, .interrupted: self = .processing
-        case .needsInput, .stillPresent, .cancelled: self = .waiting
+        case .needsInput, .stillPresent, .cancelled, .failed, .couldntVerify: self = .waiting
         case .resolved, .noLongerNeeded: self = .completed
-        case .failed, .couldntVerify: self = .error
         }
     }
 
@@ -99,39 +113,92 @@ public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
 
 /// Register another check without adding cases to the repository or issue views.
 public struct RepositoryCheck: Identifiable, Sendable {
+    public enum ConfigurationKind: Sendable { case model }
     public let id: String
     public let title: String
     public let category: IssueCategory
     public let symbol: String
     public let detect: @Sendable (RepositorySnapshot) -> [RepositoryFinding]
+    public let validityPeriod: TimeInterval
     public let requiresExtendedInspection: Bool
     public let inspect: @Sendable (RepositoryInspectionContext) async throws -> [RepositoryFinding]
     public let availability: @Sendable (RepositorySnapshot) -> String?
+    public let configurationKind: ConfigurationKind?
+    /// Content-cached checks must read fresh inputs before deciding whether a paid request is due.
+    public let usesContentCache: Bool
+    public let evaluate: @Sendable (RepositoryInspectionContext) async throws -> RepositoryCheckResult
 
     public init(id: String, title: String, category: IssueCategory, symbol: String,
+                validityPeriod: TimeInterval? = nil,
                 availability: @escaping @Sendable (RepositorySnapshot) -> String? = { _ in nil },
                 detect: @escaping @Sendable (RepositorySnapshot) -> [RepositoryFinding]) {
         self.id = id
         self.title = title
         self.category = category
         self.symbol = symbol
+        self.validityPeriod = validityPeriod ?? Self.defaultValidityPeriod(for: id)
         self.requiresExtendedInspection = false
         self.detect = detect
         self.availability = availability
+        configurationKind = nil; usesContentCache = false
         self.inspect = { context in
             if let reason = availability(context.snapshot) { throw RepairError.blocked(reason) }
             return detect(context.snapshot)
+        }
+        self.evaluate = { context in
+            if let reason = availability(context.snapshot) { throw RepairError.blocked(reason) }
+            return .findings(detect(context.snapshot))
         }
     }
 
     /// Use for checks needing content or asynchronous inspection. No UI or runner changes are needed.
     public init(id: String, title: String, category: IssueCategory, symbol: String,
+                validityPeriod: TimeInterval? = nil,
                 inspect: @escaping @Sendable (RepositoryInspectionContext) async throws -> [RepositoryFinding]) {
         self.id = id; self.title = title; self.category = category; self.symbol = symbol
+        self.validityPeriod = validityPeriod ?? Self.defaultValidityPeriod(for: id)
         self.requiresExtendedInspection = true
         self.inspect = inspect
         detect = { _ in [] }
         availability = { _ in "This detector requires extended inspection." }
+        configurationKind = nil; usesContentCache = false
+        evaluate = { context in .findings(try await inspect(context)) }
+    }
+
+    public init(id: String, title: String, category: IssueCategory, symbol: String,
+                validityPeriod: TimeInterval = 3_600, configurationKind: ConfigurationKind,
+                evaluate: @escaping @Sendable (RepositoryInspectionContext) async throws -> RepositoryCheckResult) {
+        self.id = id; self.title = title; self.category = category; self.symbol = symbol
+        self.validityPeriod = validityPeriod; self.configurationKind = configurationKind
+        self.evaluate = evaluate; usesContentCache = true; requiresExtendedInspection = true
+        detect = { _ in [] }; availability = { _ in "This detector requires extended inspection." }
+        inspect = { context in
+            switch try await evaluate(context) {
+            case .findings(let findings): return findings
+            case .partial(_, let reason), .unavailable(let reason): throw RepairError.blocked(reason)
+            }
+        }
+    }
+
+    private static func defaultValidityPeriod(for id: String) -> TimeInterval {
+        switch id {
+        case "git.staleBranches", "git.oldStashes", "github.description": return 86_400
+        case "ci.failing": return 300
+        default:
+            if id.hasPrefix("git.") || id.hasPrefix("inspection.") { return 300 }
+            return 3_600
+        }
+    }
+
+    public func isDue(result: RepositoryCheckResult?, completedAt: Date?, now: Date = Date()) -> Bool {
+        guard let result, let completedAt else { return true }
+        let age = now.timeIntervalSince(completedAt)
+        let period: TimeInterval
+        switch result {
+        case .unavailable, .partial: period = min(validityPeriod, 300)
+        case .findings: period = validityPeriod
+        }
+        return age < 0 || age >= period
     }
 
 }
@@ -146,6 +213,15 @@ public struct RepositoryIssueCatalog: Sendable {
 
     public func findings(in snapshot: RepositorySnapshot, disabledChecks: Set<String> = []) -> [RepositoryFinding] {
         checks.filter { !disabledChecks.contains($0.id) }.flatMap { $0.detect(snapshot) }
+    }
+
+    /// Keep incomplete checks separate from detector findings and repair conversations.
+    public func incompleteItems(in report: RepositoryInspectionReport, disabledChecks: Set<String> = []) -> [RepositoryIssueListItem] {
+        let unavailable = report.unavailableChecks
+        return checks.compactMap { check in
+            guard !disabledChecks.contains(check.id), let reason = unavailable[check.id] else { return nil }
+            return RepositoryIssueListItem(incompleteCheck: check, repositoryID: report.snapshot.id, reason: reason)
+        }
     }
 
     /// Verification always uses the registered detector, independently of display filters.
@@ -196,7 +272,7 @@ public struct RepositoryIssueCatalog: Sendable {
         },
         check("files.license", "Missing license file", .setup, "text.badge.checkmark", inspections: ["files"]) { s in
             guard let files = s.rootFiles, !files.contains(where: isLicense) else { return nil }
-            return ("No LICENSE, LICENCE, or COPYING file was found. Choose a license only if you intend to license this project.", .information, ["files.license", "files.license.mit"])
+            return ("No LICENSE, LICENCE, or COPYING file was found. Choose a license only if you intend to license this project.", .information, ["files.license.mit", "files.license"])
         },
         check("inspection.remote", "Remote check failed", .inspection, "exclamationmark.circle") { s in
             guard let error = s.fetchError else { return nil }
@@ -214,6 +290,7 @@ public struct RepositoryIssueCatalog: Sendable {
         + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
         + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
+        + RepositoryReadmeChecks.checks()
 
     public static func isReadme(_ filename: String) -> Bool {
         let name = filename.lowercased()

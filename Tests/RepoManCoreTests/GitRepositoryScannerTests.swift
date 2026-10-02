@@ -3,6 +3,75 @@ import XCTest
 @testable import RepoManCore
 
 final class GitRepositoryScannerTests: XCTestCase {
+    func testLastActivityUsesHEADCommitterDateInFullAndSummaryScans() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try git(["init", "-b", "main"], in: root)
+        for includeDetails in [true, false] {
+            XCTAssertNil(try GitRepositoryScanner.scan(root, includeDetails: includeDetails).lastCommitAt)
+        }
+        try git(["commit", "--allow-empty", "--date=2020-01-01T00:00:00Z", "-m", "Initial"],
+                in: root, committerDate: "2024-01-01T00:00:00Z")
+        let expected = Date(timeIntervalSince1970: 1_704_067_200)
+        // Scanning or detaching HEAD must not make an old commit look newly active.
+        for detached in [false, true] {
+            if detached { try git(["checkout", "--detach"], in: root) }
+            for includeDetails in [true, false] {
+                let snapshot = try GitRepositoryScanner.scan(root, includeDetails: includeDetails)
+                XCTAssertEqual(snapshot.lastCommitAt, expected)
+                XCTAssertEqual(snapshot.commits.count, includeDetails ? 1 : 0)
+            }
+        }
+    }
+
+    func testBlacklistExcludesArchivedTargetsAndKeepsVisibleActiveRepositories() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("repositories")
+        let archived = folder.appendingPathComponent(".archived")
+        let archivedRepo = archived.appendingPathComponent("gymrec")
+        let active = folder.appendingPathComponent("active")
+        for repo in [archivedRepo, active] {
+            try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("gymrec"), withDestinationURL: archivedRepo)
+
+        // Discovery already skips directory symlinks; the matcher also checks their targets.
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder).map(\.lastPathComponent), ["active"])
+        XCTAssertTrue(RepositoryPathBlacklist(paths: [".archived"], relativeTo: folder)
+            .contains(folder.appendingPathComponent("gymrec")))
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: archived).map(\.lastPathComponent), ["gymrec"])
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder, excludingPaths: [".archived"]).map(\.lastPathComponent), ["active"])
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: archived, excludingPaths: [".archived"]), [])
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder, excludingPaths: [archived.path]).map(\.lastPathComponent), ["active"])
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder, excludingPaths: [folder.path]), [])
+    }
+
+    func testBlacklistUsesPathBoundariesAndResolvesRelativePathsAndAliases() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("repositories")
+        let excluded = folder.appendingPathComponent("archive")
+        let sibling = folder.appendingPathComponent("archive-other")
+        for repo in [excluded, sibling] {
+            try FileManager.default.createDirectory(at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        }
+        let alias = root.appendingPathComponent("archive-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: excluded)
+
+        for rule in [excluded.path + "/", "./archive", "./unused/../archive", alias.path, " archive "] {
+            XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder, excludingPaths: [rule]).map(\.lastPathComponent), ["archive-other"], rule)
+        }
+        XCTAssertEqual(try GitRepositoryScanner.repositories(in: folder, excludingPaths: ["", "  "]).count, 2)
+        let names = RepositoryPathBlacklist(paths: [".archived"], relativeTo: folder)
+        XCTAssertTrue(names.contains(folder.appendingPathComponent("container/.archived/repo")))
+        XCTAssertFalse(names.contains(folder.appendingPathComponent("container/.archived-other/repo")))
+        let home = RepositoryPathBlacklist(paths: ["~/archive"], relativeTo: folder)
+        XCTAssertTrue(home.contains(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("archive/repo")))
+        XCTAssertFalse(home.contains(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("archive-other/repo")))
+    }
+
     func testScansDivergenceChangesAndLinkedWorktree() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -130,7 +199,7 @@ final class GitRepositoryScannerTests: XCTestCase {
         XCTAssertEqual(try GitRepositoryScanner.scan(repo).branch, "main")
     }
 
-    private func git(_ arguments: [String], in directory: URL) throws {
+    private func git(_ arguments: [String], in directory: URL, committerDate: String? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", directory.path] + arguments
@@ -139,6 +208,7 @@ final class GitRepositoryScannerTests: XCTestCase {
         environment["GIT_AUTHOR_EMAIL"] = "repoman@example.invalid"
         environment["GIT_COMMITTER_NAME"] = "RepoMan Test"
         environment["GIT_COMMITTER_EMAIL"] = "repoman@example.invalid"
+        if let committerDate { environment["GIT_COMMITTER_DATE"] = committerDate }
         environment["GIT_TERMINAL_PROMPT"] = "0"
         process.environment = environment
         process.standardOutput = Pipe()

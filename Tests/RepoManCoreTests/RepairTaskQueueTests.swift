@@ -11,6 +11,23 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
     private var storage: RepairTaskStorage { RepairTaskStorage(url: root.appendingPathComponent("tasks.json")) }
+    // Queue tests must never use the developer's Keychain or paid model endpoints.
+    // Keep the README detector's mechanical coverage with explicitly absent credentials.
+    private var testCatalog: RepositoryIssueCatalog {
+        let settings = ModelCheckSettings(readToken: { nil }, writeToken: { _ in })
+        return RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter {
+            $0.id != "docs.readmeConsistency"
+        } + RepositoryReadmeChecks.checks(settings: settings))
+    }
+    private func makeQueue(storage: RepairTaskStorage,
+                           agentFactory: @escaping @MainActor () -> any RepairAgent,
+                           catalog: RepositoryIssueCatalog? = nil,
+                           inspect: @escaping @Sendable (URL) async throws -> RepositorySnapshot = {
+                               try await RepairTaskQueue.inspectRepository($0)
+                           }) throws -> RepairTaskQueue {
+        try RepairTaskQueue(storage: storage, agentFactory: agentFactory,
+                            catalog: catalog ?? testCatalog, inspect: inspect)
+    }
     private func repository(_ name: String = "repo") throws -> RepositorySnapshot {
         let url = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -18,7 +35,7 @@ final class RepairTaskQueueTests: XCTestCase {
         return try GitRepositoryScanner.scan(url)
     }
     private func finding(_ snapshot: RepositorySnapshot) throws -> RepositoryFinding {
-        try XCTUnwrap(RepositoryIssueCatalog().findings(in: snapshot).first { $0.checkID == "files.readme" })
+        try XCTUnwrap(testCatalog.findings(in: snapshot).first { $0.checkID == "files.readme" })
     }
     private func waitForCompletion(_ queue: RepairTaskQueue) async throws {
         for _ in 0..<500 {
@@ -35,16 +52,51 @@ final class RepairTaskQueueTests: XCTestCase {
         }
         throw RepairError.blocked("Async question did not survive completion")
     }
+    func testCompletedQuestionRemainsAnswerableOnRestartWhileRepairsArePaused() throws {
+        let snapshot = try repository()
+        var saved = RepairTask(finding: try finding(snapshot), repository: snapshot, prompt: "Inspect first")
+        saved.state = .needsInput; saved.execution = .completed
+        saved.threadID = "saved-thread"; saved.turnID = "saved-turn"
+        let interaction = AgentInteraction(id: "saved-turn:question", kind: .questions, title: "Scope", details: "",
+            questions: [AgentQuestion(id: "scope", question: "Which action?", options: ["Keep unchanged"])], delivery: .followUp)
+        saved.interactions = [interaction]
+        try storage.save([saved])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        queue.canRun = { false }
+        queue.start()
+        XCTAssertEqual(queue.tasks.first?.state, .needsInput, "A completed question must not get stuck restoring while scanning")
+        var responseError: String?
+        queue.respond(taskID: saved.id, interaction: interaction, answers: ["scope": "Keep unchanged"]) { responseError = $0 }
+        XCTAssertNil(responseError)
+        XCTAssertEqual(queue.tasks.first?.state, .queued)
+        XCTAssertEqual(queue.tasks.first?.threadID, saved.threadID)
+    }
+    func testReadOnlyRecoveryStartsWhileNewRepairsArePaused() async throws {
+        let snapshot = try repository()
+        var saved = RepairTask(finding: try finding(snapshot), repository: snapshot, prompt: "Do not replay")
+        saved.state = .running; saved.threadID = "saved-thread"; saved.turnID = "saved-turn"
+        try storage.save([saved])
+        let agent = TestRepairAgent()
+        let queue = try makeQueue(storage: storage, agentFactory: { agent }, inspect: { _ in snapshot })
+        queue.canRun = { false }
+        queue.start()
+        try await waitForCompletion(queue)
+        let recoveries = await agent.recoveries
+        let runs = await agent.runs
+        XCTAssertEqual(recoveries, 1)
+        XCTAssertEqual(runs, 0)
+        XCTAssertEqual(queue.tasks.first?.state, .stillPresent)
+    }
     func testAsyncQuestionSurvivesCompletionAndRestartAndAnswerContinuesSameChat() async throws {
         let snapshot = try repository()
         let agent = AsyncQuestionRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect first")
         let interaction = try await waitForQuestion(queue)
         XCTAssertEqual(queue.tasks.first?.state, .needsInput)
         XCTAssertEqual(try storage.load().first?.interactions, [interaction])
 
-        let reopened = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let reopened = try makeQueue(storage: storage, agentFactory: { agent })
         reopened.start()
         let restored = try await waitForQuestion(reopened)
         XCTAssertEqual(restored, interaction)
@@ -74,7 +126,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testAsyncAnswerDuringLiveTurnIsSavedAndSentOnlyAfterTurnEnds() async throws {
         let snapshot = try repository()
         let agent = AsyncQuestionRepairAgent(holdFirstTurn: true)
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect first")
         for _ in 0..<500 {
             if await agent.isWaiting { break }
@@ -100,7 +152,7 @@ final class RepairTaskQueueTests: XCTestCase {
         saved.interactionProtocolVersion = nil
         try storage.save([saved])
         let agent = AsyncQuestionRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         XCTAssertEqual(queue.tasks.first?.state, .interrupted)
         queue.start()
         _ = try await waitForQuestion(queue)
@@ -117,7 +169,7 @@ final class RepairTaskQueueTests: XCTestCase {
         saved.pendingQuestionResponse = "Question: Which action?\nAnswer: Write README"
         saved.answeredQuestionIDs = ["async-turn:question"]
         try storage.save([saved])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         queue.start()
         try await waitForCompletion(queue)
         let submissions = await agent.submissions
@@ -131,7 +183,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testAsyncAnswerSaveFailureKeepsQuestionAndDoesNotStartFollowUp() async throws {
         let snapshot = try repository()
         let agent = AsyncQuestionRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect first")
         let interaction = try await waitForQuestion(queue)
         let before = queue.tasks
@@ -147,7 +199,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testStoppingIdleAsyncQuestionDismissesItWithoutStartingFollowUp() async throws {
         let snapshot = try repository()
         let agent = AsyncQuestionRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect first")
         let interaction = try await waitForQuestion(queue)
         queue.cancel(id)
@@ -169,7 +221,7 @@ final class RepairTaskQueueTests: XCTestCase {
         task.threadID = "completed-thread"
         task.conversation = [RepairConversationEntry(id: "reply", kind: .assistant, text: "Done")]
         try storage.save([task])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         XCTAssertEqual(RepositoryIssueListItem.items(findings: [], tasks: queue.tasks, includeCompleted: true).count, 1)
         var notifications = 0
         queue.onChange = { notifications += 1 }
@@ -177,7 +229,7 @@ final class RepairTaskQueueTests: XCTestCase {
         XCTAssertEqual(notifications, 1)
         try queue.archive(task.id)
         XCTAssertEqual(notifications, 1, "Archiving twice should be idempotent")
-        let reloaded = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let reloaded = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         let saved = try XCTUnwrap(reloaded.tasks.first)
         XCTAssertTrue(saved.isArchived)
         XCTAssertEqual(saved.state, .resolved)
@@ -198,7 +250,7 @@ final class RepairTaskQueueTests: XCTestCase {
         task.state = .stillPresent
         task.threadID = "old-thread"
         try storage.save([task])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         queue.canRun = { false }
         try queue.archive(task.id)
         let visible = RepositoryIssueListItem.items(findings: [issue], tasks: queue.tasks, includeCompleted: true)
@@ -218,13 +270,13 @@ final class RepairTaskQueueTests: XCTestCase {
         for state: RepairTaskState in [.queued, .running, .needsInput, .checking, .interrupted] {
             task.state = state
             try storage.save([task])
-            let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+            let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
             XCTAssertThrowsError(try queue.archive(task.id))
             XCTAssertFalse(queue.tasks.first?.isArchived == true)
         }
         task.state = .resolved
         try storage.save([task])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         try FileManager.default.removeItem(at: storage.url)
         try FileManager.default.createDirectory(at: storage.url, withIntermediateDirectories: true)
         XCTAssertThrowsError(try queue.archive(task.id))
@@ -238,7 +290,7 @@ final class RepairTaskQueueTests: XCTestCase {
         let states: [RepairTaskState] = [.queued, .running, .checking, .interrupted, .needsInput,
                                         .stillPresent, .cancelled, .resolved, .noLongerNeeded, .failed, .couldntVerify]
         let expected: [RepositoryIssueStatus] = [.processing, .processing, .processing, .processing, .waiting,
-                                               .waiting, .waiting, .completed, .completed, .error, .error]
+                                               .waiting, .waiting, .completed, .completed, .waiting, .waiting]
         for (state, status) in zip(states, expected) {
             var task = RepairTask(finding: issue, repository: snapshot, prompt: "Repair")
             task.state = state
@@ -261,19 +313,19 @@ final class RepairTaskQueueTests: XCTestCase {
         let agent = TestRepairAgent { task in
             try "# Actual project\n".write(to: task.repositoryURL.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         }
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Write README; leave it uncommitted.")
         try await waitForCompletion(queue)
         XCTAssertEqual(queue.tasks.first?.state, .resolved)
         XCTAssertEqual(queue.tasks.first?.execution, .completed)
         let after = try GitRepositoryScanner.scan(snapshot.url)
-        XCTAssertTrue(RepositoryIssueCatalog().findings(in: after).contains { $0.checkID == "git.changes" })
-        XCTAssertFalse(RepositoryIssueCatalog().findings(in: after).contains { $0.checkID == "files.readme" })
+        XCTAssertTrue(testCatalog.findings(in: after).contains { $0.checkID == "git.changes" })
+        XCTAssertFalse(testCatalog.findings(in: after).contains { $0.checkID == "files.readme" })
         XCTAssertEqual(try storage.load(), queue.tasks)
     }
     func testStructuredConversationKeepsInterleavedToolOutputSeparateAndDoesNotDuplicateFinalText() async throws {
         let snapshot = try repository()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { ConversationRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { ConversationRepairAgent() })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect the checkout")
         try await waitForCompletion(queue)
         let task = try XCTUnwrap(queue.tasks.first)
@@ -301,6 +353,43 @@ final class RepairTaskQueueTests: XCTestCase {
         XCTAssertEqual(restored.conversation?.first?.output, large)
         XCTAssertEqual(restored.conversation?.last?.text, "Final reply")
     }
+    func testRepeatedRechecksDoNotAppendUnchangedStatus() async throws {
+        let snapshot = try repository()
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, inspect: { _ in snapshot })
+        let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect only")
+        try await waitForCompletion(queue)
+        let originalEntries = try XCTUnwrap(queue.tasks.first?.conversation)
+        XCTAssertEqual(originalEntries.filter { $0.kind == .status }.count, 1)
+        for _ in 0..<2 {
+            queue.recheck(id)
+            try await waitForCompletion(queue)
+        }
+        XCTAssertEqual(queue.tasks.first?.conversation, originalEntries)
+        XCTAssertEqual(try storage.load(), queue.tasks)
+    }
+    func testSavedDuplicateStatusesAreRemovedWithoutLosingTurnHistoryOrChangedResults() throws {
+        let snapshot = try repository()
+        var task = RepairTask(finding: try finding(snapshot), repository: snapshot, prompt: "Inspect only")
+        task.state = .stillPresent
+        let evidence = "1 commit on main is ahead of origin/main."
+        task.conversation = [
+            RepairConversationEntry(id: "first", kind: .status, text: evidence, status: "stillPresent"),
+            RepairConversationEntry(id: "duplicate", kind: .status, text: evidence, status: "stillPresent"),
+            RepairConversationEntry(id: "follow-up", kind: .user, text: "What happened?"),
+            RepairConversationEntry(id: "reply", kind: .assistant, text: "Push was blocked."),
+            RepairConversationEntry(id: "second", kind: .status, text: evidence, status: "stillPresent"),
+            RepairConversationEntry(id: "second-duplicate", kind: .status, text: evidence, status: "stillPresent"),
+            RepairConversationEntry(id: "failed", kind: .status, text: evidence, status: "failed"),
+            RepairConversationEntry(id: "changed", kind: .status, text: "2 commits ahead.", status: "failed"),
+            RepairConversationEntry(id: "resolved", kind: .status, text: "No commits to push.", status: "resolved")
+        ]
+        try storage.save([task])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        XCTAssertEqual(queue.tasks.first?.conversation?.map(\.id), ["first", "follow-up", "reply", "second", "failed", "changed", "resolved"])
+        XCTAssertEqual(try storage.load(), queue.tasks)
+        let reopened = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        XCTAssertEqual(reopened.tasks, queue.tasks)
+    }
     func testLegacyActiveTaskWithoutStructuredConversationStillLoads() throws {
         let snapshot = try repository()
         var task = RepairTask(finding: try finding(snapshot), repository: snapshot, prompt: "Original prompt")
@@ -321,7 +410,7 @@ final class RepairTaskQueueTests: XCTestCase {
         XCTAssertEqual(decoded.activity, task.activity)
         XCTAssertEqual(decoded.prompt, task.prompt)
         try storage.save([decoded])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         XCTAssertEqual(queue.tasks.first?.conversation?.first?.text, task.activity)
         XCTAssertEqual(try storage.load().first?.conversation?.first?.text, task.activity)
     }
@@ -334,7 +423,7 @@ final class RepairTaskQueueTests: XCTestCase {
         old.activity = "Archived conversation remains available"
         let queued = RepairTask(finding: try finding(other), repository: other, prompt: "Still queued")
         try storage.save([old, queued])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         XCTAssertEqual(queue.tasks.map(\.id), [old.id, queued.id])
         XCTAssertEqual(try storage.load().map(\.id), [old.id, queued.id])
         XCTAssertTrue(queue.tasks.first?.state.isClosed == true)
@@ -355,7 +444,7 @@ final class RepairTaskQueueTests: XCTestCase {
         task.upsertConversation(RepairConversationEntry(id: "notice", kind: .status,
             text: "Already repaired externally", status: task.state.rawValue))
         try storage.save([task])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         XCTAssertTrue(RepositoryIssueListItem.items(findings: [], tasks: queue.tasks).isEmpty)
         let archived = RepositoryIssueListItem.items(findings: [], tasks: queue.tasks, includeCompleted: true)
         XCTAssertEqual(archived.first?.task, task)
@@ -365,7 +454,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testFollowUpKeepsTheConversationAndClosedConversationRemainsStored() async throws {
         let snapshot = try repository()
         let agent = MultiTurnRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let original = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect only; do not write.")
         try await waitForCompletion(queue)
         let first = try XCTUnwrap(queue.tasks.first)
@@ -374,7 +463,7 @@ final class RepairTaskQueueTests: XCTestCase {
         XCTAssertEqual(try storage.load(), [first])
 
         // Idle conversations survive restart without silently running another turn.
-        let restored = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let restored = try makeQueue(storage: storage, agentFactory: { agent })
         restored.start()
         try await Task.sleep(nanoseconds: 30_000_000)
         let runsBeforeFollowUp = await agent.submissions.count
@@ -394,7 +483,7 @@ final class RepairTaskQueueTests: XCTestCase {
         XCTAssertEqual(finished.conversation?.filter { $0.kind == .user }.map(\.text), ["Finish README now."])
         XCTAssertEqual(finished.conversation?.filter { $0.kind == .status }.count, 2)
         XCTAssertEqual(try storage.load(), restored.tasks)
-        let reopened = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let reopened = try makeQueue(storage: storage, agentFactory: { agent })
         XCTAssertEqual(reopened.tasks, restored.tasks)
 
         // Recurrence gets a new conversation; the closed conversation stays completed.
@@ -427,7 +516,7 @@ final class RepairTaskQueueTests: XCTestCase {
             upstream: snapshot.upstream, remoteURL: snapshot.remoteURL, ahead: nil, behind: nil,
             changes: [], staleBranches: [], worktrees: [], commits: [])
         let agent = MultiTurnRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent }, inspect: { _ in unavailable })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent }, inspect: { _ in unavailable })
         let id = try queue.enqueue(finding: originalFinding, repository: snapshot, prompt: "what happened")
         try await waitForCompletion(queue)
 
@@ -445,7 +534,7 @@ final class RepairTaskQueueTests: XCTestCase {
         let snapshot = try repository()
         let originalFinding = try finding(snapshot)
         let agent = MultiTurnRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: originalFinding, repository: snapshot, prompt: "Inspect only")
         try await waitForCompletion(queue)
         try "# README".write(to: snapshot.url.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
@@ -477,7 +566,7 @@ final class RepairTaskQueueTests: XCTestCase {
             let changed = RepositorySnapshot(url: snapshot.url, name: snapshot.name, branch: branch, upstream: upstream,
                 remoteURL: remote, ahead: 0, behind: 0, changes: [], staleBranches: [], worktrees: [], commits: [], rootFiles: [])
             let agent = MultiTurnRepairAgent()
-            let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent }, inspect: { _ in changed })
+            let queue = try makeQueue(storage: storage, agentFactory: { agent }, inspect: { _ in changed })
             try queue.enqueue(finding: originalFinding, repository: changed, prompt: "what happened")
             try await waitForCompletion(queue)
             let submissions = await agent.submissions
@@ -489,16 +578,16 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     func testOrdinaryInspectionClosesAnIdleConversationOnlyOnConfirmedAbsence() async throws {
         let snapshot = try repository()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect")
         try await waitForCompletion(queue)
         let unavailable = RepositorySnapshot(url: snapshot.url, name: snapshot.name, branch: snapshot.branch, upstream: nil,
             remoteURL: nil, ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
-        queue.acceptInspection(await RepositoryIssueCatalog().inspect(unavailable))
+        queue.acceptInspection(await testCatalog.inspect(unavailable))
         XCTAssertEqual(queue.tasks.first?.state, .stillPresent)
         XCTAssertEqual(RepositoryIssueListItem.items(findings: [], tasks: queue.tasks).first?.task, queue.tasks.first)
         try "# README".write(to: snapshot.url.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
-        queue.acceptInspection(await RepositoryIssueCatalog().inspect(try GitRepositoryScanner.scan(snapshot.url)))
+        queue.acceptInspection(await testCatalog.inspect(try GitRepositoryScanner.scan(snapshot.url)))
         XCTAssertEqual(queue.tasks.first?.state, .resolved)
         XCTAssertEqual(try storage.load(), queue.tasks)
         XCTAssertTrue(RepositoryIssueListItem.items(findings: [], tasks: queue.tasks).isEmpty)
@@ -507,7 +596,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testFollowUpSaveFailurePreservesThePreviousConversation() async throws {
         let snapshot = try repository()
         let agent = MultiTurnRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect only")
         try await waitForCompletion(queue)
         let previous = queue.tasks
@@ -520,7 +609,7 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     func testAgentCompletionDoesNotResolveAnUnchangedFinding() async throws {
         let snapshot = try repository()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Repair")
         try await waitForCompletion(queue)
         XCTAssertEqual(queue.tasks.first?.state, .stillPresent)
@@ -529,7 +618,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testDisappearedQueuedFindingSkipsAgentAndDeduplicates() async throws {
         let snapshot = try repository()
         let agent = TestRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         queue.canRun = { false }
         let original = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Original")
         let duplicate = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Different")
@@ -544,7 +633,7 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     func testUnavailableDetectorNeverCountsAsResolved() async throws {
         let snapshot = try repository()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() }, inspect: { url in
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, inspect: { url in
             RepositorySnapshot(url: url, name: "repo", branch: "main", upstream: nil, remoteURL: nil,
                                ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
         })
@@ -556,7 +645,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testVerificationFailureAfterAgentSuccessStaysUnknown() async throws {
         let snapshot = try repository()
         let inspector = SequencedInspector(snapshot: snapshot)
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() }, inspect: { _ in try await inspector.next() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, inspect: { _ in try await inspector.next() })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Repair")
         try await waitForCompletion(queue)
         XCTAssertEqual(queue.tasks.first?.state, .couldntVerify)
@@ -565,7 +654,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testChangedBranchDoesNotHideOriginalFinding() async throws {
         let snapshot = try repository()
         let agent = TestRepairAgent { task in _ = try GitRunner.run(["symbolic-ref", "HEAD", "refs/heads/other"], at: task.repositoryURL) }
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Repair")
         try await waitForCompletion(queue)
         XCTAssertEqual(queue.tasks.first?.state, .couldntVerify)
@@ -577,7 +666,7 @@ final class RepairTaskQueueTests: XCTestCase {
         try storage.save([saved])
         try "# Fixed while interrupted".write(to: snapshot.url.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         let agent = TestRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         XCTAssertEqual(queue.tasks.first?.state, .interrupted)
         queue.start()
         try await waitForCompletion(queue)
@@ -589,7 +678,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testQuitFlushPreservesBufferedConversationAndResumesTheSameThreadAfterRelaunch() async throws {
         let snapshot = try repository()
         let agent = BufferedConversationRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Inspect the project")
         for _ in 0..<500 {
             if await agent.isWaiting { break }
@@ -613,7 +702,7 @@ final class RepairTaskQueueTests: XCTestCase {
         try await waitForCompletion(queue)
 
         let resumedAgent = MultiTurnRepairAgent()
-        let relaunched = try RepairTaskQueue(storage: relaunchedStorage, agentFactory: { resumedAgent })
+        let relaunched = try makeQueue(storage: relaunchedStorage, agentFactory: { resumedAgent })
         XCTAssertEqual(relaunched.tasks.first?.state, .interrupted)
         XCTAssertEqual(relaunched.tasks.first?.id, id)
         XCTAssertEqual(relaunched.tasks.first?.conversation, saved.conversation)
@@ -636,7 +725,7 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     func testQuitFlushFailureIsReportedWithoutDiscardingConversations() throws {
         let snapshot = try repository()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         queue.canRun = { false }
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Saved request")
         let before = queue.tasks
@@ -650,7 +739,7 @@ final class RepairTaskQueueTests: XCTestCase {
         let snapshot = try repository()
         let other = try repository("other")
         let agent = TestRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         queue.canRun = { false }
         try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "First")
         let cancelled = try queue.enqueue(finding: finding(other), repository: other, prompt: "Cancel")
@@ -666,11 +755,11 @@ final class RepairTaskQueueTests: XCTestCase {
     func testSameRepositoryIssuesHaveConcurrentIndependentSessionsAndCancellation() async throws {
         let snapshot = try repository()
         let readme = try finding(snapshot)
-        let ignore = try XCTUnwrap(RepositoryIssueCatalog().findings(in: snapshot).first { $0.checkID == "files.gitignore" })
+        let ignore = try XCTUnwrap(testCatalog.findings(in: snapshot).first { $0.checkID == "files.gitignore" })
         let firstAgent = HeldRepairAgent(label: "README chat", file: "README.md")
         let secondAgent = HeldRepairAgent(label: "Ignore chat", file: ".gitignore")
         var created = 0
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: {
+        let queue = try makeQueue(storage: storage, agentFactory: {
             created += 1
             return created == 1 ? firstAgent : secondAgent
         })
@@ -710,7 +799,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testConcurrentTurnLimitAndQueuedWorkStartsAsEachSessionFinishes() async throws {
         let snapshots = try (0..<6).map { try repository("repo-\($0)") }
         var agents: [HeldRepairAgent] = []
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: {
+        let queue = try makeQueue(storage: storage, agentFactory: {
             let agent = HeldRepairAgent(label: "Chat \(agents.count)", file: "README.md")
             agents.append(agent)
             return agent
@@ -745,7 +834,7 @@ final class RepairTaskQueueTests: XCTestCase {
             if task.repositoryName == "repo" { throw RepairError.blocked("Repair failed") }
             try "# README".write(to: task.repositoryURL.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         }
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         queue.canRun = { false }
         try queue.enqueue(finding: finding(first), repository: first, prompt: "First")
         try queue.enqueue(finding: finding(second), repository: second, prompt: "Second")
@@ -758,7 +847,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testAgentQuestionsContinueSameSession() async throws {
         let snapshot = try repository()
         let agent = InteractiveRepairAgent()
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Ask me first")
         for _ in 0..<200 where queue.tasks.first?.state != .needsInput { try await Task.sleep(nanoseconds: 10_000_000) }
         let interaction = try XCTUnwrap(queue.tasks.first?.interactions.first)
@@ -772,7 +861,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testFailedQuestionSubmissionReportsErrorAndCanBeRetried() async throws {
         let snapshot = try repository()
         let agent = InteractiveRepairAgent(rejectFirstResponse: true)
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Ask me first")
         for _ in 0..<200 where queue.tasks.first?.state != .needsInput { try await Task.sleep(nanoseconds: 10_000_000) }
         let interaction = try XCTUnwrap(queue.tasks.first?.interactions.first)
@@ -796,7 +885,7 @@ final class RepairTaskQueueTests: XCTestCase {
     func testCancellationVerifiesPartialChanges() async throws {
         let snapshot = try repository()
         let agent = InteractiveRepairAgent(writeBeforeWaiting: true)
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { agent })
+        let queue = try makeQueue(storage: storage, agentFactory: { agent })
         let id = try queue.enqueue(finding: finding(snapshot), repository: snapshot, prompt: "Repair")
         for _ in 0..<200 where queue.tasks.first?.state != .needsInput { try await Task.sleep(nanoseconds: 10_000_000) }
         queue.cancel(id)
@@ -806,9 +895,9 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     func testCorruptStorageAndFailedWriteDoNotStartAgent() async throws {
         try Data("invalid".utf8).write(to: storage.url)
-        XCTAssertThrowsError(try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() }))
+        XCTAssertThrowsError(try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }))
         try FileManager.default.removeItem(at: storage.url)
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
         let snapshot = try repository()
         try FileManager.default.removeItem(at: storage.url)
         try FileManager.default.createDirectory(at: storage.url, withIntermediateDirectories: true)
@@ -837,7 +926,7 @@ final class RepairTaskQueueTests: XCTestCase {
         let finding = try XCTUnwrap(report.findings().first)
         let recipe = RepairRecipe(id: "custom.finish", title: "Finish notes", prompt: "Finish the notes.")
         XCTAssertEqual(RepairRecipeCatalog(recipes: [recipe]).recipes(for: finding), [recipe])
-        let queue = try RepairTaskQueue(storage: storage, agentFactory: { TestRepairAgent { task in
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent { task in
             try "Complete".write(to: task.repositoryURL.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
         } }, catalog: catalog)
         try queue.enqueue(finding: finding, repository: snapshot, prompt: recipe.prompt, recipeID: recipe.id)
@@ -846,7 +935,7 @@ final class RepairTaskQueueTests: XCTestCase {
     }
     func testPreservingFetchErrorKeepsInspectionFindingVisible() async throws {
         var snapshot = try repository()
-        let catalog = RepositoryIssueCatalog()
+        let catalog = testCatalog
         let report = await catalog.inspect(snapshot)
         snapshot.fetchError = "Fetch failed earlier"
         let updated = report.updatingSnapshot(snapshot, catalog: catalog)
@@ -870,7 +959,7 @@ final class RepairTaskQueueTests: XCTestCase {
         let unavailable = RepositorySnapshot(url: snapshot.url, name: "repo", branch: "main", upstream: nil, remoteURL: nil,
             ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [], rootFiles: [],
             inspectionErrors: ["worktrees": "Git inspection failed"])
-        if case .unknown = RepositoryIssueCatalog().verify(worktreeFinding, in: unavailable) {} else { XCTFail("Failed inspection was treated as absence") }
+        if case .unknown = testCatalog.verify(worktreeFinding, in: unavailable) {} else { XCTFail("Failed inspection was treated as absence") }
     }
 }
 

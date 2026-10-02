@@ -25,20 +25,22 @@ public enum RepositoryFilter: String, CaseIterable, Sendable {
 
 public enum RepositorySort: String, CaseIterable, Sendable {
     case name = "Name"
+    case lastActivity = "Last activity"
     case toPush = "To push"
     case toPull = "To pull"
     case changedFiles = "Changed files"
     case staleBranches = "Stale branches"
     case worktrees = "Worktrees"
 
-    private func count(in repository: RepositorySnapshot) -> Int? {
+    private func value(in repository: RepositorySnapshot) -> Double? {
         switch self {
         case .name: return nil
-        case .toPush: return repository.ahead
-        case .toPull: return repository.behind
-        case .changedFiles: return repository.changedFileCount
-        case .staleBranches: return repository.staleBranches.count
-        case .worktrees: return repository.worktrees.count
+        case .lastActivity: return repository.lastCommitAt?.timeIntervalSince1970
+        case .toPush: return repository.ahead.map { Double($0) }
+        case .toPull: return repository.behind.map { Double($0) }
+        case .changedFiles: return Double(repository.changedFileCount)
+        case .staleBranches: return Double(repository.staleBranches.count)
+        case .worktrees: return Double(repository.worktrees.count)
         }
     }
 
@@ -53,7 +55,7 @@ public enum RepositorySort: String, CaseIterable, Sendable {
             filter.matches($0) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))
         }.sorted { lhs, rhs in
             if self != .name {
-                switch (count(in: lhs), count(in: rhs)) {
+                switch (value(in: lhs), value(in: rhs)) {
                 case let (left?, right?) where left != right:
                     return ascending ? left < right : left > right
                 case (nil, .some): return false
@@ -63,7 +65,7 @@ public enum RepositorySort: String, CaseIterable, Sendable {
             }
             let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
             if nameOrder != .orderedSame {
-                // Equal counts keep a predictable alphabetical order in either direction.
+                // Equal values keep a predictable alphabetical order in either direction.
                 return self == .name && !ascending
                     ? nameOrder == .orderedDescending : nameOrder == .orderedAscending
             }

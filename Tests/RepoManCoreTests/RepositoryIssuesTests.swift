@@ -15,6 +15,49 @@ final class RepositoryIssuesTests: XCTestCase {
         try FileManager.default.removeItem(at: root)
     }
 
+    func testIncompleteChecksSharePendingCountsWithoutBecomingFindings() throws {
+        let snapshot = try GitRepositoryScanner.scan(repository("incomplete"))
+        let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: "git.pull", subject: "main",
+            title: "Commits to pull", evidence: "3 commits are available.", category: .git, symbol: "arrow.down")
+        let ciFinding = RepositoryFinding(repositoryID: snapshot.id, checkID: "ci.coverage",
+            title: "Missing CI coverage", evidence: "No validation was found.", category: .ci, symbol: "checkmark.shield")
+        let report = RepositoryInspectionReport(snapshot: snapshot, results: [
+            "git.pull": .findings([finding]),
+            "ci.coverage": .findings([ciFinding]),
+            "files.secrets": .unavailable("Tracked text exceeds 1 MiB."),
+            "dependencies.lockfileDrift": .unavailable("Python groups need resolver review.")
+        ], checkOrder: ["git.pull", "ci.coverage", "files.secrets", "dependencies.lockfileDrift"])
+        let incomplete = issues.incompleteItems(in: report)
+        XCTAssertEqual(Set(incomplete.map { $0.finding.checkID }), ["files.secrets", "dependencies.lockfileDrift"])
+        XCTAssertTrue(incomplete.allSatisfy { $0.isIncomplete && $0.task == nil && $0.finding.recipeIDs.isEmpty })
+        XCTAssertEqual(incomplete.first { $0.finding.checkID == "dependencies.lockfileDrift" }?.finding.title,
+            "Manifest and lockfile consistency")
+        XCTAssertEqual(report.findings(), [finding, ciFinding])
+        let visible = RepositoryIssueListItem.items(findings: report.findings(), tasks: []) + incomplete
+        XCTAssertEqual(RepositoryIssueStatus.counts(in: visible), [.pending: 4])
+        XCTAssertEqual(issues.incompleteItems(in: report, disabledChecks: ["files.secrets"]).map { $0.finding.checkID },
+            ["dependencies.lockfileDrift"])
+        let recovered = RepositoryInspectionReport(snapshot: snapshot, results: [
+            "files.secrets": .findings([]), "dependencies.lockfileDrift": .findings([])
+        ], checkOrder: ["files.secrets", "dependencies.lockfileDrift"])
+        XCTAssertTrue(issues.incompleteItems(in: recovered).isEmpty)
+    }
+
+    func testIncompleteCheckDoesNotReplaceAnExistingRepairConversation() throws {
+        let snapshot = try GitRepositoryScanner.scan(repository("conversation"))
+        let check = try XCTUnwrap(issues.checks.first { $0.id == "files.secrets" })
+        let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: check.id,
+            title: check.title, evidence: "Original evidence", category: check.category, symbol: check.symbol)
+        var task = RepairTask(finding: finding, repository: snapshot, prompt: "Review the finding")
+        task.state = .running
+        let incomplete = RepositoryIssueListItem(incompleteCheck: check, repositoryID: snapshot.id, reason: "File too large")
+        let visible = RepositoryIssueListItem.items(findings: [], tasks: [task], includeCompleted: true) + [incomplete]
+        XCTAssertEqual(visible.count, 2)
+        XCTAssertEqual(Set(visible.map(\.id)).count, 2)
+        XCTAssertEqual(visible.first?.task?.id, task.id)
+        XCTAssertEqual(RepositoryIssueStatus.counts(in: visible), [.processing: 1, .pending: 1])
+    }
+
     func testFileChecksRecognizeVariantsAndDoNotTreatUnknownAsMissing() throws {
         let repo = try repository("files")
         try write("ReadMe.rst", "Docs", in: repo)

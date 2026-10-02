@@ -20,6 +20,29 @@ final class CodexAgentTests: XCTestCase {
         CodexAgent(executable: { path.path }, storage: CodexStorage(homeDirectory: path.deletingLastPathComponent().appendingPathComponent("codex-home")))
     }
 
+    func testCancellingRecoveryStopsTheConnectionPromptlyWithoutStartingATurn() async throws {
+        let (path, initial) = try fixture()
+        let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "held-recovery".write(to: root.appendingPathComponent("settings"), atomically: true, encoding: .utf8)
+        var task = initial; task.threadID = "fixture-thread"; task.turnID = "fixture-turn"
+        let agent = agent(at: path)
+        let recovery = Task { try await agent.recover(task) }
+        for _ in 0..<500 {
+            let requests = try? String(contentsOf: root.appendingPathComponent("requests"), encoding: .utf8)
+            if requests?.contains("thread/read") == true { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        let start = Date()
+        await agent.cancel()
+        do {
+            let outcome = try await recovery.value
+            XCTAssertEqual(outcome, .cancelled)
+        } catch { XCTAssertTrue(error is CancellationError, error.localizedDescription) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.5, "Stop must release a stalled recovery connection immediately")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("requests"), encoding: .utf8), "thread/read\n")
+    }
+
     func testSignedOutPrivateHomeShowsIsolatedLoginCommandBeforeCreatingThread() async throws {
         let (path, task) = try fixture()
         defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
@@ -375,6 +398,25 @@ final class CodexAgentTests: XCTestCase {
     func testInvalidExecutableProducesActionableFailure() {
         XCTAssertThrowsError(try CodexAgent.locateExecutable(configured: "/not/a/codex"))
     }
+    func testExecutableDiscoveryPrefersStandaloneCodexAndExcludesSuperset() {
+        let candidates = CodexAgent.executableCandidates(
+            path: "/test/home/.superset/bin:/custom/bin:/opt/homebrew/bin:relative/bin", home: "/test/home")
+        XCTAssertEqual(candidates, ["/opt/homebrew/bin/codex", "/usr/local/bin/codex",
+            "/test/home/.local/bin/codex", "/Applications/Codex.app/Contents/Resources/codex", "/custom/bin/codex"])
+    }
+    func testExecutableDiscoveryExcludesSymlinksToSuperset() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("Codex discovery \(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let wrapper = root.appendingPathComponent(".superset/bin/codex")
+        let alias = root.appendingPathComponent(".local/bin/codex")
+        try FileManager.default.createDirectory(at: wrapper.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: alias.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: wrapper)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: wrapper)
+        let candidates = CodexAgent.executableCandidates(path: alias.deletingLastPathComponent().path, home: root.path)
+        XCTAssertFalse(candidates.contains(alias.path))
+        XCTAssertFalse(candidates.contains(wrapper.path))
+    }
     func testQuestionMetadataKeepsLegacySavedQuestionsReadable() throws {
         let legacy = Data(#"{"id":"scope","question":"Which file?","options":["README"]}"#.utf8)
         let question = try JSONDecoder().decode(AgentQuestion.self, from: legacy)
@@ -625,6 +667,9 @@ assert read()['method'] == 'initialized'
 request = read()
 if request['method'] == 'thread/read':
     assert request['params']['threadId'] == 'fixture-thread'
+    if settings == 'held-recovery':
+        import time
+        time.sleep(2)
     if settings == 'migration':
         result(request, {'thread': {'id': 'fixture-thread', 'historyMode': 'paginated', 'turns': []}})
         request = read()

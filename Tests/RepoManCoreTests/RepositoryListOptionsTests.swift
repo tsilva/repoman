@@ -51,7 +51,7 @@ final class RepositoryListOptionsTests: XCTestCase {
             snapshot("alpha", ahead: 2, behind: 2, changes: 2, staleBranches: 2, worktrees: 2),
             snapshot("many", ahead: 10, behind: 10, changes: 10, staleBranches: 10, worktrees: 10)
         ]
-        for sort in RepositorySort.allCases where sort != .name {
+        for sort in RepositorySort.allCases where sort != .name && sort != .lastActivity {
             XCTAssertEqual(
                 sort.repositories(repositories, ascending: false).map(\.name),
                 ["many", "alpha", "beta", "zero"], sort.rawValue
@@ -71,6 +71,27 @@ final class RepositoryListOptionsTests: XCTestCase {
         }
     }
 
+    func testLastActivitySortUsesCommitDatesWithAlphabeticalTiesAndUnknownDatesLast() {
+        let older = Date(timeIntervalSince1970: 1_000)
+        let newer = Date(timeIntervalSince1970: 2_000)
+        let repositories = [
+            snapshot("unknown"), snapshot("beta", lastCommitAt: newer),
+            snapshot("old", lastCommitAt: older), snapshot("alpha", lastCommitAt: newer)
+        ]
+        XCTAssertEqual(
+            RepositorySort.lastActivity.repositories(repositories, ascending: false).map(\.name),
+            ["alpha", "beta", "old", "unknown"]
+        )
+        XCTAssertEqual(
+            RepositorySort.lastActivity.repositories(repositories, ascending: true).map(\.name),
+            ["old", "alpha", "beta", "unknown"]
+        )
+        XCTAssertEqual(
+            RepositorySort.lastActivity.repositories(repositories, search: "ALPHA", ascending: false).map(\.name),
+            ["alpha"]
+        )
+    }
+
     func testEqualNamesUsePathToKeepOrderingStable() {
         let repositories = [snapshot("same", directory: "z"), snapshot("same", directory: "a")]
         for sort in RepositorySort.allCases {
@@ -86,7 +107,8 @@ final class RepositoryListOptionsTests: XCTestCase {
         changes: Int = 0,
         staleBranches: Int = 0,
         worktrees: Int = 0,
-        fetchError: String? = nil
+        fetchError: String? = nil,
+        lastCommitAt: Date? = nil
     ) -> RepositorySnapshot {
         RepositorySnapshot(
             url: URL(fileURLWithPath: "/\(directory)/\(name)"), name: name,
@@ -95,7 +117,8 @@ final class RepositoryListOptionsTests: XCTestCase {
             changes: (0..<changes).map { WorkingTreeChange(path: "file\($0)", kind: .modified, added: nil, removed: nil) },
             staleBranches: (0..<staleBranches).map { "branch\($0)" },
             worktrees: (0..<worktrees).map { "worktree\($0)" },
-            commits: [], fetchError: fetchError, rootFiles: ["README.md", ".gitignore", "LICENSE"]
+            commits: [], fetchError: fetchError, rootFiles: ["README.md", ".gitignore", "LICENSE"],
+            lastCommitAt: lastCommitAt
         )
     }
 }

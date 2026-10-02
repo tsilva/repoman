@@ -13,6 +13,8 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
     public let staleBranches: [String]
     public let worktrees: [String]
     public let commits: [RepositoryCommit]
+    /// Committer date of HEAD, also available when commit details are not loaded.
+    public let lastCommitAt: Date?
     public let detailsLoaded: Bool
     /// Nil means root inspection failed; detectors must not interpret that as missing files.
     public let rootFiles: [String]?
@@ -40,7 +42,8 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
         fetchedAt: Date? = nil,
         fetchError: String? = nil,
         rootFiles: [String]? = nil,
-        inspectionErrors: [String: String] = [:]
+        inspectionErrors: [String: String] = [:],
+        lastCommitAt: Date? = nil
     ) {
         self.url = url
         self.name = name
@@ -53,6 +56,7 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
         self.staleBranches = staleBranches
         self.worktrees = worktrees
         self.commits = commits
+        self.lastCommitAt = lastCommitAt
         self.detailsLoaded = detailsLoaded
         self.rootFiles = rootFiles
         self.inspectionErrors = inspectionErrors

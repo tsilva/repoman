@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -5,6 +6,8 @@ struct SettingsView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var section: SettingsSection = .issueChecks
     @State private var search = ""
+    @State private var excludedPath = ""
+    @State private var configuringCheck: RepositoryCheck?
 
     private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -19,11 +22,13 @@ struct SettingsView: View {
                         header
                         if query.isEmpty {
                             if section == .general { generalSettings }
+                            else if section == .providers { OpenRouterSettingsView() }
                             else { issueChecks }
                         } else {
                             if matchesGeneral { generalSettings }
+                            if matches("Providers OpenRouter API key token models") { OpenRouterSettingsView() }
                             issueChecks
-                            if !matchesGeneral && matchingGroups.isEmpty {
+                            if !matchesGeneral && !matches("Providers OpenRouter API key token models") && matchingGroups.isEmpty {
                                 ContentUnavailableView.search(text: query)
                                     .frame(maxWidth: .infinity)
                             }
@@ -43,21 +48,31 @@ struct SettingsView: View {
         .font(.system(size: 14))
         .foregroundStyle(Theme.primary)
         .background(Theme.background)
+        .background { SettingsWindowToolbar() }
         .preferredColorScheme(.dark)
         .toolbar(removing: .title)
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                Button {
+                ToolbarActionButton(symbol: "chevron.left", title: "Back to repositories") {
                     dismissWindow()
-                } label: {
-                    Image(systemName: "chevron.left")
                 }
                 .keyboardShortcut(.cancelAction)
                 .help("Back to repositories (Esc)")
                 .accessibilityLabel("Back to repositories")
                 .accessibilityIdentifier("settings.back")
             }
+            .sharedBackgroundVisibility(.hidden)
         }
+        .sheet(item: $configuringCheck) { check in
+            ModelCheckSettingsView(check: check) {
+                configuringCheck = nil
+                section = .providers
+                search = ""
+            }
+            .environmentObject(store)
+        }
+        .onAppear { showRequestedCheck() }
+        .onChange(of: store.requestedSettingsCheckID) { _, _ in showRequestedCheck() }
     }
 
     private var sidebar: some View {
@@ -135,6 +150,9 @@ struct SettingsView: View {
                 Text("Changes save automatically. Active repairs continue.")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.secondary)
+            } else if section == .providers {
+                Text("Connect providers used by configurable issue checks.")
+                    .foregroundStyle(Theme.secondary)
             } else {
                 Text("Choose the folder RepoMan monitors for repositories.")
                     .foregroundStyle(Theme.secondary)
@@ -143,33 +161,77 @@ struct SettingsView: View {
     }
 
     private var generalSettings: some View {
-        settingsGroup("Repositories") {
-            HStack(spacing: 24) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Monitored folder")
-                    Text("Visible Git repositories directly inside this folder appear in RepoMan.")
+        VStack(alignment: .leading, spacing: 24) {
+            settingsGroup("Repositories") {
+                HStack(spacing: 24) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Monitored folder")
+                        Text("Visible Git repositories directly inside this folder appear in RepoMan.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(store.folder?.abbreviatedPath ?? "No folder selected")
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(Theme.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .help(store.folder?.path ?? "Choose a folder to start monitoring repositories.")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Change…") { store.chooseFolder() }
+                        .controlSize(.regular)
+                        .accessibilityLabel("Change monitored folder")
+                }
+                .padding(18)
+            }
+            settingsGroup("Path blacklist") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Repositories in these folders are excluded, including through symlinks. Changes save and apply automatically.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.secondary)
+                    Text("Use a folder name such as .archived to match anywhere, or a full path to exclude a specific folder and everything beneath it. Relative paths start at the monitored folder.")
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(store.folder?.abbreviatedPath ?? "No folder selected")
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(Theme.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .help(store.folder?.path ?? "Choose a folder to start monitoring repositories.")
+                    ForEach(store.excludedRepositoryPaths, id: \.self) { path in
+                        HStack {
+                            Text(path)
+                                .font(.system(size: 13, design: .monospaced))
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .help(path)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button { store.removeExcludedRepositoryPath(path) } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Remove excluded path \(path)")
+                        }
+                    }
+                    HStack {
+                        TextField(".archived or ~/repos/archived", text: $excludedPath)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addExcludedPath() }
+                            .accessibilityLabel("Excluded repository path")
+                            .accessibilityIdentifier("settings.excludedPath")
+                        Button("Add") { addExcludedPath() }
+                            .disabled(excludedPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityLabel("Add excluded repository path")
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Change…") { store.chooseFolder() }
-                    .controlSize(.regular)
-                    .accessibilityLabel("Change monitored folder")
+                .padding(18)
             }
-            .padding(18)
         }
     }
 
+    private func addExcludedPath() {
+        store.addExcludedRepositoryPath(excludedPath)
+        excludedPath = ""
+    }
+
     private var matchesGeneral: Bool {
-        matches("General Repositories Monitored folder Visible Git repositories directly inside this folder "
-                + (store.folder?.path ?? ""))
+        matches("General Repositories Monitored folder Visible Git repositories directly inside this folder Path blacklist excluded paths folders symlinks .archived "
+                + (store.folder?.path ?? "") + " " + store.excludedRepositoryPaths.joined(separator: " "))
     }
 
     private var matchingGroups: [SettingsCheckGroup] {
@@ -193,25 +255,37 @@ struct SettingsView: View {
             settingsGroup(group.title) {
                 VStack(spacing: 0) {
                     ForEach(checks) { check in
-                        Toggle(isOn: Binding(
-                            get: { !store.disabledChecks.contains(check.id) },
-                            set: { store.setCheck(check.id, enabled: $0) }
-                        )) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(check.title)
-                                Text(check.settingsDescription)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(Theme.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 12) {
+                            Toggle(isOn: Binding(
+                                get: { !store.disabledChecks.contains(check.id) },
+                                set: { store.setCheck(check.id, enabled: $0) }
+                            )) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(check.title)
+                                    Text(check.settingsDescription)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(Theme.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .tint(Theme.blue)
+                            .accessibilityLabel(check.title)
+                            .accessibilityHint(check.settingsDescription)
+                            .accessibilityIdentifier("settings.check.\(check.id)")
+                            if check.configurationKind != nil {
+                                Button { configuringCheck = check } label: {
+                                    Image(systemName: "gearshape").foregroundStyle(Theme.secondary)
+                                        .frame(width: 28, height: 28)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Configure \(check.title)")
+                                .accessibilityLabel("Configure \(check.title)")
+                                .accessibilityIdentifier("settings.configure.\(check.id)")
+                            }
                         }
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .tint(Theme.blue)
-                        .accessibilityLabel(check.title)
-                        .accessibilityHint(check.settingsDescription)
-                        .accessibilityIdentifier("settings.check.\(check.id)")
                         .padding(.horizontal, 18)
                         .padding(.vertical, 8)
                         .frame(minHeight: 54)
@@ -224,6 +298,14 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private func showRequestedCheck() {
+        guard let id = store.requestedSettingsCheckID else { return }
+        store.requestedSettingsCheckID = nil
+        configuringCheck = store.issueCatalog.checks.first { $0.id == id && $0.configurationKind != nil }
+        section = .issueChecks
+        search = ""
     }
 
     private func settingsGroup<Content: View>(_ title: String,
@@ -245,8 +327,11 @@ struct SettingsView: View {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case issueChecks = "Issue checks"
+    case providers = "Providers"
     var id: Self { self }
-    var symbol: String { self == .general ? "gearshape" : "checkmark.circle" }
+    var symbol: String {
+        switch self { case .general: "gearshape"; case .issueChecks: "checkmark.circle"; case .providers: "key" }
+    }
 }
 
 private struct SettingsCheckGroup: Identifiable {
@@ -260,6 +345,22 @@ private struct SettingsCheckGroup: Identifiable {
         Self(title: "Automated checks (CI)", categories: [.ci]),
         Self(title: "Inspection", categories: [.inspection])
     ]
+}
+
+/// Settings scenes override the scene toolbar style with AppKit's centered preferences style.
+/// Apply the unified style after the native window attaches so navigation sits by the traffic lights.
+private struct SettingsWindowToolbar: NSViewRepresentable {
+    func makeNSView(context: Context) -> ToolbarView { ToolbarView() }
+    func updateNSView(_ view: ToolbarView, context: Context) {}
+
+    final class ToolbarView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            DispatchQueue.main.async { [weak self] in
+                self?.window?.toolbarStyle = .unified
+            }
+        }
+    }
 }
 
 private extension RepositoryCheck {
@@ -278,6 +379,7 @@ private extension RepositoryCheck {
         case "git.checkoutIntegrity": "A nested Git repository (submodule) is missing or at an unexpected commit, or a Git LFS file contains a placeholder instead of its actual content."
         case "files.mergeMarkers": "Git conflict markers such as <<<<<<< remain in tracked source files, indicating a merge conflict may not have been fully resolved."
         case "files.readme": "No README was found in the repository's top-level folder to explain the project and how to use it."
+        case "docs.readmeConsistency": "Checks README layout and clarity against optimize-readme. Uses OpenRouter for semantic judgments; configure the model and provider with the cog."
         case "files.gitignore": "No .gitignore was found in the top-level folder to tell Git which local files to leave untracked."
         case "files.license": "No LICENSE, LICENCE, or COPYING file was found in the top-level folder to explain how others may use the project."
         case "files.generatedTracked": "Git tracks files usually created by tools, such as dependency folders, caches, or build output."

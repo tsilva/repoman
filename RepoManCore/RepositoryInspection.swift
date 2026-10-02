@@ -5,11 +5,13 @@ import Foundation
 public struct RepositoryInspectionContext: Sendable {
     public let snapshot: RepositorySnapshot
     let allowCachedRemoteMetadata: Bool
+    let allowCachedModelChecks: Bool
     private let files = InspectionFileCache()
     private let git = InspectionGitCache()
     private let freshness = InspectionFreshness()
-    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false) {
+    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedModelChecks: Bool = false) {
         self.snapshot = snapshot; self.allowCachedRemoteMetadata = allowCachedRemoteMetadata
+        self.allowCachedModelChecks = allowCachedModelChecks
     }
     func markCached(_ checkID: String) { freshness.insert(checkID) }
     var cachedChecks: Set<String> { freshness.values }
@@ -176,31 +178,37 @@ private final class InspectionFileCache: @unchecked Sendable {
         return text
     }
 }
-public enum RepositoryCheckResult: Sendable {
+public enum RepositoryCheckResult: Codable, Sendable {
     case findings([RepositoryFinding])
+    case partial([RepositoryFinding], String)
     case unavailable(String)
+    var detectedFindings: [RepositoryFinding] {
+        switch self { case .findings(let findings), .partial(let findings, _): return findings; case .unavailable: return [] }
+    }
 }
 public struct RepositoryInspectionReport: Sendable {
     public let snapshot: RepositorySnapshot
     public let results: [String: RepositoryCheckResult]
     public let checkOrder: [String]
     public var cachedChecks: Set<String> = []
+    public var completedAt: [String: Date] = [:]
     public var unavailableChecks: [String: String] {
-        results.compactMapValues { result in if case .unavailable(let reason) = result { return reason }; return nil }
+        results.compactMapValues { result in
+            switch result { case .unavailable(let reason), .partial(_, let reason): return reason; case .findings: return nil }
+        }
     }
     /// Local refresh keeps prior fetch errors. Reevaluate cheap checks against that final snapshot.
     public func updatingSnapshot(_ snapshot: RepositorySnapshot, catalog: RepositoryIssueCatalog) -> Self {
         var updated = results
-        for check in catalog.checks where !check.requiresExtendedInspection {
+        for check in catalog.checks where !check.requiresExtendedInspection && !cachedChecks.contains(check.id) && results[check.id] != nil {
             if let reason = check.availability(snapshot) { updated[check.id] = .unavailable(reason) }
             else { updated[check.id] = .findings(check.detect(snapshot)) }
         }
-        return Self(snapshot: snapshot, results: updated, checkOrder: checkOrder, cachedChecks: cachedChecks)
+        return Self(snapshot: snapshot, results: updated, checkOrder: checkOrder, cachedChecks: cachedChecks, completedAt: completedAt)
     }
     public func findings(disabledChecks: Set<String> = []) -> [RepositoryFinding] {
         checkOrder.filter { !disabledChecks.contains($0) }.flatMap { key -> [RepositoryFinding] in
-            if case .findings(let findings) = results[key] { return findings }
-            return []
+            results[key]?.detectedFindings ?? []
         }
     }
 }
@@ -210,44 +218,132 @@ public extension RepositoryIssueCatalog {
     func inspect(
         _ snapshot: RepositorySnapshot,
         allowCachedRemoteMetadata: Bool = false,
+        cache: RepositoryInspectionCache? = nil,
+        forceRefresh: Bool = false,
+        excludingChecks: Set<String> = [],
+        now: @escaping @Sendable () -> Date = { Date() },
         onProgress: (@Sendable (RepositoryInspectionReport) async -> Void)? = nil
     ) async -> RepositoryInspectionReport {
-        let context = RepositoryInspectionContext(snapshot: snapshot, allowCachedRemoteMetadata: allowCachedRemoteMetadata)
-        var results: [String: RepositoryCheckResult] = [:]
-        let order = checks.map(\.id)
-        await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order))
+        let activeChecks = checks.filter { !excludingChecks.contains($0.id) }
+        let context = RepositoryInspectionContext(snapshot: snapshot, allowCachedRemoteMetadata: allowCachedRemoteMetadata && !forceRefresh,
+            allowCachedModelChecks: cache != nil && !forceRefresh)
+        let reusable = forceRefresh ? [:] : await cache?.reusableResults(for: snapshot, checks: activeChecks, now: now()) ?? [:]
+        var results = reusable.mapValues(\.result)
+        var completedAt = reusable.mapValues(\.completedAt)
+        let reusedChecks = Set(reusable.keys)
+        let order = activeChecks.map(\.id)
+        await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order, cachedChecks: reusedChecks, completedAt: completedAt))
         await withTaskGroup(of: (String, RepositoryCheckResult).self) { group in
-            var pending = checks.makeIterator()
+            var pending = activeChecks.filter { !reusedChecks.contains($0.id) }.makeIterator()
             func enqueue(_ check: RepositoryCheck) {
                 group.addTask {
                     do {
-                        let findings = try await check.inspect(context)
+                        let result = try await check.evaluate(context)
+                        let findings = result.detectedFindings
                         guard findings.allSatisfy({ $0.repositoryID == snapshot.id && $0.checkID == check.id }),
                               Set(findings.map(\.id)).count == findings.count else {
                             return (check.id, .unavailable("Detector returned invalid or duplicate finding identities."))
                         }
-                        return (check.id, .findings(findings))
+                        return (check.id, result)
                     } catch { return (check.id, .unavailable(error.localizedDescription)) }
                 }
             }
             for _ in 0..<4 { if let check = pending.next() { enqueue(check) } }
             for await (id, result) in group {
                 results[id] = result
+                completedAt[id] = now()
                 if let check = pending.next() { enqueue(check) }
-                await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order, cachedChecks: context.cachedChecks))
+                await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order, cachedChecks: reusedChecks.union(context.cachedChecks), completedAt: completedAt))
             }
         }
-        return RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order, cachedChecks: context.cachedChecks)
+        let report = RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order,
+            cachedChecks: reusedChecks.union(context.cachedChecks), completedAt: completedAt)
+        await cache?.store(report)
+        return report
     }
     func verify(_ finding: RepositoryFinding, in report: RepositoryInspectionReport) -> RepairVerification {
         guard report.snapshot.id == finding.repositoryID else { return .unknown("Repository identity changed.") }
-        if report.cachedChecks.contains(finding.checkID) { return .unknown("Cached remote metadata cannot verify a repair; a fresh inspection is required.") }
+        if report.cachedChecks.contains(finding.checkID) { return .unknown("Cached check results cannot verify a repair; a fresh inspection is required.") }
         guard let result = report.results[finding.checkID] else { return .unknown("The original detector is no longer registered.") }
         switch result {
         case .unavailable(let reason): return .unknown(reason)
+        case .partial(let findings, let reason):
+            if let current = findings.first(where: { $0.id == finding.id }) { return .present(current.evidence) }
+            return .unknown(reason)
         case .findings(let findings):
             if let current = findings.first(where: { $0.id == finding.id }) { return .present(current.evidence) }
             return .absent("Fresh inspection confirms this finding is absent.")
         }
+    }
+}
+
+/// Results and their original completion times survive app restarts. Repair inspection
+/// omits this cache, so cached findings can never establish that a repair succeeded.
+public actor RepositoryInspectionCache {
+    public struct Entry: Codable, Sendable {
+        public let result: RepositoryCheckResult
+        public let completedAt: Date
+    }
+    private struct RepositoryEntry: Codable {
+        let identity: String
+        var checks: [String: Entry]
+    }
+    private struct Storage: Codable {
+        var version = 1
+        var repositories: [String: RepositoryEntry] = [:]
+    }
+    private var storage: Storage
+    private let url: URL
+    public private(set) var persistenceError: String?
+
+    public init(url: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("RepoMan/inspection-cache.json")) {
+        self.url = url
+        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode(Storage.self, from: data), saved.version == 1 {
+            storage = saved
+        } else { storage = Storage() }
+    }
+
+    private func identity(_ snapshot: RepositorySnapshot) -> String {
+        // A replacement checkout, branch switch, or remote change invalidates its results.
+        let git = snapshot.url.appendingPathComponent(".git")
+        let created = (try? git.resourceValues(forKeys: [.creationDateKey]))?.creationDate?.timeIntervalSince1970
+        return [snapshot.branch, snapshot.upstream ?? "", snapshot.remoteURL ?? "", created.map { String($0) } ?? ""]
+            .joined(separator: "\0")
+    }
+
+    public func reusableResults(for snapshot: RepositorySnapshot, checks: [RepositoryCheck], now: Date = Date()) -> [String: Entry] {
+        guard let repository = storage.repositories[snapshot.id], repository.identity == identity(snapshot) else { return [:] }
+        return checks.reduce(into: [:]) { entries, check in
+            guard !check.usesContentCache, let entry = repository.checks[check.id],
+                  !check.isDue(result: entry.result, completedAt: entry.completedAt, now: now) else { return }
+            entries[check.id] = entry
+        }
+    }
+
+    public func invalidate(checkIDs: Set<String>) {
+        for key in storage.repositories.keys {
+            for id in checkIDs { storage.repositories[key]?.checks.removeValue(forKey: id) }
+        }
+        do { try JSONEncoder().encode(storage).write(to: url, options: .atomic) }
+        catch { persistenceError = "Could not save issue check preferences: \(error.localizedDescription)" }
+    }
+
+    public func store(_ report: RepositoryInspectionReport) {
+        guard report.results.keys.contains(where: { !report.cachedChecks.contains($0) && report.completedAt[$0] != nil }) else { return }
+        let key = report.snapshot.id
+        let identity = identity(report.snapshot)
+        var repository = storage.repositories[key].flatMap { $0.identity == identity ? $0 : nil }
+            ?? RepositoryEntry(identity: identity, checks: [:])
+        for (id, result) in report.results where !report.cachedChecks.contains(id) {
+            guard let date = report.completedAt[id], repository.checks[id].map({ $0.completedAt <= date }) ?? true else { continue }
+            repository.checks[id] = Entry(result: result, completedAt: date)
+        }
+        storage.repositories[key] = repository
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(storage).write(to: url, options: .atomic)
+            persistenceError = nil
+        } catch { persistenceError = "Could not save issue check results: \(error.localizedDescription)" }
     }
 }

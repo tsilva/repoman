@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The selected issue's stored conversation, including its completed turns and verification.
@@ -28,17 +29,14 @@ struct RepositoryRepairTrajectoryView: View {
                 case .user: RepairUserMessage(text: entry.text)
                 case .assistant:
                     if !entry.text.isEmpty, !task.interactions.contains(where: { $0.id == entry.id && $0.kind == .questions }) {
-                        Text((try? AttributedString(markdown: entry.text,
-                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(entry.text))
-                            .font(.system(size: 12)).lineSpacing(3).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        ConversationMarkdownView(entry.text)
                     }
                 case .command:
                     RepairCommandView(entry: entry, isActive: task.execution == nil && [.running, .needsInput].contains(task.state))
                 case .status:
-                    Label(entry.text, systemImage: ["resolved", "noLongerNeeded"].contains(entry.status ?? "") ? "checkmark.circle" : "info.circle")
-                        .font(.system(size: 11)).foregroundStyle(["resolved", "noLongerNeeded"].contains(entry.status ?? "") ? Theme.green : Theme.secondary)
-                        .textSelection(.enabled)
+                    RepairStatusMessage(message: entry.text,
+                        symbol: ["resolved", "noLongerNeeded"].contains(entry.status ?? "") ? "checkmark.circle" : "info.circle",
+                        color: ["resolved", "noLongerNeeded"].contains(entry.status ?? "") ? Theme.green : Theme.secondary)
                 case .fileChange:
                     Label(entry.text.isEmpty ? "Updated files" : entry.text, systemImage: "doc.badge.gearshape")
                         .font(.system(size: 11)).foregroundStyle(Theme.secondary).textSelection(.enabled)
@@ -49,14 +47,11 @@ struct RepositoryRepairTrajectoryView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.top, 12)
             }
-            ForEach(task.interactions.filter { $0.kind == .questions }) { interaction in
-                RepairInteractionView(taskID: task.id, interaction: interaction).id(interaction.id)
-            }
             if let progressTitle { RepairProgressIndicator(title: progressTitle) }
             if !task.state.isActive, !entries.contains(where: { $0.kind == .status }) {
-                Label(task.message, systemImage: task.state == .resolved ? "checkmark.circle" : "info.circle")
-                    .font(.system(size: 11)).foregroundStyle(task.state == .resolved ? Theme.green : Theme.secondary)
-                    .textSelection(.enabled)
+                RepairStatusMessage(message: task.message,
+                    symbol: task.state == .resolved ? "checkmark.circle" : "info.circle",
+                    color: task.state == .resolved ? Theme.green : Theme.secondary)
             }
         }.foregroundStyle(Theme.primary)
             .task(id: task.diff) {
@@ -68,20 +63,98 @@ struct RepositoryRepairTrajectoryView: View {
     }
 }
 
+/// Recognizes the stored sign-in error so existing conversations get the same command UI.
+struct RepairStatusMessage: View {
+    let message: String
+    var symbol = "info.circle"
+    var color = Theme.secondary
+
+    private var signInCommand: String? {
+        guard message.hasPrefix("Sign in to Codex for RepoMan.") else { return nil }
+        let parts = message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        let command = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.hasPrefix("env CODEX_HOME=") ? command : nil
+    }
+
+    var body: some View {
+        if let command = signInCommand {
+            RepairSignInPrompt(command: command)
+        } else {
+            Label(message, systemImage: symbol)
+                .font(.system(size: 11)).foregroundStyle(color).textSelection(.enabled)
+        }
+    }
+}
+
+struct RepairSignInPrompt: View {
+    let command: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Sign in to Codex", systemImage: "key")
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.primary)
+            Text("Copy and paste this command into Terminal to sign in for RepoMan.")
+                .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Label("Terminal", systemImage: "terminal")
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.secondary)
+                    Spacer()
+                    Button {
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        copied = pasteboard.setString(command, forType: .string)
+                    } label: {
+                        Label(copied ? "Copied" : "Copy command", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(copied ? Theme.green : Theme.primary)
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(Theme.selection, in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("copy-codex-sign-in-command")
+                    .help("Copy the complete command to paste into Terminal")
+                }.padding(.horizontal, 12).padding(.vertical, 8)
+                Rectangle().fill(Theme.border).frame(height: 1)
+                HStack(alignment: .top, spacing: 10) {
+                    Text("$").foregroundStyle(Theme.subtle).accessibilityHidden(true)
+                    Text(verbatim: command).foregroundStyle(Theme.primary).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Sign-in command: " + command)
+                }
+                .font(.system(size: 11, design: .monospaced)).lineSpacing(4).padding(12)
+            }
+            .background(Theme.field, in: RoundedRectangle(cornerRadius: 8))
+            .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border, lineWidth: 1) }
+            Text("Once signed in, retry your message here.")
+                .font(.system(size: 11)).foregroundStyle(Theme.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: command) { _, _ in copied = false }
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            copied = false
+        }
+    }
+}
+
 /// A quiet live status in the assistant stream, including before its first message arrives.
 private struct RepairProgressIndicator: View {
     let title: String
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var bright = false
 
     var body: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.mini)
             Text(title).font(.system(size: 12)).foregroundStyle(Theme.secondary)
-                .opacity(reduceMotion || bright ? 1 : 0.5)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: bright)
+                .fixedSize()
         }
-        .onAppear { bright = true }
+        // Keep status changes from interpolating the text's glyphs or layout.
+        .transaction { $0.animation = nil }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
     }
@@ -138,7 +211,7 @@ private struct RepairCommandView: View {
     }
 }
 
-private struct RepairInteractionView: View {
+struct RepairInteractionView: View {
     @EnvironmentObject private var store: RepositoryStore
     let taskID: UUID
     let interaction: AgentInteraction
@@ -152,7 +225,7 @@ private struct RepairInteractionView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(interaction.title, systemImage: "questionmark.bubble")
+            Label("Input required", systemImage: "questionmark.bubble")
                 .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.amber)
             if !interaction.details.isEmpty { Text(interaction.details).textSelection(.enabled) }
             ForEach(interaction.questions) { question in
@@ -182,15 +255,15 @@ private struct RepairInteractionView: View {
                                 .accessibilityLabel(option)
                                 .accessibilityValue(answers[question.id] == option ? "Selected" : "Not selected")
                         }
+                    } else {
+                        TextField("Your answer", text: Binding(
+                            get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 }))
+                            .textFieldStyle(.roundedBorder).accessibilityLabel("Answer: " + question.question)
                     }
-                    TextField(question.options.isEmpty ? "Your answer" : "Or type your own answer", text: Binding(
-                        get: { answers[question.id] ?? "" }, set: { answers[question.id] = $0 }))
-                        .textFieldStyle(.roundedBorder).accessibilityLabel("Answer: " + question.question)
                 }
             }
             if let submissionError { Text(submissionError).font(.system(size: 11)).foregroundStyle(Theme.red) }
             HStack {
-                Text("Waiting for your answer").font(.system(size: 11)).foregroundStyle(Theme.secondary)
                 Spacer()
                 Button(submitting ? "Sending…" : "Send answers") { respond() }
                     .buttonStyle(RepositoryButtonStyle()).disabled(!canSubmit)

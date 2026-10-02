@@ -1,13 +1,16 @@
 import Foundation
 
 public enum GitRepositoryScanner {
-    public static func repositories(in folder: URL) throws -> [URL] {
+    public static func repositories(in folder: URL, excludingPaths: [String] = []) throws -> [URL] {
+        let blacklist = RepositoryPathBlacklist(paths: excludingPaths, relativeTo: folder)
+        guard !blacklist.contains(folder) else { return [] }
         let children = try FileManager.default.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )
         return children.filter { child in
+            guard !blacklist.contains(child) else { return false }
             guard (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
                 return false
             }
@@ -119,11 +122,11 @@ public enum GitRepositoryScanner {
             return name
         }
 
-        let log = includeDetails
-            ? ((try? GitRunner.run(
-                ["log", "-n", "8", "--format=%h%x1f%s%x1f%cr%x1e"], at: url
-            )) ?? Data()) : Data()
-        let commits = parseCommits(log)
+        // Summary scans need HEAD's date for sorting, without loading the full history.
+        let log = (try? GitRunner.run(
+            ["log", "-n", includeDetails ? "8" : "1", "--format=%h%x1f%s%x1f%cr%x1f%ct%x1e"], at: url
+        )) ?? Data()
+        let history = parseHistory(log)
         // CI checks also run during summary scans. Use the tracked remote when available.
         let remote = (try? GitRunner.text(["config", "--get", "branch.\(branch).remote"], at: url)) ?? "origin"
         let configuredURL = try? GitRunner.text(["config", "--get", "remote.\(remote).url"], at: url)
@@ -141,11 +144,12 @@ public enum GitRepositoryScanner {
             changes: changes,
             staleBranches: staleBranches.sorted(),
             worktrees: linkedWorktrees.sorted(),
-            commits: commits,
+            commits: includeDetails ? history.commits : [],
             detailsLoaded: includeDetails,
             checkedAt: now,
             rootFiles: try? rootFiles(at: url),
-            inspectionErrors: inspectionErrors
+            inspectionErrors: inspectionErrors,
+            lastCommitAt: history.lastCommitAt
         )
     }
 
@@ -240,19 +244,23 @@ public enum GitRepositoryScanner {
         return results
     }
 
-    private static func parseCommits(_ data: Data) -> [RepositoryCommit] {
-        String(decoding: data, as: UTF8.self)
-            .split(separator: "\u{1e}")
-            .compactMap { record in
-                let fields = record.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .split(separator: "\u{1f}", omittingEmptySubsequences: false)
-                guard fields.count == 3 else { return nil }
-                return RepositoryCommit(
-                    hash: String(fields[0]),
-                    subject: String(fields[1]),
-                    relativeDate: String(fields[2])
-                )
-            }
+    private static func parseHistory(_ data: Data) -> (commits: [RepositoryCommit], lastCommitAt: Date?) {
+        let records = String(decoding: data, as: UTF8.self).split(separator: "\u{1e}")
+        let timestamp = records.first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\u{1f}", omittingEmptySubsequences: false).last
+            .flatMap { TimeInterval($0) }
+        let commits = records.compactMap { record -> RepositoryCommit? in
+            let fields = record.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: "\u{1f}", omittingEmptySubsequences: false)
+            guard fields.count == 4 else { return nil }
+            return RepositoryCommit(
+                hash: String(fields[0]),
+                subject: String(fields[1]),
+                relativeDate: String(fields[2])
+            )
+        }
+        return (commits, timestamp.map { Date(timeIntervalSince1970: $0) })
     }
 
     private static func untrackedLineCount(_ url: URL) -> Int? {
@@ -270,5 +278,42 @@ public enum GitRepositoryScanner {
     private static func sum(_ lhs: Int?, _ rhs: Int?) -> Int? {
         guard let lhs, let rhs else { return nil }
         return lhs + rhs
+    }
+}
+
+/// Folder names match any path component; other paths exclude a folder and its descendants.
+/// Check both the visible path and its resolved target so symlinks cannot bypass exclusions.
+public struct RepositoryPathBlacklist: Sendable {
+    private let names: Set<String>
+    private let roots: [[String]]
+
+    public init(paths: [String], relativeTo folder: URL) {
+        var names = Set<String>()
+        var roots: [[String]] = []
+        for entry in paths {
+            let path = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else { continue }
+            if !path.contains("/"), !path.hasPrefix("~"), path != ".", path != ".." {
+                names.insert(path)
+            } else {
+                let expanded = (path as NSString).expandingTildeInPath
+                let url = expanded.hasPrefix("/")
+                    ? URL(fileURLWithPath: expanded, isDirectory: true)
+                    : folder.appendingPathComponent(expanded, isDirectory: true)
+                roots.append(url.standardizedFileURL.pathComponents)
+                roots.append(url.standardizedFileURL.resolvingSymlinksInPath().pathComponents)
+            }
+        }
+        self.names = names
+        self.roots = roots
+    }
+
+    public func contains(_ url: URL) -> Bool {
+        guard !names.isEmpty || !roots.isEmpty else { return false }
+        let paths = [url.standardizedFileURL.pathComponents,
+                     url.standardizedFileURL.resolvingSymlinksInPath().pathComponents]
+        return paths.contains { components in
+            !names.isDisjoint(with: components) || roots.contains { components.starts(with: $0) }
+        }
     }
 }

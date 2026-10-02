@@ -17,6 +17,7 @@
 - Open `RepoMan.xcodeproj` in Xcode 27 and run the `RepoMan` scheme on macOS 27 or later.
 - Run `swift test` after changing `RepoManCore/` or its tests.
 - For app changes, build the `RepoMan` scheme in Xcode. Use `--demo` when reviewing the UI with illustrative data.
+- After every fix, rebuild and relaunch the development build so the running app includes the latest changes. Confirm that it launches successfully before reporting completion.
 - Keep generated output in `.build/` or `DerivedData/`; do not commit it.
 - `Tools/package-dmg.sh` packages a built `RepoMan.app` into a DMG. The build-release skill helper drives tests, the Release build, signing, and validation locally and in `.github/workflows/release.yml`; `dist/` is generated output.
 

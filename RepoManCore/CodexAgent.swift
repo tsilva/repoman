@@ -32,6 +32,7 @@ public actor CodexAgent: RepairAgent {
     private var legacyRecoveryIDs = Set<String>()
     private var answeredQuestionIDs = Set<String>()
     private var cancelled = false
+    private var recovering = false
     private var finished: RepairExecutionOutcome?
 
     public init(executable: @escaping @Sendable () -> String? = { nil }, storage: CodexStorage = .init()) {
@@ -54,10 +55,24 @@ public actor CodexAgent: RepairAgent {
     }
 
     static var executableCandidates: [String] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let directories = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        return directories.map { $0 + "/codex" } + [home + "/.local/bin/codex", home + "/.superset/bin/codex",
-            "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/Applications/Codex.app/Contents/Resources/codex"]
+        executableCandidates(path: ProcessInfo.processInfo.environment["PATH"] ?? "",
+                             home: FileManager.default.homeDirectoryForCurrentUser.path)
+    }
+
+    static func executableCandidates(path: String, home: String) -> [String] {
+        let directories = path.split(separator: ":").map(String.init)
+        // Prefer standalone installations over app-managed PATH wrappers.
+        let candidates = ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", home + "/.local/bin/codex",
+                          "/Applications/Codex.app/Contents/Resources/codex"] + directories.map { $0 + "/codex" }
+        var seen = Set<String>()
+        return candidates.filter { path in
+            guard path.hasPrefix("/") else { return false }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            // Also exclude aliases that resolve to Superset's wrapper.
+            guard !url.pathComponents.contains(".superset"),
+                  !url.resolvingSymlinksInPath().pathComponents.contains(".superset") else { return false }
+            return seen.insert(url.path).inserted
+        }
     }
 
     public func run(_ task: RepairTask, event: @escaping @Sendable (RepairAgentEvent) async -> Void) async throws -> RepairExecutionOutcome {
@@ -168,11 +183,14 @@ public actor CodexAgent: RepairAgent {
     }
     public func recover(_ task: RepairTask, event: @escaping @Sendable (RepairAgentEvent) async -> Void) async throws -> RepairExecutionOutcome {
         guard let threadID = task.threadID, let savedTurn = task.turnID else { return task.execution ?? .notRun }
+        cancelled = false; finished = nil; pending = [:]; self.threadID = nil; turnID = nil
         try storage.prepare(for: task)
         let client = try CodexConnection(executable: Self.locateExecutable(configured: executable()), storage: storage)
-        defer { client.stop() }
+        connection = client; recovering = true
+        defer { client.stop(); connection = nil; recovering = false; pending = [:] }
         var iterator = client.messages.makeAsyncIterator()
         try await initialize(client, iterator: &iterator)
+        if cancelled { return .cancelled }
         var result = try await request("thread/read", params: .object([
             "threadId": .string(threadID), "includeTurns": .bool(true)
         ]), client: client, iterator: &iterator)
@@ -199,7 +217,7 @@ public actor CodexAgent: RepairAgent {
         for item in turn["items"].array {
             try await handle(.object(["method": .string("item/completed"), "params": .object(["item": item])]), client: client, event: event)
         }
-        return Self.outcome(turn["status"].string)
+        return cancelled ? .cancelled : Self.outcome(turn["status"].string)
     }
 
     public func respond(to interaction: AgentInteraction, answers: [String: String], approved: Bool) async throws {
@@ -230,6 +248,8 @@ public actor CodexAgent: RepairAgent {
     }
     private func interrupt() async {
         guard let client = connection else { return }
+        // Recovery only reads history. Close its client without interrupting a saved turn.
+        if recovering { client.stop(); return }
         if let threadID, let turnID {
             try? client.send(.object(["id": .string("interrupt"), "method": .string("turn/interrupt"),
                                      "params": .object(["threadId": .string(threadID), "turnId": .string(turnID)])]))

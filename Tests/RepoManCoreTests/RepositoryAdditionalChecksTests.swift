@@ -104,6 +104,64 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         let observed8 = try await inspect("dependencies.safeguards").findings().isEmpty
         XCTAssertTrue(observed8)
     }
+    func testBunSafeguardsUseSecondsAndRepositoryOwnedScriptSettings() async throws {
+        try write("package.json", #"{"packageManager":"bun@1.3.14"}"#)
+        try write(".npmrc", "min-release-age=10080\nignore-scripts=true\n")
+        let missing = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(missing.unavailableChecks.isEmpty)
+        XCTAssertTrue(missing.findings().first?.evidence.contains("604800 seconds") == true)
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 10080\nignoreScripts = true\n")
+        let tooYoung = try await inspect("dependencies.safeguards")
+        XCTAssertEqual(tooYoung.findings().count, 1)
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 604_800 # seven days\n")
+        let healthy = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(healthy.findings().isEmpty)
+        XCTAssertTrue(healthy.unavailableChecks.isEmpty)
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 604800\nignoreScripts = false\n")
+        let enabled = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(enabled.findings().first?.evidence.contains("lifecycle scripts") == true)
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 604800\nignoreScripts = true\nminimumReleaseAgeExcludes = ['typescript']\n")
+        let exclusions = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(exclusions.findings().first?.evidence.contains("minimumReleaseAgeExcludes") == true)
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 604800\nignoreScripts = true\nminimumReleaseAgeExcludes = [\n]\n")
+        let emptyExclusions = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(emptyExclusions.findings().isEmpty)
+    }
+    func testBunWorkspaceSafeguardsDoNotLeakIntoIndependentProjects() async throws {
+        try write("package.json", #"{"packageManager":"bun@1.3.14","workspaces":["packages/*"]}"#)
+        try write("bun.lock", "{}")
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 604800\nignoreScripts = true\n")
+        try write("packages/client/package.json", #"{"name":"client"}"#)
+        try write("standalone/package.json", #"{"packageManager":"bun@1.3.14"}"#)
+        try git(["add", "."])
+        let report = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+        XCTAssertEqual(report.findings().map(\.subject), ["standalone/package.json"])
+        // A workspace member with its own lockfile is inspected as an independent install.
+        try write("packages/client/bun.lock", "{}")
+        let independent = try await inspect("dependencies.safeguards")
+        XCTAssertEqual(Set(independent.findings().map(\.subject)), ["packages/client/package.json", "standalone/package.json"])
+    }
+    func testBunCIOverridesAreCheckedInSeconds() async throws {
+        try write("package.json", #"{"packageManager":"bun@1.3.14"}"#)
+        try write("bunfig.toml", "[install]\nminimumReleaseAge = 604800\nignoreScripts = true\n")
+        try workflow("ci.yml", "on: push\njobs:\n  test:\n    steps:\n      - run: bun install --minimum-release-age=10080\n")
+        let unsafe = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(unsafe.findings().first?.evidence.contains("Bun dependency age") == true)
+        try workflow("ci.yml", "on: push\njobs:\n  test:\n    steps:\n      - run: bun ci --minimum-release-age 604800 --ignore-scripts\n")
+        let safe = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(safe.findings().isEmpty)
+        XCTAssertTrue(safe.unavailableChecks.isEmpty)
+    }
+    func testMalformedBunConfigurationStaysUnknown() async throws {
+        try write("package.json", #"{"packageManager":"bun@1.3.14"}"#)
+        for value in ["[", "_604800", "604__800", "'604800'"] {
+            try write("bunfig.toml", "[install]\nminimumReleaseAge = \(value)\n")
+            let report = try await inspect("dependencies.safeguards")
+            XCTAssertTrue(report.findings().isEmpty)
+            XCTAssertNotNil(report.unavailableChecks["dependencies.safeguards"])
+        }
+    }
     func testSourcesReviewDirectDependenciesButAllowWorkspaceReferences() async throws {
         try write("package.json", #"{"dependencies":{"local":"workspace:*","remote":"git+https://example.com/repo.git"}}"#)
         let report = try await inspect("dependencies.sources")

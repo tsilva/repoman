@@ -177,25 +177,29 @@ enum RepositoryDependencyChecks {
             var reasons: [String] = []
             if path.hasSuffix("package.json") {
                 let name = try manager(context, path)
-                guard ["npm", "pnpm"].contains(name) else { throw RepairError.blocked("Supply-chain policy for \(name) needs manual review.") }
-                var rc: [String: String] = [:], workspace: [String: String] = [:]
-                // Ancestor settings are overridden by nearer project settings.
-                for prefix in ancestors(path).reversed() {
-                    if try context.exists(prefix + ".npmrc") { rc.merge(try InspectionConfig.ini(context.readText(prefix + ".npmrc")).values) { _, new in new } }
-                    if try context.exists(prefix + "pnpm-workspace.yaml") { workspace.merge(try InspectionConfig.yaml(context.readText(prefix + "pnpm-workspace.yaml")).values) { _, new in new } }
-                }
-                if name == "pnpm" {
-                    if (Int(InspectionConfig.scalar(workspace["minimumReleaseAge"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm-workspace.yaml lacks minimumReleaseAge >= 10080.") }
-                    if InspectionConfig.scalar(workspace["blockExoticSubdeps"]) != "true" { reasons.append("pnpm-workspace.yaml lacks blockExoticSubdeps: true.") }
-                    var declared = (try json(context, path))["packageManager"] as? String
-                    if declared == nil, try context.exists("package.json") { declared = (try json(context, "package.json"))["packageManager"] as? String }
-                    if declared?.hasPrefix("pnpm@10.") == true {
-                        if (Int(InspectionConfig.scalar(rc["minimum-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm 10 .npmrc lacks minimum-release-age >= 10080.") }
-                        if InspectionConfig.scalar(rc["block-exotic-subdeps"]) != "true" { reasons.append("pnpm 10 .npmrc lacks block-exotic-subdeps=true.") }
-                    }
+                guard ["npm", "pnpm", "bun"].contains(name) else { throw RepairError.blocked("Supply-chain policy for \(name) needs manual review.") }
+                if name == "bun" {
+                    reasons += try bunSafeguards(context, manifest: path)
                 } else {
-                    if (Int(InspectionConfig.scalar(rc["min-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("npm .npmrc lacks min-release-age >= 10080.") }
-                    if InspectionConfig.scalar(rc["ignore-scripts"]) != "true" { reasons.append("npm lifecycle scripts are enabled; document an exception if they are required.") }
+                    var rc: [String: String] = [:], workspace: [String: String] = [:]
+                    // Ancestor settings are overridden by nearer project settings.
+                    for prefix in ancestors(path).reversed() {
+                        if try context.exists(prefix + ".npmrc") { rc.merge(try InspectionConfig.ini(context.readText(prefix + ".npmrc")).values) { _, new in new } }
+                        if try context.exists(prefix + "pnpm-workspace.yaml") { workspace.merge(try InspectionConfig.yaml(context.readText(prefix + "pnpm-workspace.yaml")).values) { _, new in new } }
+                    }
+                    if name == "pnpm" {
+                        if (Int(InspectionConfig.scalar(workspace["minimumReleaseAge"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm-workspace.yaml lacks minimumReleaseAge >= 10080.") }
+                        if InspectionConfig.scalar(workspace["blockExoticSubdeps"]) != "true" { reasons.append("pnpm-workspace.yaml lacks blockExoticSubdeps: true.") }
+                        var declared = (try json(context, path))["packageManager"] as? String
+                        if declared == nil, try context.exists("package.json") { declared = (try json(context, "package.json"))["packageManager"] as? String }
+                        if declared?.hasPrefix("pnpm@10.") == true {
+                            if (Int(InspectionConfig.scalar(rc["minimum-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm 10 .npmrc lacks minimum-release-age >= 10080.") }
+                            if InspectionConfig.scalar(rc["block-exotic-subdeps"]) != "true" { reasons.append("pnpm 10 .npmrc lacks block-exotic-subdeps=true.") }
+                        }
+                    } else {
+                        if (Int(InspectionConfig.scalar(rc["min-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("npm .npmrc lacks min-release-age >= 10080.") }
+                        if InspectionConfig.scalar(rc["ignore-scripts"]) != "true" { reasons.append("npm lifecycle scripts are enabled; document an exception if they are required.") }
+                    }
                 }
             } else if path.hasSuffix("pyproject.toml") {
                 let config = try uvConfig(context, path)
@@ -237,6 +241,17 @@ enum RepositoryDependencyChecks {
                                 }
                                 if CheckSupport.matches(command, #"--no-config\b"#) { reasons.append("\(workflow) disables repository-owned uv configuration.") }
                             }
+                            if CheckSupport.matches(command, #"\bbun\s+(?:ci|install|add|update)\b"#) {
+                                for age in CheckSupport.captures(command, #"--minimum-release-age(?:=|\s+)(\d+)"#) where (Int(age[1]) ?? 0) < 604800 {
+                                    reasons.append("\(workflow) overrides the Bun dependency age below seven days.")
+                                }
+                                if CheckSupport.matches(command, #"--ignore-scripts=false\b"#) {
+                                    reasons.append("\(workflow) explicitly enables Bun lifecycle scripts.")
+                                }
+                                if CheckSupport.matches(command, #"--config(?:=|\s)"#) {
+                                    reasons.append("\(workflow) overrides repository-owned Bun configuration; review its safeguards.")
+                                }
+                            }
                         }
                     }
                 }
@@ -244,6 +259,36 @@ enum RepositoryDependencyChecks {
             if !reasons.isEmpty { findings.append(CheckSupport.finding(context, "dependencies.safeguards", path, "Dependency safeguards missing", Array(Set(reasons)).sorted().joined(separator: "\n"))) }
         }
         return findings
+    }
+    private static func bunSafeguards(_ context: RepositoryInspectionContext, manifest: String) throws -> [String] {
+        let prefixes = try lockPrefixes(context, manifest)
+        var installPrefix = prefixes.last ?? ""
+        // Workspace installs use the configuration beside their lockfile. An independent
+        // nested project must not borrow an unrelated ancestor's Bun configuration.
+        for prefix in prefixes {
+            if try context.exists(prefix + "bun.lock") || context.exists(prefix + "bun.lockb") {
+                installPrefix = prefix; break
+            }
+        }
+        let configPath = installPrefix + "bunfig.toml"
+        let config = try context.exists(configPath) ? InspectionConfig.toml(context.readText(configPath), allSections: true).values : [:]
+        let rcPath = installPrefix + ".npmrc"
+        let rc = try context.exists(rcPath) ? InspectionConfig.ini(context.readText(rcPath)).values : [:]
+        var reasons: [String] = []
+        // Bun uses seconds, whereas npm and pnpm use minutes. TOML permits digit separators.
+        let rawAge = config["install.minimumReleaseAge"] ?? "0"
+        guard CheckSupport.matches(rawAge, #"^\d(?:_?\d)*$"#) else { throw RepairError.blocked("Unsupported Bun minimumReleaseAge value.") }
+        let age = rawAge.replacingOccurrences(of: "_", with: "")
+        if (Int(age) ?? 0) < 604800 { reasons.append("bunfig.toml lacks install.minimumReleaseAge >= 604800 seconds (seven days).") }
+        let ignoreScripts = config["install.ignoreScripts"] ?? rc["ignore-scripts"]
+        if ignoreScripts != "true" {
+            reasons.append("Bun lifecycle scripts are not disabled with install.ignoreScripts = true or .npmrc ignore-scripts=true; document an exception if they are required.")
+        }
+        if let excludes = config["install.minimumReleaseAgeExcludes"],
+           !CheckSupport.matches(excludes, #"^\[\s*\]$"#) {
+            reasons.append("Bun minimumReleaseAgeExcludes bypasses the seven-day dependency policy; review and document exceptions.")
+        }
+        return reasons
     }
     private static func sourceFindings(_ context: RepositoryInspectionContext) throws -> [RepositoryFinding] {
         var findings: [RepositoryFinding] = []

@@ -29,6 +29,17 @@ public final class RepairTaskQueue {
             tasks[i].conversation = [RepairConversationEntry(id: "legacy", kind: .assistant, text: tasks[i].activity)]
         }
         for i in tasks.indices {
+            if let entries = tasks[i].conversation {
+                tasks[i].conversation = RepairConversationEntry.removingRepeatedStatuses(from: entries)
+            }
+            // Completed asynchronous questions have no live server request to reconnect.
+            // Their persisted metadata is enough to accept an answer immediately.
+            if tasks[i].state == .needsInput, tasks[i].execution == .completed,
+               tasks[i].interactionProtocolVersion == 1, tasks[i].threadID != nil,
+               !tasks[i].interactions.isEmpty,
+               tasks[i].interactions.allSatisfy({ $0.kind == .questions && $0.requiresFollowUp }) {
+                continue
+            }
             let needsQuestionRecovery = tasks[i].interactionProtocolVersion == nil && !tasks[i].isArchived
                 && tasks[i].threadID != nil && tasks[i].turnID != nil
                 && [.stillPresent, .couldntVerify, .failed].contains(tasks[i].state)
@@ -112,8 +123,12 @@ public final class RepairTaskQueue {
     /// Reconciliation never replays a prompt and takes priority over new queued work.
     public func start() {
         started = true
-        guard error == nil, canRun() else { return }
-        let candidates = tasks.filter { !$0.isArchived && workers[$0.id] == nil && [.queued, .interrupted].contains($0.state) }
+        guard error == nil else { return }
+        let canStartTurn = canRun()
+        // Reading saved history does not start a repair and must not wait for a full scan.
+        let candidates = tasks.filter {
+            !$0.isArchived && workers[$0.id] == nil && ($0.state == .interrupted || ($0.state == .queued && canStartTurn))
+        }
             .sorted { $0.state == .interrupted && $1.state != .interrupted }
         for task in candidates.prefix(max(0, maximumConcurrentTurns - workers.count)) {
             let agent = agentFactory()
@@ -272,6 +287,8 @@ public final class RepairTaskQueue {
         Task { for agent in activeAgents { await agent.cancel() } }
     }
     private static func recordCheck(_ task: inout RepairTask) {
+        if let previous = task.conversation?.last, previous.kind == .status,
+           previous.text == task.message, previous.status == task.state.rawValue { return }
         task.upsertConversation(RepairConversationEntry(id: UUID().uuidString, kind: .status,
             text: task.message, status: task.state.rawValue))
     }

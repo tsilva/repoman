@@ -242,6 +242,111 @@ final class RepositoryHealthChecksTests: XCTestCase {
         let unsupported = try await inspect("dependencies.lockfileDrift")
         XCTAssertNotNil(unsupported.unavailableChecks["dependencies.lockfileDrift"])
     }
+    func testBunTextLockfileCommentsWorkspacesAndAllDependencyGroups() async throws {
+        let manifest = #"{"packageManager":"bun@1.3.14","workspaces":["packages/*"],"dependencies":{"a":"^1"},"devDependencies":{"b":"latest"},"peerDependencies":{"c":"^5"},"optionalDependencies":{"d":"^2"}}"#
+        let lock = """
+        {
+          // Bun writes trailing commas in text lockfiles.
+          "lockfileVersion": 1,
+          "configVersion": 1,
+          "workspaces": {
+            "": {
+              "dependencies": {"a": "^1",},
+              "devDependencies": {"b": "latest",},
+              "peerDependencies": {"c": "^5",},
+              "optionalDependencies": {"d": "^2",},
+            },
+            /* Workspace paths are relative to the lockfile directory. */
+            "packages/app": {"dependencies": {"local": "workspace:*",},},
+          },
+          "packages": {},
+        }
+        """
+        try write("package.json", manifest)
+        try write("packages/app/package.json", #"{"dependencies":{"local":"workspace:*"}}"#)
+        try write("bun.lock", lock)
+        try git(["add", "."])
+        let status = try gitText(["status", "--porcelain"])
+        for version in [0, 1] {
+            try write("bun.lock", lock.replacingOccurrences(of: "\"lockfileVersion\": 1", with: "\"lockfileVersion\": \(version)"))
+            let healthy = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(healthy.findings().isEmpty)
+            XCTAssertTrue(healthy.unavailableChecks.isEmpty)
+        }
+        try write("bun.lock", lock)
+        for (group, name, version) in [("dependencies", "a", "^1"), ("devDependencies", "b", "latest"),
+                                       ("peerDependencies", "c", "^5"), ("optionalDependencies", "d", "^2")] {
+            try write("package.json", manifest.replacingOccurrences(of: "\"\(name)\":\"\(version)\"", with: "\"\(name)\":\"changed\""))
+            let drift = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(drift.unavailableChecks.isEmpty)
+            XCTAssertEqual(drift.findings().map(\.subject), ["package.json"])
+            XCTAssertTrue(drift.findings().first?.evidence.contains("\(group).\(name)") == true)
+        }
+        try write("package.json", manifest)
+        try write("packages/app/package.json", #"{"dependencies":{"local":"workspace:^"}}"#)
+        let workspaceDrift = try await inspect("dependencies.lockfileDrift")
+        XCTAssertEqual(workspaceDrift.findings().map(\.subject), ["packages/app/package.json"])
+        try write("packages/app/package.json", #"{"dependencies":{"local":"workspace:*"}}"#)
+        XCTAssertEqual(status, try gitText(["status", "--porcelain"]))
+        XCTAssertEqual(lock, try String(contentsOf: root.appendingPathComponent("bun.lock"), encoding: .utf8))
+    }
+    func testBunJSONCDoesNotDamageStringsOrExposeDependencyValues() async throws {
+        let url = "https://user:secret@example.com/a,b/*file*/#v1"
+        let manifest: [String: Any] = ["packageManager": "bun@1.3.14", "dependencies": ["remote": url]]
+        let lock: [String: Any] = ["lockfileVersion": 1, "workspaces": ["": ["dependencies": ["remote": url]]], "packages": [:]]
+        try write("package.json", String(decoding: JSONSerialization.data(withJSONObject: manifest), as: UTF8.self))
+        try write("bun.lock", "/*comment*/" + String(decoding: JSONSerialization.data(withJSONObject: lock), as: UTF8.self) + "//end")
+        let healthy = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(healthy.findings().isEmpty)
+        XCTAssertTrue(healthy.unavailableChecks.isEmpty)
+        try write("package.json", #"{"packageManager":"bun@1.3.14","dependencies":{"remote":"^2"}}"#)
+        let drift = try await inspect("dependencies.lockfileDrift")
+        let finding = try XCTUnwrap(drift.findings().first)
+        XCTAssertTrue(finding.evidence.contains("dependencies.remote"))
+        XCTAssertFalse(finding.evidence.contains("secret"))
+        XCTAssertFalse(finding.evidence.contains(url))
+        try write("package.json", #"{"packageManager":"bun@1.3.14"}"#)
+        let removed = try await inspect("dependencies.lockfileDrift")
+        XCTAssertEqual(removed.findings().count, 1)
+        try write("bun.lock", #"{"lockfileVersion":1,"workspaces":{"":{}},"packages":{}}"#)
+        let resolved = try await inspect("dependencies.lockfileDrift")
+        if case .absent = catalog("dependencies.lockfileDrift").verify(finding, in: resolved) {} else { XCTFail("Synchronized Bun lockfile did not resolve drift") }
+    }
+    func testUnsupportedOrMalformedBunLocksCannotResolveDrift() async throws {
+        try write("package.json", #"{"packageManager":"bun@1.3.14","dependencies":{"a":"^2"}}"#)
+        try write("bun.lock", #"{"lockfileVersion":1,"workspaces":{"":{"dependencies":{"a":"^1"}}},"packages":{}}"#)
+        let before = try await inspect("dependencies.lockfileDrift")
+        let finding = try XCTUnwrap(before.findings().first)
+        for source in [
+            #"{"lockfileVersion":99,"workspaces":{"":{}},"packages":{}}"#,
+            #"{"lockfileVersion":1,"configVersion":99,"workspaces":{"":{}},"packages":{}}"#,
+            #"{"lockfileVersion":1,"workspaces":{"":{"dependencies":{"a":2}}},"packages":{}}"#,
+            #"{"lockfileVersion":1,"workspaces":{"":{}},"packages":{}} /*unfinished"#,
+            #"{"lockfileVersion":1,"workspaces":{"":{}},"packages":{},"#,
+            #"{"lockfileVersion":1,"workspaces":{"":{}}}"#
+        ] {
+            try write("bun.lock", source)
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(report.findings().isEmpty)
+            XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"])
+            if case .unknown = catalog("dependencies.lockfileDrift").verify(finding, in: report) {} else { XCTFail("Malformed Bun lockfile resolved drift") }
+        }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("bun.lock"))
+        try write("bun.lockb", "binary fixture")
+        let binary = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(binary.unavailableChecks["dependencies.lockfileDrift"]?.contains("Binary bun.lockb") == true)
+        try write("bun.lock", #"{"lockfileVersion":1,"workspaces":{"":{"dependencies":{"a":"^2"}}},"packages":{}}"#)
+        let textPreferred = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(textPreferred.findings().isEmpty)
+        XCTAssertTrue(textPreferred.unavailableChecks.isEmpty)
+        try write("package.json", #"{"packageManager":"bun@1.3.14","dependencies":{"a":"catalog:"}}"#)
+        let catalog = try await inspect("dependencies.lockfileDrift")
+        XCTAssertNotNil(catalog.unavailableChecks["dependencies.lockfileDrift"])
+        try write("package.json", #"{"packageManager":"bun@1.3.14"}"#)
+        try write("bun.lock", #"{"lockfileVersion":1,"workspaces":{},"packages":{}}"#)
+        let missing = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(missing.findings().first?.evidence.contains("workspace package metadata is missing") == true)
+    }
     func testUVMetadataDriftAndSpecifierNormalization() async throws {
         try write("pyproject.toml", "[project]\nname = 'app'\nrequires-python = '>=3.12'\ndependencies = ['some_package >=1, <2']\n")
         try write("uv.lock", """
@@ -261,8 +366,144 @@ final class RepositoryHealthChecksTests: XCTestCase {
         let drift = try await inspect("dependencies.lockfileDrift")
         XCTAssertEqual(drift.findings().count, 1)
         try write("pyproject.toml", "[project]\nname = 'app'\ndependencies = ['some-package[extra]>=2']\n")
+        let extraDrift = try await inspect("dependencies.lockfileDrift")
+        XCTAssertEqual(extraDrift.findings().count, 1)
+        XCTAssertTrue(extraDrift.unavailableChecks.isEmpty)
+        try write("pyproject.toml", "[project]\nname = 'app'\ndependencies = [\"some-package>=2; python_version < '3.13'\"]\n")
         let unsupported = try await inspect("dependencies.lockfileDrift")
         XCTAssertNotNil(unsupported.unavailableChecks["dependencies.lockfileDrift"])
+    }
+    func testUVOptionalDependenciesAndRequestedExtras() async throws {
+        let project = """
+        [project]
+        name = "agentbridge-cli"
+        dependencies = ["uvicorn[standard]>=0.32.0", "fastapi>=0.141.1"]
+        [project.optional-dependencies]
+        test = ["pytest>=9.1.1", "ruff>=0.15.0"]
+        """
+        let lock = """
+        version = 1
+        [[package]]
+        name = "agentbridge-cli"
+        source = { editable = "." }
+        [package.metadata]
+        requires-dist = [
+            { name = "fastapi", specifier = ">=0.141.1" },
+            { name = "pytest", marker = "extra == 'test'", specifier = ">=9.1.1" },
+            { name = "ruff", marker = "extra == 'test'", specifier = ">=0.15.0" },
+            { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
+        ]
+        provides-extras = ["test"]
+        """
+        try write("pyproject.toml", project)
+        try write("uv.lock", lock)
+        let healthy = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(healthy.findings().isEmpty)
+        XCTAssertTrue(healthy.unavailableChecks.isEmpty)
+        // Detect an optional version change, a removed dependency and a changed requested extra.
+        for (before, after, evidence) in [
+            ("pytest>=9.1.1", "pytest>=10", "optional-dependencies.test.pytest"),
+            (", \"ruff>=0.15.0\"", "", "optional-dependencies.test.ruff"),
+            ("uvicorn[standard]", "uvicorn[other]", "dependencies.uvicorn")
+        ] {
+            try write("pyproject.toml", project.replacingOccurrences(of: before, with: after))
+            let drift = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(drift.unavailableChecks.isEmpty)
+            XCTAssertTrue(drift.findings().first?.evidence.contains(evidence) == true)
+        }
+        try write("pyproject.toml", project)
+        for (before, after) in [
+            ("extras = [\"standard\"]", "extras = []"),
+            ("name = \"pytest\"", "name = \"unexpected\"")
+        ] {
+            try write("uv.lock", lock.replacingOccurrences(of: before, with: after))
+            let drift = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(drift.unavailableChecks.isEmpty)
+            XCTAssertEqual(drift.findings().count, 1)
+        }
+    }
+    func testUVSharedOptionalRequirementsNormalizationAndEmptyExtras() async throws {
+        let project = """
+        [project]
+        name = "app"
+        dependencies = ["some_package[Z_extra,foo.bar] >=1, <2"]
+        [project.optional-dependencies]
+        Test_Group = ["some-package[foo-bar]>=2"]
+        other = ["some-package[foo-bar]>=2"]
+        empty = []
+        """
+        let lock = """
+        version = 1
+        [[package]]
+        name = "app"
+        source = { virtual = "." }
+        [package.metadata]
+        requires-dist = [
+            { name = 'some-package', extras = ['foo-bar', 'z-extra'], specifier = '<2,>=1' },
+            { name = 'some-package', extras = ['foo-bar'], marker = "extra == 'test-group' or extra == 'other'", specifier = '>=2' },
+        ]
+        provides-extras = ['empty', 'other', 'test-group']
+        """
+        try write("pyproject.toml", project)
+        try write("uv.lock", lock)
+        let healthy = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(healthy.findings().isEmpty)
+        XCTAssertTrue(healthy.unavailableChecks.isEmpty)
+        try write("pyproject.toml", project.replacingOccurrences(of: "empty = []", with: "added = []"))
+        let drift = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(drift.unavailableChecks.isEmpty)
+        let evidence = try XCTUnwrap(drift.findings().first?.evidence)
+        XCTAssertTrue(evidence.contains("optional-dependencies.empty"))
+        XCTAssertTrue(evidence.contains("optional-dependencies.added"))
+    }
+    func testUVUnsupportedOrMalformedOptionalMetadataStaysUnknown() async throws {
+        let project = "[project]\nname = 'app'\ndependencies = []\n[project.optional-dependencies]\ntest = ['pytest>=9']\n"
+        let lock = """
+        version = 1
+        [[package]]
+        name = "app"
+        source = { virtual = "." }
+        [package.metadata]
+        requires-dist = [{ name = "pytest", marker = "extra == 'test'", specifier = ">=9" }]
+        provides-extras = ["test"]
+        """
+        for declaration in [
+            "\"pytest>=9; python_version < '3.13'\"",
+            "'pytest @ https://example.com/package.whl'",
+            "'pytest>=9', 'pytest>=10'",
+            "'pytest[bad extra]>=9'",
+            "'pytest>=9' 'ruff>=1'"
+        ] {
+            try write("pyproject.toml", project.replacingOccurrences(of: "'pytest>=9'", with: declaration))
+            try write("uv.lock", lock)
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(report.findings().isEmpty)
+            XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"], declaration)
+        }
+        try write("pyproject.toml", project)
+        for (before, after) in [
+            ("extra == 'test'", "extra == 'test' and python_version < '3.13'"),
+            ("extra == 'test'", "extra == 'missing'"),
+            ("name = \"pytest\"", "name = \"pytest\", unknown = \"value\""),
+            ("name = \"pytest\"", "name = \"pytest\", name = \"pytest\""),
+            ("name = \"pytest\",", "name = \"pytest\""),
+            ("specifier = \">=9\"", "specifier = \">=9\", extras = [\"bad extra\"]")
+        ] {
+            try write("uv.lock", lock.replacingOccurrences(of: before, with: after))
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(report.findings().isEmpty)
+            XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"], after)
+        }
+        try write("uv.lock", lock)
+        for unsupported in [
+            "\n[dependency-groups]\ndev = ['ruff']",
+            "\n[tool.uv.sources]\npytest = { workspace = true }",
+            "\n[tool.uv]\ndev-dependencies = ['ruff']"
+        ] {
+            try write("pyproject.toml", project + unsupported)
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"])
+        }
     }
     func testUnsupportedLockfileCannotResolveEarlierDrift() async throws {
         try write("package.json", #"{"packageManager":"npm@10.0.0","dependencies":{"a":"^2"}}"#)

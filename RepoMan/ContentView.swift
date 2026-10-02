@@ -12,7 +12,7 @@ struct ContentView: View {
     @AppStorage("sidebarVisible") private var sidebarVisible = true
     @FocusState private var searchFocused: Bool
 
-    private let toolbarLeadingInset: CGFloat = 96
+    @State private var toolbarLeadingInset: CGFloat = 96
 
     var body: some View {
         GeometryReader { geometry in
@@ -44,11 +44,19 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Theme.background, ignoresSafeAreaEdges: [])
             }
+            .background {
+                TitleBarWindowZoom()
+                ToolbarPositionReader { leadingInset in
+                    if abs(toolbarLeadingInset - leadingInset) > 0.5 {
+                        toolbarLeadingInset = leadingInset
+                    }
+                }
+            }
             .toolbar {
-                // Recreate the native item on width changes so AppKit updates its minimum size.
-                ToolbarItem(id: "repository-topbar-\(Int(geometry.size.width))", placement: .navigation) {
+                // Keep the native hosting view attached throughout window resize animations.
+                ToolbarItem(id: "repository-topbar", placement: .navigation) {
                     topBar(sidebarWidth: visibleSidebarWidth)
-                        // The native toolbar reserves the leading space for window controls.
+                        // AppKit changes the space for window controls in fullscreen.
                         .frame(width: max(0, geometry.size.width - toolbarLeadingInset - 8))
                 }
                 .sharedBackgroundVisibility(.hidden)
@@ -114,8 +122,13 @@ struct ContentView: View {
                     store.openSelectedRepositoryInTerminal()
                 }
                 .disabled(store.selectedRepository == nil)
+                ToolbarActionButton(icon: .ide, title: "Open in Cursor") {
+                    store.openSelectedRepositoryInCursor()
+                }
+                .disabled(store.selectedRepository == nil)
+                .accessibilityIdentifier("open-in-cursor-button")
                 ToolbarActionButton(
-                    symbol: "doc.text.magnifyingglass",
+                    icon: .diff,
                     title: showsRepositoryChanges ? "Hide uncommitted changes" : "Show uncommitted changes",
                     foregroundColor: showsRepositoryChanges ? Theme.primary : Theme.secondary
                 ) {
@@ -178,13 +191,14 @@ struct ContentView: View {
             }
             ToolbarActionButton(
                 symbol: "arrow.clockwise",
-                title: "Refresh repository",
+                title: "Refresh all repositories",
                 isRotating: store.isFetching || store.isScanning,
                 foregroundColor: Theme.primary
             ) {
-                store.refreshSelected()
+                store.refreshAll()
             }
-            .disabled(store.selectedRepository == nil || store.isFetching || store.isScanning)
+            .disabled(store.folder == nil || store.isFetching || store.isScanning)
+            .accessibilityIdentifier("refresh-all-repositories-button")
         }
     }
 
@@ -234,7 +248,7 @@ struct ContentView: View {
             ascending: sortAscending
         ).filter {
             repositoryFilter != .needsAttention || store.loadingRepositoryIDs.contains($0.id)
-                || !store.findings(in: $0).isEmpty
+                || !store.issues(in: $0).isEmpty
         }
     }
 
@@ -272,35 +286,7 @@ struct ContentView: View {
                     .padding(.bottom, 8)
             }
 
-            CodexScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(filteredRepositories) { repository in
-                        RepositoryRow(repository: repository, statusCounts: store.issueStatusCounts(in: repository),
-                                      isLoading: store.loadingRepositoryIDs.contains(repository.id),
-                                      checkProgress: store.repositoryCheckProgress[repository.id],
-                                      isSelected: store.selectedPath == repository.id) { store.select(repository) }
-                    }
-                    if filteredRepositories.isEmpty, !store.repositories.isEmpty {
-                        Text("No matching repositories")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.secondary)
-                            .padding(20)
-                        if repositoryFilter != .all {
-                            Button("Clear filter") { repositoryFilter = .all }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Theme.blue)
-                                .padding(.bottom, 12)
-                        }
-                    } else if store.folder != nil, store.repositories.isEmpty, !store.isScanning {
-                        Text("No Git repositories found in this folder.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.secondary)
-                            .padding(20)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 12)
-            }
+            repositoryList
 
             HStack(spacing: 8) {
                 Button { store.chooseFolder() } label: {
@@ -334,6 +320,46 @@ struct ContentView: View {
         }
         .frame(maxHeight: .infinity)
         .background { SidebarBackground() }
+    }
+
+    @ViewBuilder
+    private var repositoryList: some View {
+        let repositories = filteredRepositories
+        if !repositories.isEmpty {
+            NativeRepositoryList(
+                rows: repositories.map {
+                    RepositoryListRow(repository: $0, isLoading: store.loadingRepositoryIDs.contains($0.id),
+                                      checkProgress: store.repositoryCheckProgress[$0.id])
+                },
+                selectedPath: store.selectedPath,
+                statusCounts: { store.issueStatusCounts(in: $0) },
+                onSelect: { store.select($0) }
+            )
+        } else {
+            CodexScrollView {
+                VStack(spacing: 0) {
+                    if !store.repositories.isEmpty {
+                        Text("No matching repositories")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.secondary)
+                            .padding(20)
+                        if repositoryFilter != .all {
+                            Button("Clear filter") { repositoryFilter = .all }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(Theme.blue)
+                                .padding(.bottom, 12)
+                        }
+                    } else if store.folder != nil, !store.isScanning {
+                        Text("No Git repositories found in this folder.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.secondary)
+                            .padding(20)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+            }
+        }
     }
 
     @ViewBuilder
@@ -407,6 +433,152 @@ struct ContentView: View {
     }
 }
 
+/// Handle the custom toolbar like a title bar, retaining the window's previous size.
+private struct TitleBarWindowZoom: NSViewRepresentable {
+    func makeNSView(context: Context) -> ZoomView { ZoomView() }
+    func updateNSView(_ view: ZoomView, context: Context) {}
+
+    static func dismantleNSView(_ view: ZoomView, coordinator: ()) {
+        view.stopMonitoring()
+    }
+
+    final class ZoomView: NSView {
+        private var eventMonitor: Any?
+        private var restoreFrame: NSRect?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopMonitoring()
+            restoreFrame = nil
+            guard window != nil else { return }
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                guard let self else { return event }
+                return self.handleDoubleClick(event)
+            }
+        }
+
+        func stopMonitoring() {
+            if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+            eventMonitor = nil
+        }
+
+        private func handleDoubleClick(_ event: NSEvent) -> NSEvent? {
+            guard event.clickCount == 2, let window, event.window === window,
+                  !window.styleMask.contains(.fullScreen), window.styleMask.contains(.resizable),
+                  event.locationInWindow.y >= window.contentLayoutRect.maxY,
+                  let screen = window.screen else { return event }
+
+            // Toolbar controls and traffic-light buttons keep their normal clicks.
+            if let frameView = window.contentView?.superview {
+                func containsControl(_ view: NSView) -> Bool {
+                    if view is TitleBarControlRegion.ControlView,
+                       view.bounds.contains(view.convert(event.locationInWindow, from: nil)) {
+                        return true
+                    }
+                    return view.subviews.contains(where: containsControl)
+                }
+                if containsControl(frameView) { return event }
+                var hitView = frameView.hitTest(frameView.convert(event.locationInWindow, from: nil))
+                while let view = hitView {
+                    if view is NSControl { return event }
+                    hitView = view.superview
+                }
+            }
+            let target = screen.visibleFrame
+            let current = window.frame
+            let fillsScreen = abs(current.minX - target.minX) < 1
+                && abs(current.minY - target.minY) < 1
+                && abs(current.width - target.width) < 1
+                && abs(current.height - target.height) < 1
+            if fillsScreen, let restoreFrame {
+                window.setFrame(window.constrainFrameRect(restoreFrame, to: screen), display: true, animate: true)
+                self.restoreFrame = nil
+            } else {
+                restoreFrame = current
+                window.setFrame(target, display: true, animate: true)
+            }
+            return nil
+        }
+    }
+}
+
+/// SwiftUI toolbar buttons share one hosting view, so mark their individual hit regions.
+private struct TitleBarControlRegion: NSViewRepresentable {
+    func makeNSView(context: Context) -> ControlView { ControlView() }
+    func updateNSView(_ view: ControlView, context: Context) {}
+
+    final class ControlView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+}
+
+/// Keep the header aligned with the detail column using the native toolbar's origin.
+private struct ToolbarPositionReader: NSViewRepresentable {
+    let onChange: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> PositionView {
+        let view = PositionView()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: PositionView, context: Context) {
+        view.onChange = onChange
+        view.scheduleMeasurement()
+    }
+
+    final class PositionView: NSView {
+        var onChange: ((CGFloat) -> Void)?
+        private var measurementPending = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self)
+            if let window {
+                for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
+                             NSWindow.didExitFullScreenNotification] {
+                    NotificationCenter.default.addObserver(self, selector: #selector(windowLayoutChanged),
+                                                           name: name, object: window)
+                }
+            }
+            scheduleMeasurement()
+        }
+
+        override func layout() {
+            super.layout()
+            scheduleMeasurement()
+        }
+
+        @objc private func windowLayoutChanged(_ notification: Notification) {
+            scheduleMeasurement()
+        }
+
+        func scheduleMeasurement() {
+            guard !measurementPending else { return }
+            measurementPending = true
+            // Read after AppKit lays out the toolbar, outside the SwiftUI update pass.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.measurementPending = false
+                guard let window = self.window else { return }
+                guard let toolbarView = window.toolbar?.items.first(where: {
+                    $0.itemIdentifier.rawValue == "repository-topbar"
+                })?.view, let toolbarWindow = toolbarView.window, toolbarView.bounds.width > 0 else {
+                    // On fullscreen exit, AppKit may hide the wider item until it fits
+                    // beside the window controls again. The content probe stays attached.
+                    if !window.styleMask.contains(.fullScreen) { self.onChange?(96) }
+                    return
+                }
+                // In fullscreen AppKit hosts the toolbar in a separate window.
+                let origin = toolbarWindow.convertPoint(toScreen: toolbarView.convert(toolbarView.bounds.origin, to: nil))
+                self.onChange?(max(0, origin.x - window.frame.minX))
+            }
+        }
+    }
+}
+
 private struct SidebarBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -416,7 +588,7 @@ private struct SidebarBackground: View {
                 Theme.sidebar
             } else {
                 SidebarVisualEffect()
-                    .overlay(Theme.sidebar.opacity(0.45))
+                    .overlay(Theme.sidebar.opacity(0.90))
             }
         }
         .allowsHitTesting(false)
@@ -502,6 +674,7 @@ private struct ToolbarIconMenu<Content: View>: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .background { TitleBarControlRegion() }
         .onHover { isHovered = $0 }
         .help(value.isEmpty ? title : "\(title): \(value)")
         .accessibilityLabel(title)
@@ -570,6 +743,180 @@ private struct SidebarResizeHandle: NSViewRepresentable {
     }
 }
 
+/// Row data changes with scans and selection, never with the scroll offset.
+private struct RepositoryListRow: Equatable {
+    let repository: RepositorySnapshot
+    let isLoading: Bool
+    let checkProgress: RepositoryCheckProgress?
+}
+
+/// NSTableView recycles a small set of independently hosted rows. Scrolling no
+/// longer changes the SwiftUI layout graph for the entire repository sidebar.
+private struct NativeRepositoryList: NSViewRepresentable {
+    let rows: [RepositoryListRow]
+    let selectedPath: String?
+    let statusCounts: (RepositorySnapshot) -> [RepositoryIssueStatus: Int]
+    let onSelect: (RepositorySnapshot) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        let scroller = RepositoryScroller()
+        scroller.setAccessibilityLabel("Vertical scroll bar")
+        scrollView.verticalScroller = scroller
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = false
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets.bottom = 12
+
+        let table = NSTableView()
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("repository"))
+        column.resizingMask = .autoresizingMask
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.backgroundColor = .clear
+        table.style = .plain
+        table.rowHeight = 52
+        table.intercellSpacing = .zero
+        table.selectionHighlightStyle = .none
+        table.allowsEmptySelection = true
+        table.allowsMultipleSelection = false
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.setAccessibilityLabel("Repositories")
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        scrollView.documentView = table
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let table = scrollView.documentView as? NSTableView else { return }
+        let coordinator = context.coordinator
+        let previous = coordinator.parent
+        coordinator.parent = self
+        coordinator.synchronizingSelection = true
+        defer { coordinator.synchronizingSelection = false }
+        if previous.rows.map({ $0.repository.id }) != rows.map({ $0.repository.id }) || table.numberOfRows != rows.count {
+            table.reloadData()
+        } else {
+            let visible = table.rows(in: table.visibleRect)
+            for index in visible.location..<NSMaxRange(visible) where rows.indices.contains(index) {
+                if let cell = table.view(atColumn: 0, row: index, makeIfNecessary: false) as? RepositoryCell {
+                    coordinator.configure(cell, row: index)
+                }
+            }
+        }
+        let selectedIndex = rows.firstIndex { $0.repository.id == selectedPath }
+        let selection = selectedIndex.map { IndexSet(integer: $0) } ?? IndexSet()
+        if table.selectedRowIndexes != selection { table.selectRowIndexes(selection, byExtendingSelection: false) }
+    }
+
+    final class RepositoryCell: NSTableCellView {
+        let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+        var data: RepositoryListRow?
+        var statusCounts: [RepositoryIssueStatus: Int] = [:]
+        var isSelected = false
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            hosting.sizingOptions = []
+            hosting.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(hosting)
+            NSLayoutConstraint.activate([
+                hosting.leadingAnchor.constraint(equalTo: leadingAnchor),
+                hosting.trailingAnchor.constraint(equalTo: trailingAnchor),
+                hosting.topAnchor.constraint(equalTo: topAnchor),
+                hosting.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+    }
+
+    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        var parent: NativeRepositoryList
+        var synchronizingSelection = false
+
+        init(parent: NativeRepositoryList) { self.parent = parent }
+
+        func numberOfRows(in tableView: NSTableView) -> Int { parent.rows.count }
+
+        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            let identifier = NSUserInterfaceItemIdentifier("RepositoryCell")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? RepositoryCell
+                ?? RepositoryCell(frame: .zero)
+            cell.identifier = identifier
+            configure(cell, row: row)
+            return cell
+        }
+
+        func configure(_ cell: RepositoryCell, row: Int) {
+            let data = parent.rows[row]
+            let counts = parent.statusCounts(data.repository)
+            let isSelected = data.repository.id == parent.selectedPath
+            guard cell.data != data || cell.statusCounts != counts || cell.isSelected != isSelected else { return }
+            cell.data = data
+            cell.statusCounts = counts
+            cell.isSelected = isSelected
+            cell.hosting.rootView = AnyView(
+                RepositoryRow(repository: data.repository, statusCounts: counts,
+                              isLoading: data.isLoading, checkProgress: data.checkProgress,
+                              isSelected: isSelected) { [weak self] in
+                    self?.parent.onSelect(data.repository)
+                }
+                .padding(.horizontal, 14)
+                .font(.system(size: 12))
+                .preferredColorScheme(.dark)
+            )
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !synchronizingSelection, let table = notification.object as? NSTableView,
+                  parent.rows.indices.contains(table.selectedRow) else { return }
+            parent.onSelect(parent.rows[table.selectedRow].repository)
+        }
+    }
+}
+
+/// AppKit owns thumb tracking and scroll offsets; drawing keeps the sidebar's
+/// thin, trackless indicator without publishing offsets into SwiftUI.
+private final class RepositoryScroller: NSScroller {
+    private var isHovered = false
+    private var hoverTracking: NSTrackingArea?
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
+
+    // Overlay scrollers draw the track separately from the knob.
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+
+    override func drawKnob() {
+        guard knobProportion < 1 else { return }
+        let knob = rect(for: .knob)
+        let thumb = NSRect(x: knob.midX - Theme.scrollbarWidth / 2, y: knob.minY,
+                           width: Theme.scrollbarWidth, height: knob.height)
+        NSColor(isHovered || hitPart == .knob ? Theme.scrollbarHover : Theme.scrollbar).setFill()
+        NSBezierPath(roundedRect: thumb, xRadius: Theme.scrollbarWidth / 2,
+                     yRadius: Theme.scrollbarWidth / 2).fill()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTracking { removeTrackingArea(hoverTracking) }
+        let tracking = NSTrackingArea(rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(tracking)
+        hoverTracking = tracking
+    }
+
+    override func mouseEntered(with event: NSEvent) { isHovered = true; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { isHovered = false; needsDisplay = true }
+}
+
 private struct RepositoryRow: View {
     @State private var isHovered = false
     let repository: RepositorySnapshot
@@ -589,25 +936,16 @@ private struct RepositoryRow: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .help(repository.name)
-                    if !repository.branch.isEmpty || isLoading {
-                        HStack(spacing: 6) {
-                            if !repository.branch.isEmpty {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "arrow.triangle.branch")
-                                        .font(.system(size: 10, weight: .medium))
-                                    Text(repository.branch)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .help(repository.branch)
-                                }
-                                .layoutPriority(-1)
-                            }
-                            if isLoading {
-                                RepositoryActivityBadge(symbol: "magnifyingglass",
-                                    value: checkProgress.map { "\($0.percentage)%" } ?? "…",
-                                    color: Theme.blue, help: scanningHelp)
-                            }
+                    if !repository.branch.isEmpty {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 10, weight: .medium))
+                            Text(repository.branch)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(repository.branch)
                         }
+                        .layoutPriority(-1)
                         .font(.system(size: 11.5))
                         .foregroundStyle(isSelected ? Theme.primary.opacity(0.85) : Theme.secondary)
                     }
@@ -625,11 +963,18 @@ private struct RepositoryRow: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 52)
+            .background {
+                RepositoryScanProgressBackground(isLoading: isLoading, progress: checkProgress)
+                    .id(repository.id)
+            }
             .background(isSelected ? Theme.selection : (isHovered ? Theme.control : .clear), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .overlay {
+            if isLoading { NativeTooltip(text: scanningHelp) }
+        }
         .accessibilityValue(activityDescription)
         .accessibilityLabel("\(repository.name), \(repository.branch), \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
         .overlay(alignment: .bottom) {
@@ -658,29 +1003,41 @@ private struct RepositoryRow: View {
     }
 }
 
-private struct RepositoryActivityBadge: View {
-    let symbol: String
-    let value: String
-    let color: Color
-    let help: String
+private struct RepositoryScanProgressBackground: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var displayedFraction: Double
+    let isLoading: Bool
+    let progress: RepositoryCheckProgress?
+
+    init(isLoading: Bool, progress: RepositoryCheckProgress?) {
+        self.isLoading = isLoading
+        self.progress = progress
+        _displayedFraction = State(initialValue: min(1, max(0, progress?.fraction ?? 0)))
+    }
 
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .medium))
-            Text(value)
-                .font(.system(size: 10, weight: .medium))
-                .monospacedDigit()
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Theme.primary.opacity(0.025))
+                Rectangle()
+                    .fill(Theme.primary.opacity(0.08))
+                    // Fetching and queued inspections have no completed checks yet.
+                    // Keep a visible marker without inventing completed progress.
+                    .frame(width: min(geometry.size.width, max(4, geometry.size.width * displayedFraction)))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(isLoading ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: isLoading)
         }
-        .foregroundStyle(color)
-        .padding(.horizontal, 6)
-        .frame(height: 20)
-        .background(color.opacity(0.12), in: Capsule())
-        .overlay { Capsule().strokeBorder(color.opacity(0.2), lineWidth: 1) }
-        .fixedSize()
-        .overlay { NativeTooltip(text: help) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(help)
+        .onChange(of: progress?.fraction) { _, fraction in
+            // Keep the last width while a completed scan fades out.
+            if isLoading, let fraction { displayedFraction = min(1, max(0, fraction)) }
+        }
+        .onChange(of: isLoading) { _, isLoading in
+            if isLoading { displayedFraction = min(1, max(0, progress?.fraction ?? 0)) }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -742,8 +1099,53 @@ private struct RepositoryDetail: View {
     }
 }
 
+enum RepositoryToolbarIcon: Shape {
+    case ide
+    case diff
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        switch self {
+        case .ide:
+            path.addRoundedRect(in: CGRect(x: 1, y: 2, width: 18, height: 16), cornerSize: CGSize(width: 2, height: 2))
+            // Window chrome and a project sidebar make the code glyph read as an IDE.
+            path.move(to: CGPoint(x: 1, y: 6))
+            path.addLine(to: CGPoint(x: 19, y: 6))
+            path.move(to: CGPoint(x: 6, y: 6))
+            path.addLine(to: CGPoint(x: 6, y: 18))
+            path.move(to: CGPoint(x: 11, y: 9))
+            path.addLine(to: CGPoint(x: 9, y: 12))
+            path.addLine(to: CGPoint(x: 11, y: 15))
+            path.move(to: CGPoint(x: 14, y: 9))
+            path.addLine(to: CGPoint(x: 16, y: 12))
+            path.addLine(to: CGPoint(x: 14, y: 15))
+        case .diff:
+            // A folded document with explicit added and removed lines.
+            path.move(to: CGPoint(x: 12, y: 1))
+            for point in [CGPoint(x: 4, y: 1), CGPoint(x: 4, y: 19), CGPoint(x: 17, y: 19),
+                          CGPoint(x: 17, y: 6), CGPoint(x: 12, y: 1), CGPoint(x: 12, y: 6),
+                          CGPoint(x: 17, y: 6)] {
+                path.addLine(to: point)
+            }
+            path.move(to: CGPoint(x: 6.5, y: 10))
+            path.addLine(to: CGPoint(x: 10.5, y: 10))
+            path.move(to: CGPoint(x: 8.5, y: 8))
+            path.addLine(to: CGPoint(x: 8.5, y: 12))
+            path.move(to: CGPoint(x: 12.5, y: 10))
+            path.addLine(to: CGPoint(x: 14.5, y: 10))
+            path.move(to: CGPoint(x: 6.5, y: 15))
+            path.addLine(to: CGPoint(x: 10.5, y: 15))
+            path.move(to: CGPoint(x: 12.5, y: 15))
+            path.addLine(to: CGPoint(x: 14.5, y: 15))
+        }
+        return path.applying(CGAffineTransform(scaleX: rect.width / 20, y: rect.height / 20))
+            .applying(CGAffineTransform(translationX: rect.minX, y: rect.minY))
+    }
+}
+
 struct ToolbarActionButton: View {
-    let symbol: String
+    var symbol: String = ""
+    var icon: RepositoryToolbarIcon? = nil
     let title: String
     var isRotating = false
     var foregroundColor: Color = Theme.secondary
@@ -752,13 +1154,21 @@ struct ToolbarActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .regular))
-                .symbolEffect(.rotate.clockwise, isActive: isRotating)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
+            Group {
+                if let icon {
+                    icon.stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
+                        .frame(width: 20, height: 20)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 15, weight: .regular))
+                        .symbolEffect(.rotate.clockwise, isActive: isRotating)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background { TitleBarControlRegion() }
         .foregroundStyle(foregroundColor)
         .background(isHovered ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
         .onHover { isHovered = $0 }

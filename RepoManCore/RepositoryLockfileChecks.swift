@@ -22,7 +22,10 @@ enum RepositoryLockfileChecks {
                     switch manager {
                     case "npm": reasons = try npm(expected, lock: json(context, lock), directory: relative)
                     case "pnpm": reasons = try pnpm(expected, lock: context.readText(lock), directory: relative)
-                    default: throw RepairError.blocked("Static lockfile drift inspection supports npm v2/v3, pnpm v9 and simple uv v1 projects; this manager needs manual review.")
+                    case "bun":
+                        guard lock.hasSuffix("bun.lock") else { throw RepairError.blocked("Binary bun.lockb cannot be inspected statically; use a text bun.lock for manifest synchronization checks.") }
+                        reasons = try bun(expected, source: context.readText(lock), directory: relative)
+                    default: throw RepairError.blocked("Static lockfile drift inspection supports npm v2/v3, pnpm v9, Bun text lockfiles and simple uv v1 projects; this manager needs manual review.")
                     }
                 } else { reasons = try uv(project: context.readText(manifest), lock: context.readText(lock), directory: relative) }
                 if !reasons.isEmpty {
@@ -64,6 +67,33 @@ enum RepositoryLockfileChecks {
             differences(try dependencies(expected, type), try dependencies(entry, type), label: type)
         }
     }
+    private static func bun(_ expected: [String: Any], source: String, directory: String) throws -> [String] {
+        // Foundation's JSON5 reader handles Bun's JSONC comments and trailing commas
+        // without corrupting comment markers, URLs or commas inside dependency strings.
+        guard #available(macOS 12.0, *) else { throw RepairError.blocked("Bun text lockfile inspection requires macOS 12 or later.") }
+        let object: Any
+        do { object = try JSONSerialization.jsonObject(with: Data(source.utf8), options: [.json5Allowed]) }
+        catch { throw RepairError.blocked("Malformed Bun text lockfile.") }
+        guard let lock = object as? [String: Any], let version = lock["lockfileVersion"] as? Int,
+              [0, 1].contains(version), let workspaces = lock["workspaces"] as? [String: [String: Any]],
+              lock["packages"] is [String: Any] else { throw RepairError.blocked("Unsupported Bun text lockfile schema.") }
+        if let configVersion = lock["configVersion"] {
+            guard let version = configVersion as? Int, [0, 1].contains(version) else {
+                throw RepairError.blocked("Unsupported Bun lockfile configuration version.")
+            }
+        }
+        guard let entry = workspaces[directory] else { return ["workspace package metadata is missing"] }
+        var result: [String] = []
+        for type in dependencyTypes {
+            let wanted = try dependencies(expected, type), actual = try dependencies(entry, type)
+            guard !wanted.values.contains(where: { $0.hasPrefix("catalog:") }),
+                  !actual.values.contains(where: { $0.hasPrefix("catalog:") }) else {
+                throw RepairError.blocked("Bun catalogs need resolver review.")
+            }
+            result += differences(wanted, actual, label: type)
+        }
+        return result
+    }
     private static func pnpm(_ expected: [String: Any], lock: String, directory: String) throws -> [String] {
         let values = try InspectionConfig.yaml(lock).values
         guard InspectionConfig.scalar(values["lockfileVersion"]) == "9.0" else { throw RepairError.blocked("Unsupported pnpm lockfile schema.") }
@@ -92,10 +122,19 @@ enum RepositoryLockfileChecks {
     private static func uv(project: String, lock: String, directory: String) throws -> [String] {
         let projectValues = try InspectionConfig.toml(project, allSections: true).values
         guard projectValues["project.dynamic"] == nil,
-              !projectValues.keys.contains(where: { $0.hasPrefix("project.optional-dependencies.") || $0.hasPrefix("dependency-groups.") || $0.hasPrefix("tool.uv.sources.") || $0 == "tool.uv.dev-dependencies" }) else {
-            throw RepairError.blocked("Dynamic Python metadata, extras, groups and custom sources need resolver review.")
+              !projectValues.keys.contains(where: { $0 == "dependency-groups" || $0.hasPrefix("dependency-groups.") || $0 == "tool.uv.sources" || $0.hasPrefix("tool.uv.sources.") || $0 == "tool.uv.dev-dependencies" }) else {
+            throw RepairError.blocked("Dynamic Python metadata, dependency groups and custom sources need resolver review.")
         }
-        let expected = try pythonRequirements(projectValues["project.dependencies"] ?? "[]")
+        var expected = ["": try pythonRequirements(projectValues["project.dependencies"] ?? "[]")]
+        let optionalPrefix = "project.optional-dependencies."
+        guard projectValues["project.optional-dependencies"] == nil else {
+            throw RepairError.blocked("Inline Python optional dependency tables need manual review.")
+        }
+        for (key, raw) in projectValues where key.hasPrefix(optionalPrefix) {
+            let group = try pythonName(String(key.dropFirst(optionalPrefix.count)))
+            guard expected[group] == nil else { throw RepairError.blocked("Duplicate Python optional dependency groups.") }
+            expected[group] = try pythonRequirements(raw)
+        }
         let sections = lock.components(separatedBy: "[[package]]")
         let header = try InspectionConfig.toml(sections[0], allSections: true).values
         guard InspectionConfig.scalar(header["version"]) == "1" else { throw RepairError.blocked("Unsupported uv lockfile schema.") }
@@ -111,43 +150,114 @@ enum RepositoryLockfileChecks {
             }
         }
         guard let metadata else { return ["workspace package metadata is missing"] }
-        let actual = try lockedPythonRequirements(metadata["package.metadata.requires-dist"] ?? "[]")
-        return differences(expected, actual, label: "dependencies")
+        let extras = try pythonExtras(metadata["package.metadata.provides-extras"] ?? "[]")
+        let actual = try lockedPythonRequirements(metadata["package.metadata.requires-dist"] ?? "[]", extras: extras)
+        return Set(expected.keys).union(actual.keys).sorted().flatMap { group -> [String] in
+            let label = group.isEmpty ? "dependencies" : "optional-dependencies." + group
+            guard let wanted = expected[group], let locked = actual[group] else {
+                return [label + " is missing or extra"]
+            }
+            return differences(wanted, locked, label: label)
+        }
     }
     private static func pythonRequirements(_ raw: String) throws -> [String: String] {
-        let captures = CheckSupport.captures(raw, #"["']([^"'\\]*)["']"#)
-        var leftover = raw
-        for capture in captures { leftover = leftover.replacingOccurrences(of: capture[0], with: "") }
-        guard leftover.allSatisfy({ "[], \n\r\t".contains($0) }) else { throw RepairError.blocked("Unsupported Python dependency array.") }
         var result: [String: String] = [:]
-        for capture in captures {
-            let matches = CheckSupport.captures(capture[1], #"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*((?:(?:==|!=|>=|<=|>|<|~=)[0-9][0-9.*]*\s*,?\s*)*)$"#)
-            guard let match = matches.first else { throw RepairError.blocked("Python extras, markers or direct sources need resolver review.") }
-            let name = normalizeName(match[1])
+        for item in try tomlElements(raw) {
+            let requirement = try tomlString(item)
+            let matches = CheckSupport.captures(requirement, #"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\[\]]+)\])?\s*((?:(?:==|!=|>=|<=|>|<|~=)[0-9][0-9.*]*\s*,?\s*)*)$"#)
+            guard let match = matches.first else { throw RepairError.blocked("Python markers, direct sources or unsupported version specifiers need resolver review.") }
+            let name = try pythonName(match[1])
+            let extras = try Set(match[2].isEmpty ? [] : match[2].components(separatedBy: ",").map { try pythonName($0.trimmingCharacters(in: .whitespaces)) })
             guard result[name] == nil else { throw RepairError.blocked("Duplicate Python requirements need resolver review.") }
-            result[name] = normalizeSpecifier(match[2])
+            result[name] = pythonDeclaration(specifier: match[3], extras: extras)
         }
         return result
     }
-    private static func lockedPythonRequirements(_ raw: String) throws -> [String: String] {
-        let records = CheckSupport.captures(raw, #"\{([^{}]*)\}"#)
-        var leftover = raw, result: [String: String] = [:]
-        for record in records {
-            leftover = leftover.replacingOccurrences(of: record[0], with: "")
-            let pairs = CheckSupport.captures(record[1], #"([a-z-]+)\s*=\s*["']([^"'\\]*)["']"#)
-            let remaining = pairs.reduce(record[1]) { $0.replacingOccurrences(of: $1[0], with: "") }
-            guard remaining.allSatisfy({ $0.isWhitespace || $0 == "," }), Set(pairs.map { $0[1] }).count == pairs.count else {
-                throw RepairError.blocked("Unsupported uv inline dependency metadata.")
+    private static func lockedPythonRequirements(_ raw: String, extras: Set<String>) throws -> [String: [String: String]] {
+        var result: [String: [String: String]] = ["": [:]]
+        for extra in extras { result[extra] = [:] }
+        for record in try tomlElements(raw) {
+            var fields: [String: String] = [:]
+            for pair in try tomlElements(record, opening: "{", closing: "}") {
+                guard let equals = pair.firstIndex(of: "=") else { throw RepairError.blocked("Unsupported uv inline dependency metadata.") }
+                let key = String(pair[..<equals]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard fields[key] == nil else { throw RepairError.blocked("Duplicate uv dependency metadata fields.") }
+                fields[key] = String(pair[pair.index(after: equals)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            let fields = Dictionary(uniqueKeysWithValues: pairs.map { ($0[1], $0[2]) })
-            guard Set(fields.keys).isSubset(of: ["name", "specifier"]), let name = InspectionConfig.scalar(fields["name"]) else {
+            guard Set(fields.keys).isSubset(of: ["name", "specifier", "extras", "marker"]), let rawName = fields["name"] else {
                 throw RepairError.blocked("Python lock metadata needs resolver review.")
             }
-            let normalized = normalizeName(name)
-            guard result[normalized] == nil else { throw RepairError.blocked("Duplicate locked Python requirements.") }
-            result[normalized] = normalizeSpecifier(InspectionConfig.scalar(fields["specifier"]) ?? "")
+            let name = try pythonName(tomlString(rawName))
+            let specifier = try fields["specifier"].map { try tomlString($0) } ?? ""
+            let dependencyExtras = try pythonExtras(fields["extras"] ?? "[]")
+            let groups: Set<String>
+            if let marker = fields["marker"] {
+                // uv may combine a requirement shared by several extras into an OR marker.
+                let terms = try tomlString(marker).components(separatedBy: " or ")
+                groups = try Set(terms.map { term in
+                    let matches = CheckSupport.captures(term, #"^\s*extra\s*==\s*(?:'([^']+)'|"([^"]+)")\s*$"#)
+                    guard let match = matches.first else { throw RepairError.blocked("Python environment markers need resolver review.") }
+                    let group = try pythonName(match[1].isEmpty ? match[2] : match[1])
+                    guard extras.contains(group) else { throw RepairError.blocked("Python lock metadata references an undeclared extra.") }
+                    return group
+                })
+            } else { groups = [""] }
+            for group in groups {
+                guard result[group]?[name] == nil else { throw RepairError.blocked("Duplicate locked Python requirements.") }
+                result[group, default: [:]][name] = pythonDeclaration(specifier: specifier, extras: dependencyExtras)
+            }
         }
-        guard leftover.allSatisfy({ "[], \n\r\t".contains($0) }) else { throw RepairError.blocked("Unsupported uv dependency metadata.") }
+        return result
+    }
+    private static func pythonDeclaration(specifier: String, extras: Set<String>) -> String {
+        normalizeSpecifier(specifier) + "|" + extras.sorted().joined(separator: ",")
+    }
+    private static func pythonName(_ raw: String) throws -> String {
+        guard CheckSupport.matches(raw, #"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$"#) else {
+            throw RepairError.blocked("Unsupported Python package or extra name.")
+        }
+        return normalizeName(raw)
+    }
+    private static func pythonExtras(_ raw: String) throws -> Set<String> {
+        try Set(tomlElements(raw).map { try pythonName(tomlString($0)) })
+    }
+    private static func tomlString(_ raw: String) throws -> String {
+        guard raw.count >= 2, let quote = raw.first, quote == "\"" || quote == "'", raw.last == quote else {
+            throw RepairError.blocked("Expected a Python metadata string.")
+        }
+        let value = String(raw.dropFirst().dropLast())
+        guard !value.contains(quote), !value.contains("\\"), !value.contains("\n") else {
+            throw RepairError.blocked("Escaped or multiline Python metadata strings need manual review.")
+        }
+        return value
+    }
+    /// Split a restricted TOML array/table without splitting quoted commas or nested extras arrays.
+    private static func tomlElements(_ raw: String, opening: Character = "[", closing: Character = "]") throws -> [String] {
+        let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.first == opening, raw.last == closing else { throw RepairError.blocked("Unsupported Python metadata collection.") }
+        var result: [String] = [], current = "", quote: Character?, stack: [Character] = []
+        for c in raw.dropFirst().dropLast() {
+            if let q = quote {
+                guard c != "\\" else { throw RepairError.blocked("Escaped Python metadata needs manual review.") }
+                current.append(c)
+                if c == q { quote = nil }
+                continue
+            }
+            if c == "\"" || c == "'" { quote = c }
+            else if c == "[" { stack.append("]") }
+            else if c == "{" { stack.append("}") }
+            else if c == "]" || c == "}" {
+                guard stack.popLast() == c else { throw RepairError.blocked("Unbalanced Python metadata collection.") }
+            } else if c == ",", stack.isEmpty {
+                let item = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !item.isEmpty else { throw RepairError.blocked("Empty Python metadata entry.") }
+                result.append(item); current = ""; continue
+            }
+            current.append(c)
+        }
+        guard quote == nil, stack.isEmpty else { throw RepairError.blocked("Incomplete Python metadata collection.") }
+        let last = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !last.isEmpty { result.append(last) }
         return result
     }
     private static func normalizeName(_ name: String) -> String { name.lowercased().replacingOccurrences(of: #"[-_.]+"#, with: "-", options: .regularExpression) }

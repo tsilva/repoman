@@ -6,3 +6,4 @@ dist/
 *.xcarchive
 *.xcuserstate
 xcuserdata/
+.openrouter-test-key*

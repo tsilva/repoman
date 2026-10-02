@@ -21,6 +21,7 @@ public struct RepairRecipeCatalog: Sendable {
         finding.recipeIDs.compactMap { id in recipes.first { $0.id == id } }
     }
     public static let standardRecipes = [
+        RepairRecipe(id: "docs.readmeConsistency", title: "Run optimize-readme", prompt: "Inspect the reported README consistency findings and use the $optimize-readme skill to bring the README into conformance. Read the installed skill before editing and verify commands against the repository. Preserve useful information and unrelated changes. Use existing logo and architecture assets; report missing prerequisites instead of generating assets or inserting broken references. Leave changes uncommitted; do not push or publish. RepoMan will independently recheck the README afterwards."),
         RepairRecipe(id: "ci.failing", title: "Fix failing CI", prompt: "Inspect the reported CI failure and its logs for the published branch and commit. Reproduce relevant failures locally and fix the cause. Preserve existing coverage and dependency protections; do not disable checks or weaken assertions to make CI pass. Run relevant tests and leave changes uncommitted. Do not push or rerun remote workflows unless I explicitly request it."),
         RepairRecipe(id: "ci.coverage", title: "Add routine CI validation", prompt: "Inspect this project's tooling and existing workflows. Add appropriate build, test, lint, or type-check validation on pushes or pull requests using existing commands. Preserve release and dependency-review workflows, supply-chain protections, and repository instructions. Validate the workflow and relevant commands. Leave changes uncommitted; do not publish or trigger workflows."),
         RepairRecipe(id: "files.readme", title: "Write a README", prompt: "Inspect the repository and write an accurate README covering its purpose, setup, and usage. Verify commands against the actual project. Leave the file uncommitted."),
@@ -99,6 +100,18 @@ public struct RepairConversationEntry: Identifiable, Codable, Equatable, Sendabl
     public var exitCode: Int?
     public init(id: String, kind: Kind, text: String, output: String? = nil, status: String? = nil, exitCode: Int? = nil) {
         self.id = id; self.kind = kind; self.text = text; self.output = output; self.status = status; self.exitCode = exitCode
+    }
+    /// Rechecks may repeat a result; retain changes and results separated by conversation activity.
+    public static func removingRepeatedStatuses(from entries: [Self]) -> [Self] {
+        var result: [Self] = []
+        for entry in entries {
+            if entry.kind == .status, let previous = result.last,
+               previous.kind == .status, previous.text == entry.text, previous.status == entry.status {
+                continue
+            }
+            result.append(entry)
+        }
+        return result
     }
 }
 
