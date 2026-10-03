@@ -4,38 +4,66 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit SHA on main to validate without publication
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: xcode-27
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.number }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
-      - name: Check out tagged source
+      - name: Check out release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate version tag and Xcode
+      - name: Validate release identity and Xcode
         id: version
         shell: bash
         env:
+          RELEASE_EVENT: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo 'Release tags must use vX.Y.Z.' >&2
-            exit 1
+          release_sha="$(git rev-parse HEAD)"
+          main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          version_tag=workflow_dispatch
+          if [[ "$RELEASE_EVENT" == workflow_dispatch ]]; then
+            [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$release_sha" == "$RELEASE_REF" && "$release_sha" == "$main_sha" ]] || exit 1
+          else
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            git merge-base --is-ancestor "$release_sha" "$main_sha"
+            version_tag="$RELEASE_TAG"
           fi
+          python3 .codex/skills/build-release/scripts/release-version.py \
+            --tag "$version_tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
           xcodebuild -version
           xcode_version="$(xcodebuild -version)"
-          [[ "$xcode_version" == "Xcode 27."* ]]
-          echo "number=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          [[ "$xcode_version" == "Xcode 27."* ]] || exit 1
+
+      - name: Check release safeguards
+        run: python3 Tools/test_release_workflow.py
 
       - name: Build and verify DMG
         shell: bash
@@ -47,19 +75,77 @@ jobs:
             --version "$VERSION_NUMBER" \
             --output-dir dist
 
-      - name: Publish GitHub Release
+      - name: Preserve validated candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repoman-${{ steps.version.outputs.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ needs.build.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download validated candidate without rebuilding
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: repoman-${{ needs.build.outputs.sha }}
+          path: dist
+
+      - name: Verify candidate before publication
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          filename="RepoMan-${RELEASE_TAG}-macOS-arm64-adhoc.dmg"
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          [[ "$RELEASE_TAG" == "v$RELEASE_VERSION" ]] || exit 1
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          releases="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name')"
+          if grep -Fxq "$RELEASE_TAG" <<< "$releases"; then
+            echo "GitHub Release already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          cd dist
+          filename="RepoMan-$RELEASE_TAG-macOS-arm64-adhoc.dmg"
+          [[ "$(find . -type f | wc -l)" -eq 2 ]] || exit 1
+          [[ -f "$filename" && -f "$filename.sha256" ]] || exit 1
+          [[ "$(wc -l < "$filename.sha256")" -eq 1 ]] || exit 1
+          [[ "$(cat "$filename.sha256")" == "$(sha256sum "$filename")" ]] || exit 1
+          sha256sum --check "$filename.sha256"
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          filename="RepoMan-$RELEASE_TAG-macOS-arm64-adhoc.dmg"
           gh release create "$RELEASE_TAG" \
-            "dist/$filename" \
-            "dist/$filename.sha256" \
-            --verify-tag \
-            --generate-notes \
-            --title "RepoMan $RELEASE_TAG" \
+            "dist/$filename" "dist/$filename.sha256" \
+            --verify-tag --generate-notes --title "RepoMan $RELEASE_TAG" \
             --notes 'Ad-hoc-signed build for macOS 27 or later on Apple Silicon. This app is not notarized; macOS Gatekeeper may require manual approval.'
+
+      - name: Verify published source and fresh downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_type="$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.type')"
+          tag_sha="$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          if [[ "$tag_type" == tag ]]; then
+            tag_sha="$(gh api "repos/$GH_REPO/git/tags/$tag_sha" --jq '.object.sha')"
+          fi
+          [[ "$tag_sha" == "$RELEASE_SHA" ]] || exit 1
+          filename="RepoMan-$RELEASE_TAG-macOS-arm64-adhoc.dmg"
+          gh release download "$RELEASE_TAG" --dir published \
+            --pattern "$filename" --pattern "$filename.sha256"
+          cmp "dist/$filename.sha256" "published/$filename.sha256"
+          cd published
+          sha256sum --check "$filename.sha256"
