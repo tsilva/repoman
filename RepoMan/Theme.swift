@@ -17,10 +17,12 @@ struct RepositoryCheckProgressRing: View {
 
 enum Theme {
     static let background = color(0x181818)
-    static let sidebar = color(0x212121)
+    static let sidebar = color(0x1D1D1D)
+    static let topBar = color(0x242424)
     static let panel = color(0x202020)
     static let control = color(0x282828)
     static let field = color(0x282828)
+    static let composer = color(0x363636)
     static let selection = color(0x333333)
     static let scrollbarWidth: CGFloat = 6
     static let scrollbar = color(0x383838)

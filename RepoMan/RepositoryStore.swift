@@ -13,6 +13,11 @@ final class RepositoryStore: ObservableObject {
     private var repositoryLoads: [String: Set<UUID>] = [:]
     @Published private(set) var repositoryCheckProgress: [String: RepositoryCheckProgress] = [:]
     private var checkProgressByLoad: [String: [UUID: RepositoryCheckProgress]] = [:]
+    private struct CheckLoad {
+        let checkIDs: Set<String>
+        var report: RepositoryInspectionReport?
+    }
+    private var checksByLoad: [String: [UUID: CheckLoad]] = [:]
     private struct ProgressKey: Hashable { let path: String; let token: UUID }
     private struct PendingProgress {
         let report: RepositoryInspectionReport
@@ -74,7 +79,13 @@ final class RepositoryStore: ObservableObject {
     @Published private(set) var tasks: [RepairTask] = []
     @Published private(set) var taskError: String?
     private var taskQueue: RepairTaskQueue?
-    var busyCommonDirectories: Set<String> { taskQueue?.busyCommonDirectories ?? [] }
+    var busyCommonDirectories: Set<String> {
+        (taskQueue?.busyCommonDirectories ?? []).union(syncCommonDirectories.values)
+    }
+    @Published private(set) var syncStates: [String: RepositorySyncState] = [:]
+    private var syncOperationIDs: [String: UUID] = [:]
+    private var syncCommonDirectories: [String: String] = [:]
+    var isSyncing: Bool { !syncOperationIDs.isEmpty }
     let isDemo = ProcessInfo.processInfo.arguments.contains("--demo")
 
     var selectedRepository: RepositorySnapshot? {
@@ -87,7 +98,7 @@ final class RepositoryStore: ObservableObject {
 
     func issues(in repository: RepositorySnapshot, includeCompleted: Bool = false, includeArchived: Bool = false) -> [RepositoryIssueListItem] {
         guard !repository.branch.isEmpty else { return [] }
-        let disabled = disabledChecks.union(ignoredChecks[repository.id] ?? [])
+        let disabled = disabledChecks.union(ignoredChecks[repository.id] ?? []).union(RepositoryIssueCatalog.syncCheckIDs)
         let findings = inspectionReports[repository.id]?.findings(disabledChecks: disabled)
             ?? issueCatalog.findings(in: repository, disabledChecks: disabled)
         let conversations = tasks.filter { $0.finding.repositoryID == repository.id && !disabled.contains($0.finding.checkID) }
@@ -98,6 +109,29 @@ final class RepositoryStore: ObservableObject {
     }
 
     var findings: [RepositoryFinding] { repositories.flatMap { findings(in: $0) } }
+
+    func checks(in repository: RepositorySnapshot) -> [RepositoryCheckListItem] {
+        let excluded = disabledChecks.union(ignoredChecks[repository.id] ?? []).union(RepositoryIssueCatalog.syncCheckIDs)
+        let loads = Array((checksByLoad[repository.id] ?? [:]).values)
+        return issueCatalog.checks.compactMap { check in
+            guard !excluded.contains(check.id) else { return nil }
+            let activeLoads = loads.filter { $0.checkIDs.contains(check.id) }
+            let statuses = activeLoads.compactMap { load -> RepositoryCheckStatus? in
+                guard let report = load.report else { return .queued }
+                return report.status(for: check.id)
+            }
+            let status: RepositoryCheckStatus?
+            if statuses.contains(.running) { status = .running }
+            else if statuses.contains(.queued) { status = .queued }
+            else {
+                let latest = activeLoads.compactMap(\.report).filter { $0.results[check.id] != nil }
+                    .max { ($0.completedAt[check.id] ?? .distantPast) < ($1.completedAt[check.id] ?? .distantPast) }
+                status = (latest ?? inspectionReports[repository.id])?.status(for: check.id)
+            }
+            guard let status else { return nil }
+            return RepositoryCheckListItem(repository: repository, check: check, status: status)
+        }
+    }
 
     func ignore(_ finding: RepositoryFinding) {
         var checks = Set(ignoredChecks[finding.repositoryID] ?? [])
@@ -146,7 +180,8 @@ final class RepositoryStore: ObservableObject {
     }
 
     func task(for finding: RepositoryFinding) -> RepairTask? {
-        tasks.last { $0.finding.id == finding.id && !$0.state.isClosed && !$0.isArchived }
+        let matching = tasks.filter { $0.contains(finding) && !$0.isSuperseded(for: finding) && !$0.state(for: finding).isClosed && !$0.isArchived }
+        return matching.first { $0.state.isActive } ?? matching.last
     }
 
     func issueStatusCounts(in repository: RepositorySnapshot) -> [RepositoryIssueStatus: Int] {
@@ -179,6 +214,35 @@ final class RepositoryStore: ObservableObject {
         } catch { taskError = error.localizedDescription; return nil }
     }
 
+    @discardableResult
+    func archiveCompletedSessions(_ ids: Set<UUID>) -> Bool {
+        if isDemo {
+            let selected = tasks.filter { ids.contains($0.id) }
+            guard selected.count == ids.count, selected.allSatisfy({ $0.state.isClosed }) else { return false }
+            for index in tasks.indices where ids.contains(tasks[index].id) { tasks[index].archivedAt = Date() }
+            return true
+        }
+        do {
+            guard let taskQueue else { throw RepairError.blocked(taskError ?? "The repair queue is unavailable.") }
+            try taskQueue.archiveCompleted(ids)
+            taskError = nil
+            return true
+        } catch { taskError = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func runRepair(findings: [RepositoryFinding], repository: RepositorySnapshot, prompt: String, recipeID: String?, sessionID: UUID? = nil) -> UUID? {
+        guard !isDemo else { return nil }
+        do {
+            guard let taskQueue else { throw RepairError.blocked(taskError ?? "The repair queue is unavailable.") }
+            let id: UUID
+            if let sessionID { id = try taskQueue.continueSession(sessionID, prompt: prompt, recipeID: recipeID) }
+            else { id = try taskQueue.enqueue(findings: findings, repository: repository, prompt: prompt, recipeID: recipeID) }
+            taskError = nil
+            return id
+        } catch { taskError = error.localizedDescription; return nil }
+    }
+
     func cancelTask(_ id: UUID) { taskQueue?.cancel(id) }
     func persistIssueThreads() -> Bool {
         guard !isDemo else { return true }
@@ -204,7 +268,7 @@ final class RepositoryStore: ObservableObject {
             let queue = try RepairTaskQueue(storage: RepairTaskStorage(url: root.appendingPathComponent("repair-tasks.json")))
             taskQueue = queue
             tasks = queue.tasks
-            queue.canRun = { [weak self] in self?.isScanning == false && self?.isFetching == false }
+            queue.canRun = { [weak self] in self?.isScanning == false && self?.isFetching == false && self?.isSyncing == false }
             queue.onChange = { [weak self, weak queue] in
                 guard let self, let queue else { return }
                 self.tasks = queue.tasks
@@ -251,6 +315,7 @@ final class RepositoryStore: ObservableObject {
                 tasks = [sample]
             }
             if ProcessInfo.processInfo.arguments.contains("--activity") { startDemoActivity() }
+            if ProcessInfo.processInfo.arguments.contains("--check-progress") { startDemoCheckProgress() }
             return
         }
         configureTaskQueue()
@@ -258,7 +323,7 @@ final class RepositoryStore: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
-                guard let self, let folder = self.folder, !self.isScanning, !self.isFetching else { continue }
+                guard let self, let folder = self.folder, !self.isScanning, !self.isFetching, !self.isSyncing else { continue }
                 await self.scanFolder(folder, fetchRemotes: true, clearFirst: false, dueOnly: true)
             }
         }
@@ -288,6 +353,7 @@ final class RepositoryStore: ObservableObject {
             repositoryLoads = [:]
             loadingRepositoryIDs = []
             checkProgressByLoad = [:]
+            checksByLoad = [:]
             repositoryCheckProgress = [:]
             folder = url
             UserDefaults.standard.set(url.path, forKey: "monitoredFolder")
@@ -351,12 +417,12 @@ final class RepositoryStore: ObservableObject {
     }
 
     func refreshAll() {
-        guard let folder, !isDemo, !isScanning, !isFetching else { return }
+        guard let folder, !isDemo, !isScanning, !isFetching, !isSyncing else { return }
         Task { await scanFolder(folder, fetchRemotes: true, clearFirst: false, forceRefresh: true) }
     }
 
     func refreshSelected() {
-        guard let selectedRepository, !isDemo, !isFetching, !isScanning else { return }
+        guard let selectedRepository, !isDemo, !isFetching, !isScanning, !isSyncing else { return }
         let currentGeneration = generation
         isFetching = true
         let busy = busyCommonDirectories
@@ -378,13 +444,105 @@ final class RepositoryStore: ObservableObject {
         }
     }
 
+    func syncUnavailableReason(for repository: RepositorySnapshot) -> String? {
+        if isDemo { return "Demo mode does not change repositories." }
+        // Folder scans publish and finish each repository independently. A completed
+        // repository can sync while the remaining repositories are still being checked.
+        if loadingRepositoryIDs.contains(repository.id) { return "Wait for this repository's checks to finish." }
+        if syncOperationIDs[repository.id] != nil { return "This repository is already syncing." }
+        if tasks.contains(where: { $0.finding.repositoryID == repository.id && $0.state.isActive && !$0.isArchived }) {
+            return "Wait for this repository's repairs to finish before syncing."
+        }
+        return nil
+    }
+
+    func synchronize(_ review: RepositorySyncReview, selectedPaths: Set<String>, message: String) {
+        let repository = review.snapshot
+        // A duplicate request must not replace the active operation's progress.
+        guard syncOperationIDs[repository.id] == nil else { return }
+        if let reason = syncUnavailableReason(for: repository) {
+            syncStates[repository.id] = .failed(reason)
+            return
+        }
+        let operation = UUID()
+        let currentGeneration = generation
+        syncOperationIDs[repository.id] = operation
+        syncStates[repository.id] = .running(.fetching)
+        Task {
+            defer {
+                syncOperationIDs.removeValue(forKey: repository.id)
+                syncCommonDirectories.removeValue(forKey: repository.id)
+                taskQueue?.start()
+            }
+            let common = await Task.detached(priority: .userInitiated) {
+                Result { try RepairTaskQueue.commonDirectory(at: repository.url) }
+            }.value
+            switch common {
+            case .success(let directory):
+                guard !(taskQueue?.busyCommonDirectories ?? []).contains(directory) else {
+                    syncStates[repository.id] = .failed("This repository is being repaired. Wait for the repair to finish.")
+                    return
+                }
+                guard !syncCommonDirectories.values.contains(directory) else {
+                    syncStates[repository.id] = .failed("This repository's shared Git directory is already syncing.")
+                    return
+                }
+                syncCommonDirectories[repository.id] = directory
+            case .failure(let error):
+                syncStates[repository.id] = .failed(error.localizedDescription)
+                return
+            }
+            let reportProgress: @Sendable (RepositorySyncPhase) -> Void = { [weak self] phase in
+                Task { @MainActor [weak self] in
+                    guard let self, self.syncOperationIDs[repository.id] == operation,
+                          self.syncStates[repository.id]?.isRunning == true else { return }
+                    self.syncStates[repository.id] = .running(phase)
+                }
+            }
+            let result = await Task.detached(priority: .userInitiated) {
+                Result {
+                    try RepositorySync.synchronize(review, selectedPaths: selectedPaths, message: message,
+                                                   onProgress: reportProgress)
+                }
+            }.value
+            // Even a failed push or merge can have saved a commit. Always reload local status.
+            let snapshot: RepositorySnapshot?
+            switch result {
+            case .success(let fresh):
+                snapshot = fresh
+                syncStates[repository.id] = .succeeded(RepositorySyncResult(snapshot: fresh,
+                    committedFileCount: selectedPaths.count, message: message.trimmingCharacters(in: .whitespacesAndNewlines)))
+            case .failure(let error):
+                snapshot = try? await Task.detached(priority: .utility) {
+                    try GitRepositoryScanner.scan(repository.url, includeDetails: false)
+                }.value
+                syncStates[repository.id] = .failed(error.localizedDescription)
+            }
+            if generation == currentGeneration, let snapshot,
+               repositories.contains(where: { $0.id == snapshot.id }) {
+                let report = inspectionReports[snapshot.id]?.updatingSnapshot(snapshot, catalog: issueCatalog)
+                apply(ScanResult(url: snapshot.url, snapshot: snapshot, fetchError: nil,
+                                 didFetch: snapshot.fetchedAt != nil, report: report), preservingFetchState: snapshot.fetchedAt == nil)
+                if let report { await Self.inspectionCache.store(report) }
+            }
+        }
+    }
+
+    func clearSyncResult(for id: String) {
+        guard syncStates[id]?.isRunning != true else { return }
+        syncStates.removeValue(forKey: id)
+    }
+
     /// Tokens keep overlapping refreshes from clearing each other's loading indicator.
     @discardableResult
     private func beginLoading(_ urls: [URL], token: UUID = UUID()) -> UUID {
         for url in urls {
             repositoryLoads[url.path, default: []].insert(token)
             loadingRepositoryIDs.insert(url.path)
-            checkProgressByLoad[url.path, default: [:]][token] = RepositoryCheckProgress(completed: 0, total: issueCatalog.checks.count)
+            let excluded = disabledChecks.union(ignoredChecks[url.path] ?? [])
+            let checks = Set(issueCatalog.checks.filter { !excluded.contains($0.id) }.map(\.id))
+            checksByLoad[url.path, default: [:]][token] = CheckLoad(checkIDs: checks)
+            checkProgressByLoad[url.path, default: [:]][token] = RepositoryCheckProgress(completed: 0, total: checks.count)
             updateCheckProgress(for: url.path)
         }
         return token
@@ -393,6 +551,8 @@ final class RepositoryStore: ObservableObject {
         guard var tokens = repositoryLoads[url.path], tokens.remove(token) != nil else { return }
         pendingProgress.removeValue(forKey: ProgressKey(path: url.path, token: token))
         checkProgressByLoad[url.path]?.removeValue(forKey: token)
+        checksByLoad[url.path]?.removeValue(forKey: token)
+        if checksByLoad[url.path]?.isEmpty == true { checksByLoad.removeValue(forKey: url.path) }
         if checkProgressByLoad[url.path]?.isEmpty == true { checkProgressByLoad.removeValue(forKey: url.path) }
         updateCheckProgress(for: url.path)
         if tokens.isEmpty {
@@ -456,6 +616,7 @@ final class RepositoryStore: ObservableObject {
         let path = report.snapshot.id
         guard generation == currentGeneration, repositoryLoads[path]?.contains(token) == true else { return }
         checkProgressByLoad[path]?[token] = RepositoryCheckProgress(completed: report.results.count, total: report.checkOrder.count)
+        checksByLoad[path]?[token]?.report = report
         // Keep previous findings until their detector finishes this inspection.
         let results = (inspectionReports[path]?.results ?? [:]).merging(report.results) { _, fresh in fresh }
         let previous = inspectionReports[path]
@@ -476,7 +637,7 @@ final class RepositoryStore: ObservableObject {
 
     private func scanFolder(_ url: URL, fetchRemotes: Bool, clearFirst: Bool,
                             forceRefresh: Bool = false, dueOnly: Bool = false) async {
-        guard !isScanning else { return }
+        guard !isScanning, !isSyncing else { return }
         discardPendingProgress()
         generation = UUID()
         let currentGeneration = generation
@@ -486,6 +647,7 @@ final class RepositoryStore: ObservableObject {
         repositoryLoads = [:]
         loadingRepositoryIDs = []
         checkProgressByLoad = [:]
+        checksByLoad = [:]
         repositoryCheckProgress = [:]
         let loadingToken = beginLoading(dueOnly ? [] : repositories.map(\.url))
         defer { endLoading(token: loadingToken) }
@@ -624,6 +786,23 @@ final class RepositoryStore: ObservableObject {
         }
     }
 
+    private func startDemoCheckProgress() {
+        guard let repository = repositories.first else { return }
+        let active = ["docs.readmeConsistency", "dependencies.safeguards", "dependencies.lockfileDrift", "github.description", "files.secrets"]
+        let passed = ["files.readme", "files.gitignore", "git.upstream", "git.checkoutIntegrity", "ci.coverage",
+                      "ci.mutableActions", "files.projectReferences", "docs.brokenLinks"]
+        let findings = issueCatalog.findings(in: repository).filter { !RepositoryIssueCatalog.syncCheckIDs.contains($0.checkID) }
+        var results: [String: RepositoryCheckResult] = Dictionary(uniqueKeysWithValues: passed.map { ($0, .findings([])) })
+        for (id, items) in Dictionary(grouping: findings, by: \.checkID) { results[id] = .findings(items) }
+        let order = issueCatalog.checks.filter { active.contains($0.id) || results[$0.id] != nil }.map(\.id)
+        let report = RepositoryInspectionReport(snapshot: repository, results: results, checkOrder: order,
+            runningCheckIDs: Set(active.prefix(2)))
+        inspectionReports[repository.id] = report
+        checksByLoad[repository.id] = [UUID(): CheckLoad(checkIDs: Set(order), report: report)]
+        loadingRepositoryIDs.insert(repository.id)
+        repositoryCheckProgress[repository.id] = RepositoryCheckProgress(completed: results.count, total: order.count)
+    }
+
     private func startDemoActivity() {
         for (name, completed, fixing) in [("repoman", 42, 1), ("agentbridge", 65, 0),
                                          ("obsidian-agents-plugin", -1, 2), ("modelarchviz", 80, 3)] {
@@ -693,6 +872,53 @@ private struct ScanResult: Sendable {
     let didFetch: Bool
     var skipped = false
     var report: RepositoryInspectionReport? = nil
+}
+
+struct RepositoryCheckListItem: Identifiable {
+    let repository: RepositorySnapshot
+    let check: RepositoryCheck
+    let status: RepositoryCheckStatus
+    var id: String { repository.id + "::" + check.id }
+    var title: String {
+        switch check.id {
+        case "git.staleBranches": return "Stale branches"
+        case "git.worktrees": return "Linked worktrees"
+        case "git.unpublishedBranches": return "Unpublished branch work"
+        case "git.upstream": return "Upstream branch"
+        case "git.checkoutIntegrity": return "Submodule and LFS checkout"
+        case "git.oldStashes": return "Old stashes"
+        case "git.unfinishedOperation": return "Git operation status"
+        case "files.readme": return "README file"
+        case "files.gitignore": return "Git ignore file"
+        case "files.license": return "License file"
+        case "files.secrets": return "Exposed secrets"
+        case "files.oversized": return "Tracked file sizes"
+        case "files.mergeMarkers": return "Merge markers"
+        case "files.generatedTracked": return "Tracked generated files"
+        case "files.projectReferences": return "Project references"
+        case "docs.brokenLinks": return "Local documentation links"
+        case "ci.failing": return "CI status"
+        case "ci.coverage": return "CI coverage"
+        case "ci.mutableActions": return "Actions reference pinning"
+        case "ci.suppressedFailures": return "Validation failure handling"
+        case "ci.security": return "Actions workflow security"
+        case "dependencies.manager": return "Package-manager consistency"
+        case "dependencies.safeguards": return "Dependency safeguards"
+        case "dependencies.lockfile": return "Tracked lockfiles"
+        case "dependencies.sources": return "Dependency sources"
+        case "dependencies.runtime": return "Runtime version consistency"
+        case "dependencies.lockfileDrift": return "Manifest and lockfile consistency"
+        case "github.description": return "Repository description"
+        case "inspection.remote": return "Remote availability"
+        case "inspection.comparison": return "Upstream comparison"
+        case "inspection.files": return "Repository file inspection"
+        case "website.online": return "Website availability"
+        case "website.analytics": return "Google Analytics delivery"
+        case "website.sentry": return "Sentry delivery"
+        case "website.cloudflare": return "Cloudflare proxying"
+        default: return check.title
+        }
+    }
 }
 
 struct RepositoryCheckProgress: Equatable {

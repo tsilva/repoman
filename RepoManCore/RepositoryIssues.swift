@@ -50,11 +50,11 @@ public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
     public var isIncomplete: Bool { incompleteReason != nil }
     public var isArchived: Bool { task?.isArchived == true }
     // Check availability is shown on the row; summary badges track repair state.
-    public var status: RepositoryIssueStatus { RepositoryIssueStatus(state: task?.state) }
+    public var status: RepositoryIssueStatus { RepositoryIssueStatus(state: task.map { $0.state(for: finding) }) }
     // Recurrences share a detector identity, but each completed or archived conversation has its own identity.
     public var id: String {
         if isIncomplete { return "incomplete::" + finding.id }
-        if let task, task.state.isClosed || task.isArchived { return "conversation::\(task.id)" }
+        if let task, task.state(for: finding).isClosed || task.isArchived { return "conversation::\(task.id)::\(finding.id)" }
         return finding.id
     }
 
@@ -75,21 +75,56 @@ public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
     public static func items(findings: [RepositoryFinding], tasks: [RepairTask],
                              includeCompleted: Bool = false, includeArchived: Bool = false) -> [Self] {
         let unarchived = tasks.filter { !$0.isArchived }
-        var items = findings.map { finding in
-            Self(finding: finding, task: unarchived.last { $0.finding.id == finding.id && !$0.state.isClosed })
+        func currentTask(for finding: RepositoryFinding) -> RepairTask? {
+            let matching = unarchived.filter { $0.contains(finding) && !$0.isSuperseded(for: finding) && !$0.state(for: finding).isClosed }
+            return matching.first(where: { $0.state.isActive }) ?? matching.last
         }
+        var items = findings.map { Self(finding: $0, task: currentTask(for: $0)) }
         var visible = Set(findings.map(\.id))
-        // An unavailable detector must not hide an unresolved conversation.
-        for task in unarchived.reversed() where !task.state.isClosed {
-            if visible.insert(task.finding.id).inserted { items.append(Self(finding: task.finding, task: task)) }
+        // Unavailable checks retain the latest conversation for every unresolved instance.
+        for task in unarchived.reversed() {
+            for finding in task.findings where !task.isSuperseded(for: finding) && !task.state(for: finding).isClosed {
+                if visible.insert(finding.id).inserted {
+                    items.append(Self(finding: finding, task: currentTask(for: finding)))
+                }
+            }
         }
         if includeCompleted || includeArchived {
-            items += unarchived.filter { $0.state.isClosed }.map { Self(finding: $0.finding, task: $0) }
+            for task in unarchived {
+                items += task.findings.filter { !task.isSuperseded(for: $0) && task.state(for: $0).isClosed }.map { Self(finding: $0, task: task) }
+            }
         }
         if includeArchived {
-            items += tasks.filter(\.isArchived).map { Self(finding: $0.finding, task: $0) }
+            for task in tasks where task.isArchived { items += task.findings.map { Self(finding: $0, task: task) } }
         }
         return items
+    }
+}
+
+/// Display grouping is independent of repair session ownership and never crosses repositories.
+public struct RepositoryIssueGroup: Identifiable, Sendable {
+    public let id: String
+    public let items: [RepositoryIssueListItem]
+    public var title: String { items[0].finding.title }
+    public var resolvedCount: Int { items.filter { $0.status == .completed }.count }
+    public var completedSessionIDs: Set<UUID> {
+        Set(items.compactMap { item in
+            guard let task = item.task, task.state.isClosed, !task.isArchived else { return nil }
+            return task.id
+        })
+    }
+    public var selectableItems: [RepositoryIssueListItem] {
+        items.filter { !$0.isIncomplete && $0.status != .completed && $0.task?.state.isActive != true }
+    }
+    public static func groups(_ items: [RepositoryIssueListItem]) -> [Self] {
+        var order: [String] = []
+        var grouped: [String: [RepositoryIssueListItem]] = [:]
+        for item in items {
+            let key = item.finding.repositoryID + "::" + item.finding.checkID
+            if grouped[key] == nil { order.append(key) }
+            grouped[key, default: []].append(item)
+        }
+        return order.map { Self(id: $0, items: grouped[$0]!) }
     }
 }
 
@@ -124,7 +159,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
     public let inspect: @Sendable (RepositoryInspectionContext) async throws -> [RepositoryFinding]
     public let availability: @Sendable (RepositorySnapshot) -> String?
     public let configurationKind: ConfigurationKind?
-    /// Content-cached checks must read fresh inputs before deciding whether a paid request is due.
+    /// Content-cached checks must read fresh inputs before deciding whether a remote request is due.
     public let usesContentCache: Bool
     public let evaluate: @Sendable (RepositoryInspectionContext) async throws -> RepositoryCheckResult
 
@@ -166,7 +201,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
     }
 
     public init(id: String, title: String, category: IssueCategory, symbol: String,
-                validityPeriod: TimeInterval = 3_600, configurationKind: ConfigurationKind,
+                validityPeriod: TimeInterval = 3_600, configurationKind: ConfigurationKind? = nil,
                 evaluate: @escaping @Sendable (RepositoryInspectionContext) async throws -> RepositoryCheckResult) {
         self.id = id; self.title = title; self.category = category; self.symbol = symbol
         self.validityPeriod = validityPeriod; self.configurationKind = configurationKind
@@ -204,6 +239,8 @@ public struct RepositoryCheck: Identifiable, Sendable {
 }
 
 public struct RepositoryIssueCatalog: Sendable {
+    /// Retained as detectors for saved repair sessions, but displayed through native Sync.
+    public static let syncCheckIDs: Set<String> = ["git.changes", "git.push", "git.pull", "git.diverged"]
     public let checks: [RepositoryCheck]
 
     public init(checks: [RepositoryCheck] = Self.standardChecks) {
@@ -290,7 +327,7 @@ public struct RepositoryIssueCatalog: Sendable {
         + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
         + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
-        + RepositoryReadmeChecks.checks()
+        + RepositoryReadmeChecks.checks() + RepositoryWebsiteChecks.checks()
 
     public static func isReadme(_ filename: String) -> Bool {
         let name = filename.lowercased()

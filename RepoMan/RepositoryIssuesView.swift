@@ -6,7 +6,51 @@ struct RepositoryIssuesView: View {
     let checkID: String?
     @Binding var showsRepositoryChanges: Bool
     @State private var pinnedIssue: RepositoryIssueListItem?
+    @State private var selectedGroupID: String?
     @State private var showsChanges = false
+    @State private var expandedGroups: Set<String> = []
+    @State private var selectedInstanceIDs: Set<String> = []
+    @State private var showsPassedChecks = false
+    private var groups: [RepositoryIssueGroup] {
+        let groups = RepositoryIssueGroup.groups(orderedIssues)
+        return groups.filter { $0.items.count > 1 } + groups.filter { $0.items.count == 1 }
+    }
+    private var selectedGroup: RepositoryIssueGroup? { groups.first { $0.id == selectedGroupID } }
+    private var repairSelection: [RepositoryIssueListItem] {
+        orderedIssues.filter { selectedInstanceIDs.contains($0.id) && !$0.isIncomplete &&
+            $0.status != .completed && $0.task?.state.isActive != true }
+    }
+    private func repairSelection(for issue: RepositoryIssueListItem) -> [RepositoryIssueListItem] {
+        guard issue.status != .completed else { return [] }
+        return repairSelection.filter { $0.finding.repositoryID == issue.finding.repositoryID &&
+            $0.finding.checkID == issue.finding.checkID }
+    }
+    private func select(_ issue: RepositoryIssueListItem) {
+        selectedGroupID = nil
+        pinnedIssue = issue
+    }
+    private func selectGroup(_ group: RepositoryIssueGroup) {
+        selectedGroupID = group.id
+        expandedGroups.insert(group.id)
+        showsChanges = false
+    }
+    private func canSelect(_ issue: RepositoryIssueListItem) -> Bool {
+        !issue.isIncomplete && issue.task?.state.isActive != true
+    }
+    private func toggleSelection(_ issue: RepositoryIssueListItem) {
+        guard canSelect(issue) else { return }
+        selectedGroupID = nil
+        if selectedInstanceIDs.contains(issue.id) { selectedInstanceIDs.remove(issue.id) }
+        else { selectedInstanceIDs.insert(issue.id) }
+        pinnedIssue = issue
+    }
+    private func selectGroupForRepair(_ group: RepositoryIssueGroup) {
+        selectedGroupID = nil
+        let ids = Set(group.selectableItems.map(\.id))
+        selectedInstanceIDs.formUnion(ids)
+        if let first = group.selectableItems.first { pinnedIssue = first }
+        expandedGroups.insert(group.id)
+    }
     private var issues: [RepositoryIssueListItem] {
         let visible = repository.map { store.issues(in: $0, includeCompleted: true) }
             ?? store.repositories.flatMap { store.issues(in: $0, includeCompleted: true) }
@@ -19,42 +63,188 @@ struct RepositoryIssuesView: View {
         }
     }
     private var selected: RepositoryIssueListItem? {
-        // Follow the conversation as its row changes from a finding to a finished occurrence.
-        if let pinnedIssue {
-            if let taskID = pinnedIssue.task?.id {
-                return issues.first { $0.task?.id == taskID } ?? orderedIssues.first
-            }
-            return issues.first { $0.id == pinnedIssue.id } ?? orderedIssues.first
+        // Follow the same instance as a shared session changes verification state.
+        // Archiving or removing it leaves the details panel empty until another explicit selection.
+        guard let pinnedIssue else { return nil }
+        if let taskID = pinnedIssue.task?.id {
+            return issues.first { $0.task?.id == taskID && $0.finding.id == pinnedIssue.finding.id }
         }
-        return orderedIssues.first
+        return issues.first { $0.id == pinnedIssue.id }
     }
     private func isSelected(_ issue: RepositoryIssueListItem) -> Bool {
-        selected?.id == issue.id && selected?.task?.id == issue.task?.id
+        selectedGroup == nil && selected?.id == issue.id && selected?.task?.id == issue.task?.id
     }
     private var isChecking: Bool {
         repository.map { store.loadingRepositoryIDs.contains($0.id) }
             ?? (store.isScanning || store.isFetching || !store.loadingRepositoryIDs.isEmpty)
     }
-    private var checkProgress: RepositoryCheckProgress? {
-        if let repository { return store.repositoryCheckProgress[repository.id] }
-        let progress = store.repositoryCheckProgress.values
-        guard !progress.isEmpty else { return nil }
-        return RepositoryCheckProgress(completed: progress.reduce(0) { $0 + $1.completed },
-                                       total: progress.reduce(0) { $0 + $1.total })
+    private var checks: [RepositoryCheckListItem] {
+        let visible = repository.map { store.checks(in: $0) }
+            ?? store.repositories.flatMap { store.checks(in: $0) }
+        return visible.filter { checkID == nil || $0.check.id == checkID }
+    }
+    private var passedChecks: [RepositoryCheckListItem] { checks.filter { $0.status == .passed } }
+    private var activeChecks: [RepositoryCheckListItem] {
+        checks.filter { $0.status == .running } + checks.filter { $0.status == .queued }
     }
 
-    private var checkingFooter: some View {
-        HStack(spacing: 10) {
-            if let checkProgress {
-                RepositoryCheckProgressRing(progress: checkProgress).frame(width: 20, height: 20)
-                Text("Checking… \(checkProgress.remaining) checks remaining")
-            } else {
-                ProgressView().progressViewStyle(.circular).controlSize(.small)
-                Text("Checking…")
+    @ViewBuilder
+    private var checkSections: some View {
+        if !passedChecks.isEmpty {
+            issueSeparator()
+            Button { showsPassedChecks.toggle() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: showsPassedChecks ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.secondary)
+                        .frame(width: 8)
+                    Image(systemName: "checkmark.circle").font(.system(size: 16)).foregroundStyle(Theme.green)
+                    Text("Passed checks").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.primary)
+                    Text("\(passedChecks.count)").font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(Theme.secondary).padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Theme.control, in: Capsule())
+                    Spacer()
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(showsPassedChecks ? "Collapse" : "Expand") passed checks, \(passedChecks.count)")
+            .accessibilityIdentifier("checks.passed.disclosure")
+            if showsPassedChecks {
+                ForEach(passedChecks) { check in checkRow(check) }
             }
         }
-        .font(.system(size: 11)).foregroundStyle(Theme.secondary)
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        if !activeChecks.isEmpty {
+            issueSeparator()
+            HStack(spacing: 8) {
+                Text("Checks in progress").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.primary)
+                Text("\(activeChecks.filter { $0.status == .running }.count) running · \(activeChecks.filter { $0.status == .queued }.count) queued")
+                    .font(.system(size: 10)).foregroundStyle(Theme.secondary)
+            }.padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
+            ForEach(activeChecks) { check in
+                checkRow(check)
+                    .overlay(alignment: .bottom) {
+                        if check.id != activeChecks.last?.id { issueSeparator() }
+                    }
+            }
+        }
+    }
+
+    private func checkRow(_ item: RepositoryCheckListItem) -> some View {
+        let isRunning = item.status == .running
+        let isPassed = item.status == .passed
+        let status = isRunning ? "Running" : (isPassed ? "Passed" : "Queued")
+        return HStack(spacing: 10) {
+            Image(systemName: item.check.symbol).font(.system(size: 14)).foregroundStyle(Theme.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title).font(.system(size: 12)).foregroundStyle(Theme.primary)
+                if repository == nil {
+                    Text(item.repository.name).font(.system(size: 10)).foregroundStyle(Theme.secondary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 8) {
+                if isRunning {
+                    ProgressView().progressViewStyle(.circular).controlSize(.mini).tint(Theme.blue)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: isPassed ? "checkmark.circle" : "circle")
+                        .font(.system(size: 13)).frame(width: 14, height: 14)
+                }
+                Text(status).font(.system(size: 11))
+            }.foregroundStyle(isRunning ? Theme.blue : (isPassed ? Theme.green : Theme.secondary))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(item.repository.name), \(item.title)")
+        .accessibilityValue(status)
+        .accessibilityIdentifier("check.\(item.check.id).\(item.repository.id)")
+    }
+
+    @ViewBuilder
+    private func issueGroup(_ group: RepositoryIssueGroup) -> some View {
+        if group.items.count == 1, let issue = group.items.first {
+            issueRow(issue, in: group, child: false)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Button {
+                        if expandedGroups.contains(group.id) { expandedGroups.remove(group.id) }
+                        else { expandedGroups.insert(group.id) }
+                    } label: {
+                        Image(systemName: expandedGroups.contains(group.id) ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    // Keep the large hit target from adding space above the first text line.
+                    .padding(-8)
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                    .accessibilityLabel("\(expandedGroups.contains(group.id) ? "Collapse" : "Expand") \(group.title)")
+                    Button { selectGroup(group) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(group.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.primary)
+                            Text(groupSummary(group)).font(.system(size: 10)).foregroundStyle(Theme.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(group.title) group")
+                }
+                .padding(12)
+                .background(selectedGroupID == group.id ? Theme.selection : .clear)
+                if expandedGroups.contains(group.id) {
+                    ForEach(group.items) { issue in
+                        issueRow(issue, in: group, child: true)
+                            .overlay(alignment: .bottom) {
+                                if issue.id != group.items.last?.id { issueSeparator(child: true) }
+                            }
+                    }
+                }
+            }
+        }
+    }
+    private func issueSeparator(child: Bool = false) -> some View {
+        Rectangle().fill(Theme.primary.opacity(0.06)).frame(height: 1)
+            .padding(.leading, child ? 38 : 12).padding(.trailing, 12)
+            .allowsHitTesting(false).accessibilityHidden(true)
+    }
+    private func groupSummary(_ group: RepositoryIssueGroup) -> String {
+        var parts: [String] = []
+        if repository == nil, let name = store.repositories.first(where: { $0.id == group.items[0].finding.repositoryID })?.name {
+            parts.append(name)
+        }
+        let active = group.items.filter { $0.status == .processing || $0.status == .waiting && $0.task?.state.isActive == true }.count
+        if group.resolvedCount > 0 { parts.append("\(group.resolvedCount) resolved") }
+        if active > 0 { parts.append("\(active) active") }
+        let remaining = group.items.count - group.resolvedCount - active
+        if remaining > 0 { parts.append("\(remaining) remaining") }
+        return parts.joined(separator: " · ")
+    }
+    private func issueRow(_ issue: RepositoryIssueListItem, in group: RepositoryIssueGroup, child: Bool) -> some View {
+        let isSelectable = canSelect(issue)
+        return HStack(alignment: .firstTextBaseline, spacing: 10) {
+            IssueSelectionCheckbox(isSelected: selectedInstanceIDs.contains(issue.id),
+                isEnabled: isSelectable,
+                label: "Select \(issue.finding.subject.isEmpty ? issue.finding.title : issue.finding.subject)") {
+                    toggleSelection(issue)
+                }.disabled(!isSelectable)
+                .frame(width: 16, height: 16)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+            Button { select(issue) } label: {
+                RepositoryFindingRow(finding: issue.finding, state: issue.task.map { $0.state(for: issue.finding) },
+                    isIncomplete: issue.isIncomplete, isChild: child)
+                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+            .accessibilityAddTraits(isSelected(issue) ? .isSelected : [])
+        }
+        .padding(12)
+        .padding(.leading, child ? 26 : 0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected(issue) ? Theme.selection : .clear)
+        .overlay(alignment: .leading) {
+            if child { Rectangle().fill(Theme.border).frame(width: 1).padding(.leading, 20) }
+        }
     }
 
     var body: some View {
@@ -63,7 +253,7 @@ struct RepositoryIssuesView: View {
                 HStack {
                     Text("Issues").font(.system(size: 17, weight: .semibold))
                     Spacer()
-                    if repository != nil {
+                    if let repository {
                         ToolbarActionButton(
                             symbol: "arrow.clockwise",
                             title: "Refresh selected repository issues",
@@ -72,61 +262,68 @@ struct RepositoryIssuesView: View {
                         ) {
                             store.refreshSelected()
                         }
-                        .disabled(store.isScanning || store.isFetching || isChecking)
+                        .disabled(store.isScanning || store.isFetching || store.isSyncing || isChecking)
                         .accessibilityIdentifier("refresh-repository-issues-button")
+                        RepositorySyncButton(repository: repository) { showsRepositoryChanges = true }
                     }
                 }.foregroundStyle(Theme.primary)
             } content: {
-                if issues.isEmpty && !isChecking {
-                    VStack(spacing: 12) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 25)).foregroundStyle(Theme.green)
-                        Text("No issues from available checks").foregroundStyle(Theme.secondary)
-                        if let repository, !(store.ignoredChecks[repository.id] ?? []).isEmpty {
-                            Button("Restore ignored checks") { store.restoreChecks(for: repository) }
-                                .buttonStyle(RepositoryButtonStyle())
-                        }
-                    }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    CodexScrollView {
-                        LazyVStack(alignment: .leading, spacing: 4) {
-                            ForEach(orderedIssues) { issue in
-                                Button {
-                                    pinnedIssue = issue
-                                } label: {
-                                    RepositoryFindingRow(finding: issue.finding, state: issue.task?.state, isIncomplete: issue.isIncomplete)
-                                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(isSelected(issue) ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
-                                        .contentShape(Rectangle())
+                CodexScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if issues.isEmpty && !isChecking {
+                            VStack(spacing: 12) {
+                                Image(systemName: "checkmark.circle")
+                                    .font(.system(size: 25)).foregroundStyle(Theme.green)
+                                Text("No issues from available checks").foregroundStyle(Theme.secondary)
+                                if let repository, !(store.ignoredChecks[repository.id] ?? []).isEmpty {
+                                    Button("Restore ignored checks") { store.restoreChecks(for: repository) }
+                                        .buttonStyle(RepositoryButtonStyle())
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel([issue.finding.title, issue.finding.subject,
-                                    issue.isIncomplete ? "Check incomplete" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
-                                .accessibilityAddTraits(isSelected(issue) ? .isSelected : [])
-                            }
-                            if isChecking { checkingFooter }
-                        }.padding(8)
-                    }
+                            }.padding(24).frame(maxWidth: .infinity)
+                        }
+                        ForEach(groups) { group in
+                            issueGroup(group)
+                                .overlay(alignment: .bottom) {
+                                    if group.id != groups.last?.id { issueSeparator() }
+                                }
+                        }
+                        checkSections
+                    }.padding(8).padding(.trailing, 12)
                 }
             }
-            if let selected, let target = store.repositories.first(where: { $0.id == selected.finding.repositoryID }) {
-                RepositoryFindingDetail(finding: selected.finding, repository: target, taskID: selected.task?.id,
+            if let group = selectedGroup {
+                RepositoryIssueGroupDetail(group: group, onSelect: select, onRepair: { selectGroupForRepair(group) }, onShowChanges: { issue in
+                    select(issue)
+                    showsRepositoryChanges = false
+                    showsChanges = true
+                })
+                .id(group.id)
+            } else if let selected, let target = store.repositories.first(where: { $0.id == selected.finding.repositoryID }) {
+                let scope = repairSelection(for: selected)
+                RepositoryFindingDetail(finding: selected.finding,
+                    selectedFindings: scope.isEmpty ? [selected.finding] : scope.map(\.finding),
+                    startsNewSession: !scope.isEmpty,
+                    repository: target, taskID: scope.isEmpty ? selected.task?.id : nil,
                     isIncomplete: selected.isIncomplete, onShowChanges: {
                     showsRepositoryChanges = false
                     showsChanges = true
                 }) { id in
+                    selectedInstanceIDs.subtract(scope.map(\.id))
                     pinnedIssue = RepositoryIssueListItem(finding: selected.finding, task: store.tasks.first { $0.id == id })
-                }.id(selected.task?.id.uuidString ?? selected.id)
+                }.id(scope.isEmpty ? (selected.task?.id.uuidString ?? selected.id) + selected.finding.id
+                     : "selection::" + selected.finding.repositoryID + "::" + selected.finding.checkID)
             } else {
                 Panel {
                     Text("Issue details").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } content: {
-                    Text("Select an issue to inspect its evidence and choose repair instructions.")
+                    Text("No issue selected")
                         .foregroundStyle(Theme.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: repository?.id) { _, _ in showsPassedChecks = false }
+        .onChange(of: checkID) { _, _ in showsPassedChecks = false }
         .inspector(isPresented: Binding(
             get: { showsChanges || showsRepositoryChanges },
             set: { if !$0 { showsChanges = false; showsRepositoryChanges = false } }
@@ -143,6 +340,12 @@ struct RepositoryIssuesView: View {
             .background(Theme.background, ignoresSafeAreaEdges: [])
             .inspectorColumnWidth(min: 440, ideal: 680, max: 1_000)
         }
+        .onChange(of: issues) { _, items in
+            let available = items.filter { canSelect($0) }
+            let retained = selectedInstanceIDs.intersection(Set(available.map(\.id)))
+            if retained != selectedInstanceIDs { selectedInstanceIDs = retained }
+            if selected == nil { pinnedIssue = nil }
+        }
         .onChange(of: selected?.id) { _, _ in showsChanges = false }
         .onChange(of: selected?.task?.id) { _, _ in showsChanges = false }
         .onChange(of: showsRepositoryChanges) { _, visible in
@@ -155,6 +358,7 @@ struct RepositoryFindingRow: View {
     let finding: RepositoryFinding
     let state: RepairTaskState?
     var isIncomplete = false
+    var isChild = false
     private var status: RepositoryIssueStatus { RepositoryIssueStatus(state: state) }
     private var errorTitle: String? {
         switch state {
@@ -166,12 +370,17 @@ struct RepositoryFindingRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: finding.symbol)
-                    .foregroundStyle(status.color)
-                    .frame(width: 18).padding(.top, 2)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                if !isChild {
+                    Image(systemName: finding.symbol)
+                        .foregroundStyle(status.color)
+                        .frame(width: 18, height: 16)
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                }
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(finding.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.primary)
+                    if !isChild || finding.subject.isEmpty {
+                        Text(finding.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.primary)
+                    }
                     if !finding.subject.isEmpty {
                         Text(finding.subject).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.primary)
                             .lineLimit(1).truncationMode(.middle).help(finding.subject)
@@ -181,26 +390,30 @@ struct RepositoryFindingRow: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if isIncomplete { IncompleteCheckBadge() }
                 Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.secondary)
+                    .frame(height: 16)
+                    .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             }
-            HStack(spacing: 12) {
-                Group {
-                    if status == .processing {
-                        ProgressView().controlSize(.mini).tint(status.color)
-                    } else {
-                        Image(systemName: status.symbol).font(.system(size: 11))
+            if status != .pending {
+                HStack(spacing: 12) {
+                    Group {
+                        if status == .processing {
+                            ProgressView().controlSize(.mini).tint(status.color)
+                        } else {
+                            Image(systemName: status.symbol).font(.system(size: 11))
+                        }
+                    }.frame(width: 18, height: 14).accessibilityHidden(true)
+                    Text(status.title).font(.system(size: 10, weight: .medium))
+                    if let errorTitle {
+                        Label(errorTitle, systemImage: "exclamationmark.circle")
+                            .font(.system(size: 10)).foregroundStyle(Theme.red)
                     }
-                }.frame(width: 18, height: 14).accessibilityHidden(true)
-                Text(status.title).font(.system(size: 10, weight: .medium))
-                if let errorTitle {
-                    Label(errorTitle, systemImage: "exclamationmark.circle")
-                        .font(.system(size: 10)).foregroundStyle(Theme.red)
                 }
+                .foregroundStyle(status.color)
+                .help(state?.title ?? status.title)
             }
-            .foregroundStyle(status.color)
-            .help(state?.title ?? status.title)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityValue(isIncomplete ? "Check incomplete; result unknown" : status.title)
+        .accessibilityValue(isIncomplete ? "Check incomplete; result unknown" : (status == .pending ? "" : status.title))
     }
 }
 
@@ -269,16 +482,108 @@ struct RepositoryIssueStatusBadges: View {
     }
 }
 
+/// Group navigation works independently of whether any child is eligible for a new repair.
+private struct RepositoryIssueGroupDetail: View {
+    @EnvironmentObject private var store: RepositoryStore
+    let group: RepositoryIssueGroup
+    let onSelect: (RepositoryIssueListItem) -> Void
+    let onRepair: () -> Void
+    let onShowChanges: (RepositoryIssueListItem) -> Void
+    private var sessions: [RepairTask] {
+        var seen = Set<UUID>()
+        return group.items.compactMap(\.task).filter { seen.insert($0.id).inserted }
+    }
+    var body: some View {
+        Panel {
+            Text("Issue group · \(group.items.count) instances")
+                .font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } content: {
+            VStack(spacing: 0) {
+                CodexScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(group.title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.primary)
+                        Text("\(group.resolvedCount) resolved · \(group.items.count - group.resolvedCount) remaining")
+                            .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                        ForEach(group.items) { issue in
+                            Button { onSelect(issue) } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(alignment: .top) {
+                                        Text(issue.finding.subject.isEmpty ? issue.finding.title : issue.finding.subject)
+                                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.primary)
+                                        Spacer()
+                                        if issue.isIncomplete {
+                                            Text("Check incomplete").font(.system(size: 10)).foregroundStyle(Theme.secondary)
+                                        } else if let state = issue.task?.state(for: issue.finding), issue.status != .pending {
+                                            Text(state.title).font(.system(size: 10)).foregroundStyle(issue.status.color)
+                                        }
+                                        Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.secondary)
+                                    }
+                                    if issue.status != .completed {
+                                        Text(issue.finding.evidence).font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }.padding(8).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            .accessibilityLabel("Open \(issue.finding.subject.isEmpty ? issue.finding.title : issue.finding.subject)")
+                        }
+                        if !group.selectableItems.isEmpty {
+                            Button("Select available instances to repair", action: onRepair)
+                                .buttonStyle(RepositoryButtonStyle())
+                        }
+                        ForEach(sessions) { session in
+                            Divider().overlay(Theme.border)
+                            HStack {
+                                Text(sessions.count == 1 ? "Shared conversation" : "Conversation · \(session.findings.count) instances")
+                                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.primary)
+                                Spacer()
+                                if let issue = group.items.first(where: { $0.task?.id == session.id }) {
+                                    Button("Open conversation") { onSelect(issue) }
+                                        .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(Theme.secondary)
+                                }
+                            }
+                            RepositoryRepairTrajectoryView(task: session, onShowChanges: {
+                                if let issue = group.items.first(where: { $0.task?.id == session.id }) { onShowChanges(issue) }
+                            })
+                        }
+                    }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if let error = store.taskError {
+                    RepairStatusMessage(message: error, symbol: "exclamationmark.circle", color: Theme.red)
+                        .padding(.horizontal, 20).padding(.vertical, 8)
+                }
+                if !group.completedSessionIDs.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Review the completed results and changes, then archive their conversations together.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                        Button("Confirm & archive all completed", systemImage: "archivebox") {
+                            _ = store.archiveCompletedSessions(group.completedSessionIDs)
+                        }
+                        .buttonStyle(RepositoryButtonStyle())
+                        .accessibilityIdentifier("confirm-and-archive-completed-group")
+                    }
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.green.opacity(0.06))
+                    .padding(.horizontal, 20).padding(.vertical, 12)
+                }
+            }
+        }
+    }
+}
+
 private struct RepositoryFindingDetail: View {
     @EnvironmentObject private var store: RepositoryStore
     @Environment(\.openSettings) private var openSettings
     let finding: RepositoryFinding
+    let selectedFindings: [RepositoryFinding]
+    let startsNewSession: Bool
     let repository: RepositorySnapshot
     let taskID: UUID?
     let isIncomplete: Bool
     let onShowChanges: () -> Void
     let onRun: (UUID) -> Void
     @State private var currentRunID: UUID?
+    @State private var startsFresh = false
     @State private var recipeID = "custom"
     @State private var prompt = ""
     @State private var editorHeight: CGFloat = 38
@@ -286,20 +591,25 @@ private struct RepositoryFindingDetail: View {
     private var recipes: [RepairRecipe] { store.recipeCatalog.recipes(for: finding) }
     private var currentTask: RepairTask? {
         guard !isIncomplete else { return nil }
-        if let id = currentRunID ?? taskID { return store.tasks.first { $0.id == id } }
+        if let id = currentRunID { return store.tasks.first { $0.id == id } }
+        if startsNewSession || startsFresh { return nil }
+        if let id = taskID { return store.tasks.first { $0.id == id } }
         return store.task(for: finding)
     }
     private var canSubmit: Bool {
-        !isIncomplete && !store.isDemo && currentTask?.state.isActive != true && currentTask?.state.isClosed != true &&
+        !isIncomplete && !store.isDemo && currentTask?.state.isActive != true && currentTask?.state.isClosed != true && currentTask?.isArchived != true && currentTask?.hasSupersededInstances != true &&
             !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    private var scope: [RepositoryFinding] { currentTask?.findings ?? selectedFindings }
+    private var history: [RepairTask] { store.tasks.filter { $0.contains(finding) }.reversed() }
+    private var scopeTitle: String { scope.count > 1 ? "Shared repair · \(scope.count) instances" : "Issue details" }
     private var pendingQuestions: [AgentInteraction] {
         currentTask?.interactions.filter { $0.kind == .questions } ?? []
     }
     var body: some View {
         Panel {
             HStack {
-                Text("Issue details").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
+                Text(scopeTitle).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
                 Spacer()
                 if store.issueCatalog.checks.first(where: { $0.id == finding.checkID })?.configurationKind != nil {
                     ToolbarActionButton(symbol: "gearshape", title: "Configure this check") {
@@ -308,7 +618,7 @@ private struct RepositoryFindingDetail: View {
                     }
                     .accessibilityIdentifier("issue.configure.\(finding.checkID)")
                 }
-                if let task = currentTask, !task.state.isClosed {
+                if let task = currentTask, !task.state.isClosed && !task.isArchived {
                     ToolbarActionButton(symbol: "archivebox", title: task.state.isActive
                                         ? "Stop the repair before archiving" : "Archive conversation") {
                         _ = store.archiveTask(task.id)
@@ -330,8 +640,56 @@ private struct RepositoryFindingDetail: View {
                         VStack(alignment: .leading, spacing: 16) {
                             Text(finding.title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.primary)
                             if isIncomplete { IncompleteCheckBadge() }
-                            Text(finding.evidence).font(.system(size: 12)).foregroundStyle(Theme.secondary)
-                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            if scope.count > 1 {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text(currentTask == nil ? "Selected instances · one shared conversation" : "Thread scope · one shared conversation")
+                                        .font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                                    ForEach(scope) { instance in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack {
+                                                Text(instance.subject.isEmpty ? instance.title : instance.subject)
+                                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.primary)
+                                                Spacer()
+                                                if let task = currentTask {
+                                                    Text(task.state(for: instance).title).font(.system(size: 10))
+                                                        .foregroundStyle(RepositoryIssueStatus(state: task.state(for: instance)).color)
+                                                }
+                                            }
+                                            Text(currentTask?.verification(for: instance)?.evidence ?? instance.evidence)
+                                                .font(.system(size: 11)).foregroundStyle(Theme.secondary).textSelection(.enabled)
+                                        }
+                                        .padding(8)
+                                        .background(currentTask != nil && instance.id == finding.id ? Theme.selection : .clear)
+                                    }
+                                }
+                            } else {
+                                Text(finding.evidence).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            }
+                            if !history.isEmpty {
+                                Menu {
+                                    ForEach(history) { session in
+                                        Button("\(session.findings.count) instance(s) · \(session.state.title)\(session.isArchived ? " · Archived" : (session.hasSupersededInstances ? " · Earlier" : "")) · \(session.createdAt.formatted(date: .abbreviated, time: .shortened))") {
+                                            currentRunID = session.id
+                                            startsFresh = false
+                                            recipeID = "custom"
+                                            prompt = ""
+                                        }
+                                    }
+                                    Divider()
+                                    Button("New repair session") {
+                                        currentRunID = nil
+                                        startsFresh = true
+                                        prompt = recipes.first?.prompt ?? ""
+                                        recipeID = recipes.first?.id ?? "custom"
+                                    }
+                                    .disabled(history.contains { $0.state.isActive && !$0.isArchived })
+                                } label: {
+                                    Label("Conversation history (\(history.count))", systemImage: "clock.arrow.circlepath")
+                                        .font(.system(size: 11))
+                                }
+                                .menuStyle(.borderlessButton).fixedSize()
+                            }
                             if isIncomplete {
                                 Text(finding.checkID == "files.secrets"
                                     ? "Result unknown. No secret has been confirmed."
@@ -347,17 +705,20 @@ private struct RepositoryFindingDetail: View {
                     .onChange(of: currentTask?.interactions.count) { _, _ in proxy.scrollTo("trajectory-bottom", anchor: .bottom) }
                     .onAppear { if currentTask != nil { proxy.scrollTo("trajectory-bottom", anchor: .bottom) } }
                 }
-                if let task = currentTask, task.state.isClosed {
+                if let task = currentTask, task.state.isClosed || task.isArchived || task.hasSupersededInstances {
                     VStack(alignment: .leading, spacing: 10) {
-                        Label(RepositoryIssueStatus.completed.title, systemImage: RepositoryIssueStatus.completed.symbol)
+                        Label(task.hasSupersededInstances ? "Earlier conversation" : (task.isArchived ? "Archived conversation" : RepositoryIssueStatus.completed.title),
+                              systemImage: task.isArchived ? "archivebox" : RepositoryIssueStatus.completed.symbol)
                             .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.green)
-                        Text("Review the result and any changes, then confirm to archive this conversation.")
+                        Text(task.hasSupersededInstances ? "A newer repair session covers some of these instances. This conversation is preserved as read-only history." : task.isArchived ? "This conversation is preserved in history." : "Review the result and any changes, then confirm to archive this conversation.")
                             .font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                        if !task.isArchived {
                         Button("Confirm & archive", systemImage: "archivebox") {
                             _ = store.archiveTask(task.id)
                         }
                         .buttonStyle(RepositoryButtonStyle())
                         .accessibilityIdentifier("confirm-and-archive-issue")
+                        }
                     }
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.green.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
@@ -367,7 +728,7 @@ private struct RepositoryFindingDetail: View {
                     RepairStatusMessage(message: error, symbol: "exclamationmark.circle", color: Theme.red)
                         .padding(.horizontal, 20).padding(.vertical, 8)
                 }
-                if !isIncomplete && currentTask?.state.isClosed != true {
+                if !isIncomplete && currentTask?.state.isClosed != true && currentTask?.isArchived != true && currentTask?.hasSupersededInstances != true {
                     if let task = currentTask, !pendingQuestions.isEmpty {
                         CodexScrollView {
                             VStack(alignment: .leading, spacing: 12) {
@@ -409,15 +770,24 @@ private struct RepositoryFindingDetail: View {
                                         }
                                 }.frame(height: min(128, editorHeight))
                                 HStack {
+                                    if scope.count > 1 {
+                                        Text("\(scope.count) instances · one thread").font(.system(size: 10)).foregroundStyle(Theme.secondary)
+                                    }
                                     Spacer()
+                                    if currentTask == nil && scope.count > 1 {
+                                        Button("Fix \(scope.count) together", systemImage: "arrow.up", action: submit)
+                                            .buttonStyle(RepositoryButtonStyle()).disabled(!canSubmit)
+                                            .keyboardShortcut(.return, modifiers: .command)
+                                    } else {
                                     RepairComposerActionButton(isRunning: currentTask?.state.isActive == true,
                                         isEnabled: currentTask?.state.isActive == true
                                             ? !store.isDemo && currentTask?.state != .checking : canSubmit) {
                                         if let task = currentTask, task.state.isActive { store.cancelTask(task.id) }
                                         else { submit() }
                                     }
+                                    }
                                 }.padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 2)
-                            }.background(Theme.field, in: RoundedRectangle(cornerRadius: 8))
+                            }.background(Theme.composer, in: RoundedRectangle(cornerRadius: 8))
                             if store.isDemo { Text("Demo · agent execution is disabled").font(.system(size: 11)).foregroundStyle(Theme.secondary) }
                         }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
                             .overlay(alignment: .top) { Rectangle().fill(Theme.border).frame(height: 1) }
@@ -431,7 +801,6 @@ private struct RepositoryFindingDetail: View {
                 currentRunID = task.id
                 recipeID = "custom"
                 prompt = ""
-                onRun(task.id)
             } else if let first = recipes.first { recipeID = first.id; prompt = first.prompt }
         }
         .onChange(of: recipeID) { _, id in
@@ -440,8 +809,8 @@ private struct RepositoryFindingDetail: View {
     }
     private func submit() {
         guard canSubmit else { return }
-        if let id = store.runRepair(finding: finding, repository: repository, prompt: prompt,
-                                   recipeID: recipeID == "custom" ? nil : recipeID) {
+        if let id = store.runRepair(findings: scope, repository: repository, prompt: prompt,
+                                   recipeID: recipeID == "custom" ? nil : recipeID, sessionID: currentTask?.id) {
             currentRunID = id
             prompt = ""
             recipeID = "custom"
@@ -474,5 +843,45 @@ private struct RepairComposerActionButton: View {
         .accessibilityLabel(isRunning ? "Stop repair" : "Send message")
         .accessibilityIdentifier("repair-composer-action")
         .help(isRunning ? "Stop repair" : "Send message (Return or ⌘Return; Shift+Return for a newline)")
+    }
+}
+
+/// Individual instance checkboxes toggle only between checked and unchecked.
+private struct IssueSelectionCheckbox: NSViewRepresentable {
+    let isSelected: Bool
+    let isEnabled: Bool
+    let label: String
+    let action: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(checkboxWithTitle: "", target: context.coordinator, action: #selector(Coordinator.toggle(_:)))
+        button.allowsMixedState = false
+        button.state = isSelected ? .on : .off
+        button.isEnabled = isEnabled
+        button.controlSize = .small
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.parent = self
+        let state: NSControl.StateValue = isSelected ? .on : .off
+        // Avoid redundant native redraws when only the inspected issue or conversation changes.
+        NSAnimationContext.runAnimationGroup { animation in
+            animation.duration = 0
+            animation.allowsImplicitAnimation = false
+            if button.state != state { button.state = state }
+            if button.isEnabled != isEnabled { button.isEnabled = isEnabled }
+        }
+        if button.accessibilityLabel() != label { button.setAccessibilityLabel(label) }
+    }
+    final class Coordinator: NSObject {
+        var parent: IssueSelectionCheckbox
+        init(_ parent: IssueSelectionCheckbox) { self.parent = parent }
+        @objc func toggle(_ button: NSButton) {
+            guard parent.isEnabled else {
+                button.state = parent.isSelected ? .on : .off
+                return
+            }
+            parent.action()
+        }
     }
 }

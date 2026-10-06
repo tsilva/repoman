@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: RepositoryStore
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var search = ""
     @State private var showsRepositoryChanges = false
     @AppStorage("repositoryFilter") private var repositoryFilter: RepositoryFilter = .all
@@ -64,7 +65,7 @@ struct ContentView: View {
         }
         .font(.system(size: 12))
         .containerBackground(.clear, for: .window)
-        .toolbarBackground(.thickMaterial, for: .windowToolbar)
+        .toolbarBackground(Theme.topBar.opacity(reduceTransparency ? 1 : 0.98), for: .windowToolbar)
         .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .onAppear { store.start() }
 
@@ -155,16 +156,16 @@ struct ContentView: View {
                 value: repositoryFilter.rawValue,
                 isActive: repositoryFilter != .all
             ) {
-                ForEach(RepositoryFilter.allCases, id: \.self) { filter in
-                    Button {
-                        repositoryFilter = filter
-                    } label: {
-                        menuChoice(filter.rawValue, isSelected: repositoryFilter == filter)
-                    }
-                    if filter == .all || filter == .needsAttention {
-                        Divider()
+                Picker("Filter repositories", selection: $repositoryFilter) {
+                    ForEach(RepositoryFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                        if filter == .all || filter == .needsAttention {
+                            Divider()
+                        }
                     }
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
             }
             ToolbarIconMenu(
                 symbol: "arrow.up.arrow.down",
@@ -580,32 +581,10 @@ private struct ToolbarPositionReader: NSViewRepresentable {
 }
 
 private struct SidebarBackground: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     var body: some View {
-        Group {
-            if reduceTransparency {
-                Theme.sidebar
-            } else {
-                SidebarVisualEffect()
-                    .overlay(Theme.sidebar.opacity(0.90))
-            }
-        }
-        .allowsHitTesting(false)
+        Theme.sidebar
+            .allowsHitTesting(false)
     }
-}
-
-private struct SidebarVisualEffect: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        // Sample the desktop behind the window instead of the opaque detail pane.
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 private struct BranchMenuTrigger: NSViewRepresentable {
@@ -919,6 +898,7 @@ private final class RepositoryScroller: NSScroller {
 
 private struct RepositoryRow: View {
     @State private var isHovered = false
+    private let decorationInset: CGFloat = 12
     let repository: RepositorySnapshot
     let statusCounts: [RepositoryIssueStatus: Int]
     let isLoading: Bool
@@ -928,14 +908,18 @@ private struct RepositoryRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 0) {
+            HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
                     Text(repository.name)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.primary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .help(repository.name)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    RepositoryIssueStatusBadges(counts: statusCounts)
+                    }
                     if !repository.branch.isEmpty {
                         HStack(spacing: 5) {
                             Image(systemName: "arrow.triangle.branch")
@@ -944,6 +928,9 @@ private struct RepositoryRow: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .help(repository.branch)
+                            Spacer(minLength: 8)
+                            RepositoryGitStatus(repository: repository)
+                                .padding(.trailing, statusCounts.values.contains(where: { $0 > 0 }) ? 6 : 0)
                         }
                         .layoutPriority(-1)
                         .font(.system(size: 11.5))
@@ -953,9 +940,6 @@ private struct RepositoryRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(-1)
 
-                RepositoryIssueStatusBadges(counts: statusCounts)
-                    .padding(.horizontal, 8)
-
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Theme.secondary)
@@ -964,10 +948,14 @@ private struct RepositoryRow: View {
             .padding(.horizontal, 14)
             .frame(height: 52)
             .background {
-                RepositoryScanProgressBackground(isLoading: isLoading, progress: checkProgress)
-                    .id(repository.id)
+                ZStack {
+                    Rectangle()
+                        .fill(isSelected ? Theme.selection : (isHovered ? Theme.control : .clear))
+                    RepositoryScanProgressBackground(isLoading: isLoading, progress: checkProgress)
+                        .id(repository.id)
+                }
+                .padding(.trailing, decorationInset)
             }
-            .background(isSelected ? Theme.selection : (isHovered ? Theme.control : .clear), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -982,7 +970,7 @@ private struct RepositoryRow: View {
                 Rectangle()
                     .fill(Theme.border.opacity(0.55))
                     .frame(height: 1)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, decorationInset)
             }
         }
     }
@@ -1017,15 +1005,12 @@ private struct RepositoryScanProgressBackground: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Rectangle().fill(Theme.primary.opacity(0.025))
-                Rectangle()
-                    .fill(Theme.primary.opacity(0.08))
-                    // Fetching and queued inspections have no completed checks yet.
-                    // Keep a visible marker without inventing completed progress.
-                    .frame(width: min(geometry.size.width, max(4, geometry.size.width * displayedFraction)))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            Rectangle()
+                .fill(Theme.primary.opacity(0.08))
+                // Fetching and queued inspections have no completed checks yet.
+                // Keep a visible marker without inventing completed progress.
+                .frame(width: min(geometry.size.width, max(4, geometry.size.width * displayedFraction)))
+            .clipShape(Rectangle())
             .opacity(isLoading ? 1 : 0)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: isLoading)
         }
@@ -1148,6 +1133,7 @@ struct ToolbarActionButton: View {
     var icon: RepositoryToolbarIcon? = nil
     let title: String
     var isRotating = false
+    var isLoading = false
     var foregroundColor: Color = Theme.secondary
     let action: () -> Void
     @State private var isHovered = false
@@ -1155,7 +1141,9 @@ struct ToolbarActionButton: View {
     var body: some View {
         Button(action: action) {
             Group {
-                if let icon {
+                if isLoading {
+                    ProgressView().controlSize(.mini)
+                } else if let icon {
                     icon.stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
                         .frame(width: 20, height: 20)
                 } else {
@@ -1329,8 +1317,10 @@ struct CodexTextEditor: NSViewRepresentable {
     @Binding var text: String
     let accessibilityLabel: String
     let onSubmit: () -> Void
+    var submitsOnReturn = true
+    var isEditable = true
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text, onSubmit: onSubmit) }
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text, onSubmit: onSubmit, submitsOnReturn: submitsOnReturn) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -1341,6 +1331,7 @@ struct CodexTextEditor: NSViewRepresentable {
 
         let editor = NSTextView(frame: scrollView.contentView.bounds)
         editor.isRichText = false
+        editor.isEditable = isEditable
         editor.allowsUndo = true
         editor.drawsBackground = false
         editor.font = .systemFont(ofSize: 12)
@@ -1366,7 +1357,9 @@ struct CodexTextEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.text = $text
         context.coordinator.onSubmit = onSubmit
+        context.coordinator.submitsOnReturn = submitsOnReturn
         guard let editor = scrollView.documentView as? NSTextView else { return }
+        editor.isEditable = isEditable
         if editor.string != text {
             editor.string = text
             editor.setSelectedRange(NSRange(location: 0, length: 0))
@@ -1394,12 +1387,14 @@ struct CodexTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
         var onSubmit: () -> Void
-        init(text: Binding<String>, onSubmit: @escaping () -> Void) {
+        var submitsOnReturn: Bool
+        init(text: Binding<String>, onSubmit: @escaping () -> Void, submitsOnReturn: Bool) {
             self.text = text
             self.onSubmit = onSubmit
+            self.submitsOnReturn = submitsOnReturn
         }
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            guard commandSelector == #selector(NSResponder.insertNewline(_:)),
+            guard submitsOnReturn, commandSelector == #selector(NSResponder.insertNewline(_:)),
                   NSApp.currentEvent?.modifierFlags.contains(.shift) != true,
                   !textView.hasMarkedText() else { return false }
             text.wrappedValue = textView.string

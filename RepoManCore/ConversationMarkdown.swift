@@ -16,6 +16,13 @@ public struct ConversationMarkdown: Equatable, Sendable {
 
     public let blocks: [Block]
 
+    /// Markdown emitted by the agent can link directly to an absolute local path.
+    /// Launch Services needs a file URL rather than that scheme-less URL.
+    public static func openDestination(for link: URL) -> URL {
+        guard link.scheme == nil, link.host == nil, link.path.hasPrefix("/") else { return link }
+        return URL(fileURLWithPath: link.path)
+    }
+
     public init(_ source: String) {
         let lines = source.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n").components(separatedBy: "\n")

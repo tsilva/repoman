@@ -2,6 +2,18 @@
   "project_name": "RepoMan",
   "assets": [
     {
+      "key": "dmg-background",
+      "path": "dmg/background.png",
+      "width": 720,
+      "height": 480
+    },
+    {
+      "key": "dmg-background-retina",
+      "path": "dmg/background.tiff",
+      "width": 1440,
+      "height": 960
+    },
+    {
       "key": "logo-1024",
       "path": "logo/logo-1024.png",
       "width": 1024,

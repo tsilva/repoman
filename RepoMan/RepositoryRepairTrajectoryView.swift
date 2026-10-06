@@ -34,7 +34,7 @@ struct RepositoryRepairTrajectoryView: View {
                 case .command:
                     RepairCommandView(entry: entry, isActive: task.execution == nil && [.running, .needsInput].contains(task.state))
                 case .status:
-                    RepairStatusMessage(message: entry.text,
+                    RepairStatusMessage(message: task.findings.count > 1 ? RepairVerification.conciseEvidence(entry.text) : entry.text,
                         symbol: ["resolved", "noLongerNeeded"].contains(entry.status ?? "") ? "checkmark.circle" : "info.circle",
                         color: ["resolved", "noLongerNeeded"].contains(entry.status ?? "") ? Theme.green : Theme.secondary)
                 case .fileChange:
@@ -42,14 +42,14 @@ struct RepositoryRepairTrajectoryView: View {
                         .font(.system(size: 11)).foregroundStyle(Theme.secondary).textSelection(.enabled)
                 }
             }
-            if !task.diff.isEmpty {
+            if !task.state.isActive, !task.diff.isEmpty {
                 RepairChangesBadge(diff: parsedDiff, action: onShowChanges)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.top, 12)
             }
             if let progressTitle { RepairProgressIndicator(title: progressTitle) }
             if !task.state.isActive, !entries.contains(where: { $0.kind == .status }) {
-                RepairStatusMessage(message: task.message,
+                RepairStatusMessage(message: task.findings.count > 1 ? RepairVerification.conciseEvidence(task.message) : task.message,
                     symbol: task.state == .resolved ? "checkmark.circle" : "info.circle",
                     color: task.state == .resolved ? Theme.green : Theme.secondary)
             }

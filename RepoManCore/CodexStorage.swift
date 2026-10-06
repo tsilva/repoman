@@ -16,6 +16,8 @@ public struct CodexStorage: Sendable {
             .map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     }
 
+    var skillHomeDirectories: [URL] { [homeDirectory, legacyHomeDirectory] }
+
     var environment: [String: String] { ["CODEX_HOME": homeDirectory.path] }
     // File storage ensures login/logout never uses Desktop's keychain credential slot.
     var arguments: [String] { ["-c", "cli_auth_credentials_store=\"file\""] }
@@ -24,7 +26,7 @@ public struct CodexStorage: Sendable {
         "env CODEX_HOME=\(Self.quote(homeDirectory.path)) \(Self.quote(executable.path)) -c 'cli_auth_credentials_store=\"file\"' login"
     }
 
-    func prepare(for task: RepairTask) throws {
+    func prepareHomeDirectory() throws {
         let fm = FileManager.default
         let home = homeDirectory.resolvingSymlinksInPath().path
         let legacy = legacyHomeDirectory.resolvingSymlinksInPath().path
@@ -33,6 +35,11 @@ public struct CodexStorage: Sendable {
         }
         try fm.createDirectory(at: homeDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: homeDirectory.path)
+    }
+
+    func prepare(for task: RepairTask) throws {
+        try prepareHomeDirectory()
+        let fm = FileManager.default
         guard let id = task.threadID, task.codexStorageVersion == nil else { return }
         // Only legacy task records can import a transcript, never credentials/configuration.
         guard !id.isEmpty, id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {

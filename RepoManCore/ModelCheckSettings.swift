@@ -3,6 +3,8 @@ import Security
 import LocalAuthentication
 
 public struct ModelCheckConfiguration: Codable, Equatable, Sendable {
+    public enum Service: String, Codable, CaseIterable, Sendable { case codex, openRouter }
+    public var service: Service
     public enum Reasoning: String, Codable, CaseIterable, Sendable {
         case automatic, disabled, minimal, low
     }
@@ -11,11 +13,32 @@ public struct ModelCheckConfiguration: Codable, Equatable, Sendable {
     public var providerID: String
     public var reasoning: Reasoning
 
-    public init(modelID: String = "deepseek/deepseek-v4.1-flash", providerID: String = "wafer",
-                reasoning: Reasoning = .disabled) {
-        self.modelID = modelID; self.providerID = providerID; self.reasoning = reasoning
+    public init(service: Service = .codex, modelID: String? = nil, providerID: String? = nil,
+                reasoning: Reasoning? = nil) {
+        self.service = service
+        self.modelID = modelID ?? (service == .codex ? CodexStructuredTask.model : "deepseek/deepseek-v4.1-flash")
+        self.providerID = providerID ?? (service == .codex ? "" : "wafer")
+        self.reasoning = reasoning ?? (service == .codex ? .low : .disabled)
+    }
+
+    private enum CodingKeys: String, CodingKey { case service, modelID, providerID, reasoning }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // Older preferences had no service selection. Adopt Codex for existing installs too.
+        guard let service = try values.decodeIfPresent(Service.self, forKey: .service) else {
+            self.init(); return
+        }
+        self.init(service: service, modelID: try values.decode(String.self, forKey: .modelID),
+                  providerID: try values.decode(String.self, forKey: .providerID),
+                  reasoning: try values.decode(Reasoning.self, forKey: .reasoning))
     }
     public func validate() throws {
+        if service == .codex {
+            guard modelID == CodexStructuredTask.model, providerID.isEmpty, reasoning == .low else {
+                throw RepairError.blocked("Codex reviews use GPT-6.1 Sol with low reasoning. Restore defaults.")
+            }
+            return
+        }
         let parts = modelID.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
               modelID.count <= 150,

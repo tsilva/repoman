@@ -5,6 +5,7 @@ import XCTest
 final class RepositoryInspectionTests: XCTestCase {
     func testInspectionKeepsAtMostFourChecksActiveAndPreservesCatalogOrder() async {
         let activity = InspectionActivity()
+        let progress = InspectionProgress()
         let checks = (0..<13).map { index in
             RepositoryCheck(id: "check-\(index)", title: "Check", category: .setup, symbol: "doc", inspect: { context in
                 await activity.started()
@@ -16,10 +17,41 @@ final class RepositoryInspectionTests: XCTestCase {
         }
         let snapshot = RepositorySnapshot(url: URL(fileURLWithPath: "/tmp/inspection"), name: "inspection", branch: "main",
             upstream: nil, remoteURL: nil, ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
-        let report = await RepositoryIssueCatalog(checks: checks).inspect(snapshot)
+        let report = await RepositoryIssueCatalog(checks: checks).inspect(snapshot, onProgress: { await progress.append($0) })
         let peak = await activity.peak
         XCTAssertEqual(peak, 4)
         XCTAssertEqual(report.findings().map(\.checkID), checks.map(\.id))
+        let updates = await progress.reports
+        XCTAssertEqual(updates.first?.runningCheckIDs, Set(checks.prefix(4).map(\.id)))
+        XCTAssertEqual(updates.first?.checkOrder.filter { updates.first?.status(for: $0) == .queued }.count, 9)
+        for update in updates {
+            XCTAssertLessThanOrEqual(update.runningCheckIDs.count, 4)
+            XCTAssertTrue(update.runningCheckIDs.isDisjoint(with: update.results.keys))
+            XCTAssertEqual(update.runningCheckIDs.count, min(4, checks.count - update.results.count))
+        }
+        XCTAssertTrue(report.runningCheckIDs.isEmpty)
+        XCTAssertTrue(updates.last?.runningCheckIDs.isEmpty == true)
+    }
+
+    func testCheckStatusDistinguishesPassingFromUnknownResultsAndRefreshActivity() {
+        let snapshot = RepositorySnapshot(url: URL(fileURLWithPath: "/tmp/inspection"), name: "inspection", branch: "main",
+            upstream: nil, remoteURL: nil, ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
+        let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: "failed", title: "Issue",
+            evidence: "Evidence", category: .setup, symbol: "doc")
+        let report = RepositoryInspectionReport(snapshot: snapshot,
+            results: ["passed": .findings([]), "failed": .findings([finding]), "unknown": .unavailable("Timed out"),
+                      "partial": .partial([], "Could not finish")],
+            checkOrder: ["passed", "failed", "unknown", "partial", "running", "queued"], runningCheckIDs: ["running"])
+        XCTAssertEqual(report.status(for: "passed"), .passed)
+        XCTAssertEqual(report.status(for: "failed"), .findings)
+        XCTAssertEqual(report.status(for: "unknown"), .incomplete)
+        XCTAssertEqual(report.status(for: "partial"), .incomplete)
+        XCTAssertEqual(report.status(for: "running"), .running)
+        XCTAssertEqual(report.status(for: "queued"), .queued)
+        XCTAssertNil(report.status(for: "excluded"))
+        let refreshing = RepositoryInspectionReport(snapshot: snapshot, results: [:], checkOrder: ["passed"], runningCheckIDs: ["passed"])
+        XCTAssertEqual(refreshing.status(for: "passed"), .running)
+        XCTAssertEqual(refreshing.updatingSnapshot(snapshot, catalog: RepositoryIssueCatalog(checks: [])).status(for: "passed"), .running)
     }
 
     func testIndependentGitReadFinishesWhileAnotherCommandIsBlocked() async {
@@ -92,6 +124,11 @@ final class RepositoryInspectionTests: XCTestCase {
         XCTAssertNotEqual(try cache.read(["command"], at: first, successfulExitCodes: [0, 1]), result)
         XCTAssertEqual(calls.count, 3)
     }
+}
+
+private actor InspectionProgress {
+    var reports: [RepositoryInspectionReport] = []
+    func append(_ report: RepositoryInspectionReport) { reports.append(report) }
 }
 
 private actor InspectionActivity {

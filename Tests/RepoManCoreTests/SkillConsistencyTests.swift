@@ -98,7 +98,14 @@ final class SkillConsistencyTests: XCTestCase {
         XCTAssertNotNil(check.configurationKind)
         XCTAssertTrue(check.usesContentCache)
         let recipe = try XCTUnwrap(RepairRecipeCatalog().recipes.first { $0.id == check.id })
-        XCTAssertTrue(recipe.prompt.contains("$optimize-readme"))
+        XCTAssertEqual(recipe.title, "Repair README consistency")
+        for rule in contract.rules {
+            XCTAssertTrue(recipe.prompt.contains(rule.condition), "Missing bundled requirement: \(rule.id)")
+        }
+        for recipe in RepairRecipeCatalog().recipes {
+            XCTAssertNil(recipe.prompt.range(of: #"\$[a-z][a-z0-9]*-[a-z0-9-]+"#, options: .regularExpression),
+                         "Installed skill reference in \(recipe.id)")
+        }
         XCTAssertThrowsError(try SkillAcceptanceContract.decode(Data(#"{"skill":"x","version":"1","scope":"","rules":[]}"#.utf8)))
     }
 
@@ -136,10 +143,12 @@ final class SkillConsistencyTests: XCTestCase {
     func testMissingAssetsAndMissingTokenKeepKnownViolationsAndCannotVerifyAbsence() async throws {
         let snapshot = try prepare()
         try FileManager.default.removeItem(at: root.appendingPathComponent("architecture.png"))
-        let report = await inspect(snapshot, settings: settings(token: nil))
+        let missingKey = settings(token: nil)
+        try missingKey.setConfiguration(.init(service: .openRouter), for: RepositoryReadmeChecks.id)
+        let report = await inspect(snapshot, settings: missingKey)
         XCTAssertTrue(report.findings().contains { $0.subject.hasSuffix("architecture.position") })
         XCTAssertTrue(report.unavailableChecks[RepositoryReadmeChecks.id]?.contains("API key") == true)
-        let catalog = RepositoryIssueCatalog(checks: RepositoryReadmeChecks.checks(settings: settings(token: nil)))
+        let catalog = RepositoryIssueCatalog(checks: RepositoryReadmeChecks.checks(settings: missingKey))
         let previous = RepositoryFinding(repositoryID: snapshot.id, checkID: RepositoryReadmeChecks.id,
             subject: "README.md · opening.identity", title: "Opening", evidence: "Old violation", category: .documentation, symbol: "doc")
         guard case .unknown = catalog.verify(previous, in: report) else { return XCTFail("Partial absence must stay unknown") }
@@ -147,6 +156,41 @@ final class SkillConsistencyTests: XCTestCase {
         guard case .present = catalog.verify(present, in: report) else { return XCTFail("Known violation must remain present") }
         let restored = try JSONDecoder().decode(RepositoryCheckResult.self, from: JSONEncoder().encode(report.results[RepositoryReadmeChecks.id]!))
         XCTAssertFalse(restored.detectedFindings.isEmpty)
+    }
+
+    func testDefaultCodexReviewNeedsNoOpenRouterCredentialOrKeychainRead() async throws {
+        let settings = ModelCheckSettings(defaults: defaults, readToken: {
+            XCTFail("Codex review must not read OpenRouter Keychain credentials")
+            throw RepairError.blocked("Keychain unavailable")
+        })
+        let evaluator = SkillConsistencyEvaluator(cacheURL: nil, infer: { request, token in
+            XCTAssertEqual(request.configuration.service, .codex)
+            XCTAssertTrue(token.isEmpty)
+            return Self.passes(request)
+        })
+        let report = await inspect(try prepare(), settings: settings, evaluator: evaluator)
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+    }
+
+    func testLegacyPreferencesMigrateToCodexAndExplicitOpenRouterSurvivesReload() throws {
+        defaults.set(Data(#"{"docs.readmeConsistency":{"modelID":"deepseek/deepseek-v4.1-flash","providerID":"wafer","reasoning":"disabled"}}"#.utf8), forKey: "modelCheckConfigurations")
+        let settings = settings()
+        XCTAssertEqual(settings.configuration(for: RepositoryReadmeChecks.id), .init())
+        let optional = ModelCheckConfiguration(service: .openRouter)
+        try settings.setConfiguration(optional, for: RepositoryReadmeChecks.id)
+        XCTAssertEqual(self.settings().configuration(for: RepositoryReadmeChecks.id), optional)
+    }
+
+    func testCodexFailureKeepsMechanicalFindingsAndSemanticAbsenceUnknown() async throws {
+        let snapshot = try prepare()
+        try FileManager.default.removeItem(at: root.appendingPathComponent("architecture.png"))
+        let evaluator = SkillConsistencyEvaluator(cacheURL: nil, infer: { _, _ in
+            throw RepairError.blocked("Sign in to Codex for RepoMan to run skill review.")
+        })
+        let report = await inspect(snapshot, evaluator: evaluator)
+        XCTAssertTrue(report.findings().contains { $0.subject.hasSuffix("architecture.position") })
+        XCTAssertTrue(report.unavailableChecks[RepositoryReadmeChecks.id]?.contains("Sign in to Codex") == true)
     }
 
     func testSemanticViolationCarriesEvidenceAndRecipeWithoutObeyingReadmeInstructions() async throws {
@@ -189,7 +233,7 @@ final class SkillConsistencyTests: XCTestCase {
         let cacheURL = root.appendingPathComponent("model-cache.json")
         let evaluator = SkillConsistencyEvaluator(cacheURL: cacheURL, infer: infer)
         let document = [SkillEvidenceDocument(id: "notes", text: "For developers.")]
-        let configuration = ModelCheckConfiguration()
+        let configuration = ModelCheckConfiguration(service: .openRouter)
         let first = try await evaluator.review(contract, documents: document, configuration: configuration, token: "unit-key", allowCached: true)
         XCTAssertFalse(first.cached)
         let restarted = SkillConsistencyEvaluator(cacheURL: cacheURL, infer: infer)
@@ -197,13 +241,32 @@ final class SkillConsistencyTests: XCTestCase {
         XCTAssertTrue(second.cached)
         _ = try await restarted.review(contract, documents: document, configuration: configuration, token: "unit-key", allowCached: false)
         _ = try await restarted.review(contract, documents: [.init(id: "notes", text: "For learners.")], configuration: configuration, token: "unit-key", allowCached: true)
-        _ = try await restarted.review(contract, documents: document, configuration: .init(modelID: "qwen/qwen3.8-flash", providerID: "alibaba"), token: "unit-key", allowCached: true)
-        _ = try await restarted.review(contract, documents: document, configuration: .init(providerID: ""), token: "unit-key", allowCached: true)
+        _ = try await restarted.review(contract, documents: document, configuration: .init(service: .openRouter, modelID: "qwen/qwen3.8-flash", providerID: "alibaba"), token: "unit-key", allowCached: true)
+        _ = try await restarted.review(contract, documents: document, configuration: .init(service: .openRouter, providerID: ""), token: "unit-key", allowCached: true)
         _ = try await restarted.review(contract, documents: document, configuration: configuration, token: "other-key", allowCached: true)
         let count = await calls.value()
         XCTAssertEqual(count, 6)
         let stored = try String(contentsOf: cacheURL, encoding: .utf8)
         XCTAssertFalse(stored.contains("unit-key")); XCTAssertFalse(stored.contains("other-key"))
+    }
+
+    func testCodexCacheInvalidatesWhenLoginRevisionChanges() async throws {
+        let revision = root.appendingPathComponent("auth-revision")
+        try Data("login-one".utf8).write(to: revision)
+        let calls = Calls()
+        let evaluator = SkillConsistencyEvaluator(cacheURL: nil, infer: { request, _ in
+            await calls.record(); return Self.passes(request)
+        }, codexAuthenticationRevision: { (try? String(contentsOf: revision, encoding: .utf8)) ?? "signed-out" })
+        let contract = try RepositoryReadmeChecks.contract()
+        let documents = [SkillEvidenceDocument(id: "README.md", text: "For developers.")]
+        let first = try await evaluator.review(contract, documents: documents, configuration: .init(), allowCached: true)
+        XCTAssertFalse(first.cached)
+        let cached = try await evaluator.review(contract, documents: documents, configuration: .init(), allowCached: true)
+        XCTAssertTrue(cached.cached)
+        try Data("login-two".utf8).write(to: revision)
+        let changed = try await evaluator.review(contract, documents: documents, configuration: .init(), allowCached: true)
+        XCTAssertFalse(changed.cached)
+        let count = await calls.value(); XCTAssertEqual(count, 2)
     }
 
     func testInputsChangingDuringInferenceRemainUnknown() async throws {
@@ -237,11 +300,13 @@ final class SkillConsistencyTests: XCTestCase {
         let count = await calls.value(); XCTAssertEqual(count, 2)
     }
 
-    func testModelPreferencesNeverPersistTokenAndDefaultsMatchTrial() throws {
+    func testModelPreferencesNeverPersistTokenAndDefaultToCodex() throws {
         let settings = settings()
-        XCTAssertEqual(settings.configuration(for: "new-check").modelID, "deepseek/deepseek-v4.1-flash")
-        XCTAssertEqual(settings.configuration(for: "new-check").providerID, "wafer")
-        let changed = ModelCheckConfiguration(modelID: "qwen/qwen3.8-flash", providerID: "alibaba", reasoning: .automatic)
+        XCTAssertEqual(settings.configuration(for: "new-check").modelID, "gpt-6.1-sol")
+        XCTAssertEqual(settings.configuration(for: "new-check").service, .codex)
+        XCTAssertEqual(settings.configuration(for: "new-check").reasoning, .low)
+        XCTAssertEqual(settings.configuration(for: "new-check").providerID, "")
+        let changed = ModelCheckConfiguration(service: .openRouter, modelID: "qwen/qwen3.8-flash", providerID: "alibaba", reasoning: .automatic)
         try settings.setConfiguration(changed, for: "new-check")
         try settings.setToken("unit-key")
         XCTAssertEqual(settings.configuration(for: "new-check"), changed)
@@ -274,7 +339,7 @@ final class SkillConsistencyTests: XCTestCase {
             let data = try JSONSerialization.data(withJSONObject: ["choices": [["finish_reason":"stop","message":["content":content]]]])
             return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
-        let answers = try await client.evaluate(.init(contract: contract, documents: [.init(id: "README.md", text: "For developers.")], configuration: .init()), token: "unit-key")
+        let answers = try await client.evaluate(.init(contract: contract, documents: [.init(id: "README.md", text: "For developers.")], configuration: .init(service: .openRouter)), token: "unit-key")
         XCTAssertEqual(answers.count, 2)
     }
 
@@ -293,7 +358,7 @@ final class SkillConsistencyTests: XCTestCase {
             return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
         do {
-            _ = try await client.evaluate(.init(contract: contract, documents: [.init(id:"README.md",text:"Evidence")],configuration:.init()),token:"unit-key")
+            _ = try await client.evaluate(.init(contract: contract, documents: [.init(id:"README.md",text:"Evidence")],configuration:.init(service: .openRouter)),token:"unit-key")
             XCTFail("Truncated response must fail")
         } catch { XCTAssertTrue(error.localizedDescription.contains("incomplete")) }
     }

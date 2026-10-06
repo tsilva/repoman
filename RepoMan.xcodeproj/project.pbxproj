@@ -16,6 +16,7 @@
 		A10000000000000000000006 /* GitRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* GitRunner.swift */; };
 		A10000000000000000000007 /* GitRepositoryScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* GitRepositoryScanner.swift */; };
 		A10000000000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* Assets.xcassets */; };
+		A60000000000000000000001 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000001 /* AppIcon.icon */; };
 		A10000000000000000000009 /* RepositoryListOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* RepositoryListOptions.swift */; };
 		A10000000000000000000011 /* RepositoryIssues.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* RepositoryIssues.swift */; };
 		A10000000000000000000012 /* RepositoryRepairs.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* RepositoryRepairs.swift */; };
@@ -50,6 +51,10 @@
 		A30000000000000000000006 /* optimize-readme.acceptance.json in Resources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000006 /* optimize-readme.acceptance.json */; };
 		A40000000000000000000001 /* ConversationMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* ConversationMarkdown.swift */; };
 		A40000000000000000000002 /* ConversationMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000002 /* ConversationMarkdownView.swift */; };
+		A50000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* RepositoryWebsiteChecks.swift */; };
+		A50000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000002 /* WebsiteBrowserProbe.swift */; };
+		A70000000000000000000001 /* RepositorySyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* RepositorySyncView.swift */; };
+		A70000000000000000000002 /* RepositorySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000002 /* RepositorySync.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -63,6 +68,7 @@
 		B10000000000000000000007 /* GitRepositoryScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitRepositoryScanner.swift; sourceTree = "<group>"; };
 		B10000000000000000000008 /* RepoMan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RepoMan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B60000000000000000000001 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		B10000000000000000000010 /* RepositoryListOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryListOptions.swift; sourceTree = "<group>"; };
 		B10000000000000000000011 /* RepositoryIssues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryIssues.swift; sourceTree = "<group>"; };
 		B10000000000000000000012 /* RepositoryRepairs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryRepairs.swift; sourceTree = "<group>"; };
@@ -97,6 +103,10 @@
 		B30000000000000000000006 /* optimize-readme.acceptance.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "Resources/optimize-readme.acceptance.json"; sourceTree = "<group>"; };
 		B40000000000000000000001 /* ConversationMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationMarkdown.swift; sourceTree = "<group>"; };
 		B40000000000000000000002 /* ConversationMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationMarkdownView.swift; sourceTree = "<group>"; };
+		B50000000000000000000001 /* RepositoryWebsiteChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryWebsiteChecks.swift; sourceTree = "<group>"; };
+		B50000000000000000000002 /* WebsiteBrowserProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebsiteBrowserProbe.swift; sourceTree = "<group>"; };
+		B70000000000000000000001 /* RepositorySyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySyncView.swift; sourceTree = "<group>"; };
+		B70000000000000000000002 /* RepositorySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySync.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -112,6 +122,7 @@
 		C10000000000000000000002 /* RepoMan */ = {
 			isa = PBXGroup;
 			children = (
+				B70000000000000000000001 /* RepositorySyncView.swift */,
 				B40000000000000000000002 /* ConversationMarkdownView.swift */,
 				B10000000000000000000081 /* RepairDiffView.swift */,
 				B10000000000000000000001 /* RepoManApp.swift */,
@@ -124,6 +135,7 @@
 				B10000000000000000000014 /* RepositoryRepairTrajectoryView.swift */,
 				B10000000000000000000013 /* RepositoryIssuesView.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
+				B60000000000000000000001 /* AppIcon.icon */,
 			);
 			path = RepoMan;
 			sourceTree = "<group>";
@@ -131,6 +143,7 @@
 		C10000000000000000000003 /* RepoManCore */ = {
 			isa = PBXGroup;
 			children = (
+				B70000000000000000000002 /* RepositorySync.swift */,
 				B40000000000000000000001 /* ConversationMarkdown.swift */,
 				B10000000000000000000090 /* RepositoryCheckPolicy.swift */,
 				B10000000000000000000101 /* RepositoryHealthRecipes.swift */,
@@ -144,6 +157,8 @@
 				B10000000000000000000092 /* RepositoryWorkflowChecks.swift */,
 				B10000000000000000000093 /* RepositoryHygieneChecks.swift */,
 				B10000000000000000000094 /* RepositoryMetadataChecks.swift */,
+				B50000000000000000000002 /* WebsiteBrowserProbe.swift */,
+				B50000000000000000000001 /* RepositoryWebsiteChecks.swift */,
 				B10000000000000000000080 /* RepairDiff.swift */,
 				B10000000000000000000005 /* RepositoryModels.swift */,
 				B30000000000000000000001 /* ModelCheckSettings.swift */,
@@ -242,6 +257,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000008 /* Assets.xcassets in Resources */,
+				A60000000000000000000001 /* AppIcon.icon in Resources */,
 				A30000000000000000000006 /* optimize-readme.acceptance.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -253,6 +269,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A70000000000000000000002 /* RepositorySync.swift in Sources */,
+				A70000000000000000000001 /* RepositorySyncView.swift in Sources */,
 				A40000000000000000000002 /* ConversationMarkdownView.swift in Sources */,
 				A40000000000000000000001 /* ConversationMarkdown.swift in Sources */,
 				A10000000000000000000081 /* RepairDiffView.swift in Sources */,
@@ -268,6 +286,8 @@
 				A10000000000000000000092 /* RepositoryWorkflowChecks.swift in Sources */,
 				A10000000000000000000093 /* RepositoryHygieneChecks.swift in Sources */,
 				A10000000000000000000094 /* RepositoryMetadataChecks.swift in Sources */,
+				A50000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */,
+				A50000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */,
 				A10000000000000000000080 /* RepairDiff.swift in Sources */,
 				A10000000000000000000001 /* RepoManApp.swift in Sources */,
 				A30000000000000000000001 /* ModelCheckSettings.swift in Sources */,

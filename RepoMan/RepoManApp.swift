@@ -63,6 +63,10 @@ private final class RepoManAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        NSApplication.shared.dockTile.badgeLabel = "DEV"
+        #endif
+
         // Use the complete bundled artwork instead of a cached, system-framed icon.
         guard let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
               let icon = NSImage(contentsOf: url) else { return }

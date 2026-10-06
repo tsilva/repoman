@@ -2,6 +2,31 @@ import XCTest
 @testable import RepoManCore
 
 final class ConversationMarkdownTests: XCTestCase {
+    func testAbsoluteMarkdownFileLinkOpensAsFileURL() throws {
+        let path = "/Users/example/repos/site/docs/analytics-delivery-verification.md"
+        let markdown = try AttributedString(markdown: "[Verification record](\(path))",
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+        let link = try XCTUnwrap(markdown.runs.first?.link)
+        XCTAssertNil(link.scheme)
+        XCTAssertEqual(ConversationMarkdown.openDestination(for: link), URL(fileURLWithPath: path))
+    }
+
+    func testEncodedLocalFilePathIsDecodedOnce() throws {
+        let link = try XCTUnwrap(URL(string: "/Users/example/My%20Project/verification%20%231.md"))
+        let destination = ConversationMarkdown.openDestination(for: link)
+        XCTAssertTrue(destination.isFileURL)
+        XCTAssertEqual(destination.path, "/Users/example/My Project/verification #1.md")
+    }
+
+    func testOtherLinkDestinationsArePreserved() throws {
+        for source in ["https://example.com/report?q=1#result", "file:///tmp/record.md",
+                       "mailto:hello@example.com", "codex://threads/123", "docs/record.md",
+                       "//example.com/report"] {
+            let link = try XCTUnwrap(URL(string: source))
+            XCTAssertEqual(ConversationMarkdown.openDestination(for: link), link, source)
+        }
+    }
+
     func testBranchComparisonFromConversation() {
         let source = """
         Both branches are safe candidates:

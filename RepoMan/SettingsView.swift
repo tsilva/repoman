@@ -241,6 +241,7 @@ struct SettingsView: View {
     private func checks(in group: SettingsCheckGroup) -> [RepositoryCheck] {
         store.issueCatalog.checks.filter { check in
             group.categories.contains(check.category)
+                && !RepositoryIssueCatalog.syncCheckIDs.contains(check.id)
                 && matches("Issue checks \(group.title) \(check.title) \(check.settingsDescription)")
         }
     }
@@ -379,7 +380,7 @@ private extension RepositoryCheck {
         case "git.checkoutIntegrity": "A nested Git repository (submodule) is missing or at an unexpected commit, or a Git LFS file contains a placeholder instead of its actual content."
         case "files.mergeMarkers": "Git conflict markers such as <<<<<<< remain in tracked source files, indicating a merge conflict may not have been fully resolved."
         case "files.readme": "No README was found in the repository's top-level folder to explain the project and how to use it."
-        case "docs.readmeConsistency": "Checks README layout and clarity against optimize-readme. Uses OpenRouter for semantic judgments; configure the model and provider with the cog."
+        case "docs.readmeConsistency": "Checks README layout and clarity against optimize-readme. Uses your RepoMan Codex login for clarity judgments by default; configure the service with the cog."
         case "files.gitignore": "No .gitignore was found in the top-level folder to tell Git which local files to leave untracked."
         case "files.license": "No LICENSE, LICENCE, or COPYING file was found in the top-level folder to explain how others may use the project."
         case "files.generatedTracked": "Git tracks files usually created by tools, such as dependency folders, caches, or build output."
@@ -393,6 +394,10 @@ private extension RepositoryCheck {
         case "dependencies.lockfileDrift": "The project's dependency list and lockfile specify different packages or versions, so installs may not match the declared requirements."
         case "dependencies.runtime": "Node.js or Python version requirements conflict across project settings, version files, containers, or automated checks."
         case "github.description": "The description on GitHub differs from the marked tagline in the README published on the default branch. Local README edits do not count."
+        case "website.online": "Checks HTTPS availability for the tsilva.eu domains declared in .repo-metadata.toml. DNS, TLS, HTTP errors, and redirects outside the declared domains need attention."
+        case "website.sentry": "Visits the public site in an isolated browser and looks for accepted Sentry events. Configuration alone stays unverified; no synthetic errors are sent."
+        case "website.analytics": "Looks for Google Analytics collection in an isolated browser. Queued beacons and configured tags stay unverified until successful delivery is observed. Consent is not changed."
+        case "website.cloudflare": "Checks for Cloudflare's CF-Ray header on the requested domain's HTTPS response, including canonical redirects."
         case "docs.brokenLinks": "Documentation links or agent skill references point to local files that cannot be found. External websites are not checked."
         case "notebooks.hygiene": "Jupyter notebooks contain saved errors or more than 256 KiB of output by default. Enable this per repository in .repoman.json; cells are never run."
         case "ci.failing": "Automated GitHub checks, such as builds or tests, have failed on published commits."

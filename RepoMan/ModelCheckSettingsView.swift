@@ -13,7 +13,7 @@ struct OpenRouterSettingsView: View {
                 Spacer()
                 Link("Create API key", destination: URL(string: "https://openrouter.ai/settings/keys")!)
             }
-            Text("README checks send README text and selected project manifests to the model you choose. OpenRouter charges your account for these reviews.")
+            Text("README reviews use your RepoMan Codex login by default. OpenRouter is optional; when selected in a check’s configuration, it receives README text and selected project manifests and charges your OpenRouter account.")
                 .font(.system(size: 13)).foregroundStyle(Theme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Label(store.hasOpenRouterKey ? "API key saved in Keychain" : "No API key saved",
@@ -106,43 +106,55 @@ struct ModelCheckSettingsView: View {
             Text("Choose how this check reviews rules that need a model’s judgment.")
                 .foregroundStyle(Theme.secondary)
             Form {
-                LabeledContent("Service") { Text("OpenRouter") }
-                LabeledContent("API key") {
-                    HStack {
-                        Text(store.hasOpenRouterKey ? "Saved in Keychain" : "Not configured")
-                        Button("Provider settings…", action: openProviderSettings)
-                            .accessibilityIdentifier("settings.model.providerSettings")
+                Picker("Service", selection: $configuration.service) {
+                    Text("Codex (default)").tag(ModelCheckConfiguration.Service.codex)
+                    Text("OpenRouter").tag(ModelCheckConfiguration.Service.openRouter)
+                }
+                .accessibilityIdentifier("settings.model.service")
+                if configuration.service == .codex {
+                    LabeledContent("Account") { Text("RepoMan Codex login") }
+                    LabeledContent("Model") { Text("GPT-6.1 Sol") }
+                    LabeledContent("Reasoning") { Text("Low") }
+                } else {
+                    LabeledContent("API key") {
+                        HStack {
+                            Text(store.hasOpenRouterKey ? "Saved in Keychain" : "Not configured")
+                            Button("Provider settings…", action: openProviderSettings)
+                                .accessibilityIdentifier("settings.model.providerSettings")
+                        }
                     }
-                }
-                TextField("Find model", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("settings.model.search")
-                Picker("Model", selection: $configuration.modelID) {
-                    if !matchingModels.contains(where: { $0.id == configuration.modelID }) {
-                        Text(configuration.modelID).tag(configuration.modelID)
+                    TextField("Find model", text: $search)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("settings.model.search")
+                    Picker("Model", selection: $configuration.modelID) {
+                        if !matchingModels.contains(where: { $0.id == configuration.modelID }) {
+                            Text(configuration.modelID).tag(configuration.modelID)
+                        }
+                        ForEach(matchingModels) { model in Text(model.name).tag(model.id) }
                     }
-                    ForEach(matchingModels) { model in Text(model.name).tag(model.id) }
-                }
-                .accessibilityIdentifier("settings.model.selection")
-                Picker("Model provider", selection: $configuration.providerID) {
-                    Text("OpenRouter routing").tag("")
-                    if !configuration.providerID.isEmpty && !providers.contains(where: { $0.id == configuration.providerID }) {
-                        Text(configuration.providerID == "wafer" ? "Wafer" : configuration.providerID).tag(configuration.providerID)
+                    .accessibilityIdentifier("settings.model.selection")
+                    Picker("Model provider", selection: $configuration.providerID) {
+                        Text("OpenRouter routing").tag("")
+                        if !configuration.providerID.isEmpty && !providers.contains(where: { $0.id == configuration.providerID }) {
+                            Text(configuration.providerID == "wafer" ? "Wafer" : configuration.providerID).tag(configuration.providerID)
+                        }
+                        ForEach(providers) { provider in Text(provider.name + " (" + provider.id + ")").tag(provider.id) }
                     }
-                    ForEach(providers) { provider in Text(provider.name + " (" + provider.id + ")").tag(provider.id) }
+                    .disabled(loadingProviders)
+                    .accessibilityIdentifier("settings.model.endpoint")
+                    Picker("Reasoning", selection: $configuration.reasoning) {
+                        Text("Model default").tag(ModelCheckConfiguration.Reasoning.automatic)
+                        Text("Off").tag(ModelCheckConfiguration.Reasoning.disabled)
+                        Text("Minimal").tag(ModelCheckConfiguration.Reasoning.minimal)
+                        Text("Low").tag(ModelCheckConfiguration.Reasoning.low)
+                    }
+                    .accessibilityIdentifier("settings.model.reasoning")
                 }
-                .disabled(loadingProviders)
-                .accessibilityIdentifier("settings.model.endpoint")
-                Picker("Reasoning", selection: $configuration.reasoning) {
-                    Text("Model default").tag(ModelCheckConfiguration.Reasoning.automatic)
-                    Text("Off").tag(ModelCheckConfiguration.Reasoning.disabled)
-                    Text("Minimal").tag(ModelCheckConfiguration.Reasoning.minimal)
-                    Text("Low").tag(ModelCheckConfiguration.Reasoning.low)
-                }
-                .accessibilityIdentifier("settings.model.reasoning")
             }
             .formStyle(.grouped)
-            Text(configuration.providerID.isEmpty
+            Text(configuration.service == .codex
+                 ? "Reviews use the same Codex login as repairs and commit messages. Only supplied README evidence is reviewed."
+                 : configuration.providerID.isEmpty
                  ? "OpenRouter chooses a compatible provider. Reviews may use different providers."
                  : "Reviews use this provider only. If it is unavailable, the check stays incomplete.")
                 .font(.system(size: 12)).foregroundStyle(Theme.secondary)
@@ -171,19 +183,32 @@ struct ModelCheckSettingsView: View {
         }
         .padding(24).frame(width: 600)
         .foregroundStyle(Theme.primary).background(Theme.background).preferredColorScheme(.dark)
-        .task {
+        .onChange(of: configuration.service) { _, service in
+            configuration = .init(service: service)
+            search = ""; saveError = nil; modelError = nil; providerError = nil
+        }
+        .task(id: configuration.service) {
+            models = []; modelError = nil; loadingModels = false
+            guard configuration.service == .openRouter else { return }
             store.refreshOpenRouterStatus()
             loadingModels = true
             defer { loadingModels = false }
-            do { models = try await OpenRouterClient().models() }
+            do {
+                let available = try await OpenRouterClient().models()
+                try Task.checkCancellation()
+                models = available
+            }
             catch { if !Task.isCancelled { modelError = "Catalog unavailable. Your saved model is retained. " + error.localizedDescription } }
         }
         .onChange(of: configuration.modelID) { _, model in
-            configuration.providerID = model == ModelCheckConfiguration().modelID ? "wafer" : ""
-            configuration.reasoning = model == ModelCheckConfiguration().modelID ? .disabled : .automatic
+            guard configuration.service == .openRouter else { return }
+            configuration.providerID = model == ModelCheckConfiguration(service: .openRouter).modelID ? "wafer" : ""
+            configuration.reasoning = model == ModelCheckConfiguration(service: .openRouter).modelID ? .disabled : .automatic
             saveError = nil
         }
-        .task(id: configuration.modelID) {
+        .task(id: configuration.service.rawValue + configuration.modelID) {
+            providers = []; providerError = nil; loadingProviders = false
+            guard configuration.service == .openRouter else { return }
             let model = configuration.modelID
             loadingProviders = true; providers = []; providerError = nil
             defer { if model == configuration.modelID { loadingProviders = false } }

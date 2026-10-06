@@ -6,12 +6,16 @@ public struct RepositoryInspectionContext: Sendable {
     public let snapshot: RepositorySnapshot
     let allowCachedRemoteMetadata: Bool
     let allowCachedModelChecks: Bool
+    let allowCachedWebsiteChecks: Bool
     private let files = InspectionFileCache()
     private let git = InspectionGitCache()
     private let freshness = InspectionFreshness()
-    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedModelChecks: Bool = false) {
+    let websiteProbes = WebsiteInspectionSession()
+    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedModelChecks: Bool = false,
+                allowCachedWebsiteChecks: Bool = false) {
         self.snapshot = snapshot; self.allowCachedRemoteMetadata = allowCachedRemoteMetadata
         self.allowCachedModelChecks = allowCachedModelChecks
+        self.allowCachedWebsiteChecks = allowCachedWebsiteChecks
     }
     func markCached(_ checkID: String) { freshness.insert(checkID) }
     var cachedChecks: Set<String> { freshness.values }
@@ -186,12 +190,26 @@ public enum RepositoryCheckResult: Codable, Sendable {
         switch self { case .findings(let findings), .partial(let findings, _): return findings; case .unavailable: return [] }
     }
 }
+public enum RepositoryCheckStatus: Sendable {
+    case queued, running, passed, findings, incomplete
+}
+
 public struct RepositoryInspectionReport: Sendable {
     public let snapshot: RepositorySnapshot
     public let results: [String: RepositoryCheckResult]
     public let checkOrder: [String]
     public var cachedChecks: Set<String> = []
     public var completedAt: [String: Date] = [:]
+    public var runningCheckIDs: Set<String> = []
+    /// Missing results are queued unless the scheduler has actually started the check.
+    public func status(for checkID: String) -> RepositoryCheckStatus? {
+        guard checkOrder.contains(checkID) else { return nil }
+        switch results[checkID] {
+        case .findings(let findings): return findings.isEmpty ? .passed : .findings
+        case .partial, .unavailable: return .incomplete
+        case nil: return runningCheckIDs.contains(checkID) ? .running : .queued
+        }
+    }
     public var unavailableChecks: [String: String] {
         results.compactMapValues { result in
             switch result { case .unavailable(let reason), .partial(_, let reason): return reason; case .findings: return nil }
@@ -204,7 +222,8 @@ public struct RepositoryInspectionReport: Sendable {
             if let reason = check.availability(snapshot) { updated[check.id] = .unavailable(reason) }
             else { updated[check.id] = .findings(check.detect(snapshot)) }
         }
-        return Self(snapshot: snapshot, results: updated, checkOrder: checkOrder, cachedChecks: cachedChecks, completedAt: completedAt)
+        return Self(snapshot: snapshot, results: updated, checkOrder: checkOrder, cachedChecks: cachedChecks,
+                    completedAt: completedAt, runningCheckIDs: runningCheckIDs)
     }
     public func findings(disabledChecks: Set<String> = []) -> [RepositoryFinding] {
         checkOrder.filter { !disabledChecks.contains($0) }.flatMap { key -> [RepositoryFinding] in
@@ -226,16 +245,17 @@ public extension RepositoryIssueCatalog {
     ) async -> RepositoryInspectionReport {
         let activeChecks = checks.filter { !excludingChecks.contains($0.id) }
         let context = RepositoryInspectionContext(snapshot: snapshot, allowCachedRemoteMetadata: allowCachedRemoteMetadata && !forceRefresh,
-            allowCachedModelChecks: cache != nil && !forceRefresh)
+            allowCachedModelChecks: cache != nil && !forceRefresh, allowCachedWebsiteChecks: cache != nil && !forceRefresh)
         let reusable = forceRefresh ? [:] : await cache?.reusableResults(for: snapshot, checks: activeChecks, now: now()) ?? [:]
         var results = reusable.mapValues(\.result)
         var completedAt = reusable.mapValues(\.completedAt)
         let reusedChecks = Set(reusable.keys)
         let order = activeChecks.map(\.id)
-        await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order, cachedChecks: reusedChecks, completedAt: completedAt))
         await withTaskGroup(of: (String, RepositoryCheckResult).self) { group in
             var pending = activeChecks.filter { !reusedChecks.contains($0.id) }.makeIterator()
+            var running: Set<String> = []
             func enqueue(_ check: RepositoryCheck) {
+                running.insert(check.id)
                 group.addTask {
                     do {
                         let result = try await check.evaluate(context)
@@ -249,11 +269,15 @@ public extension RepositoryIssueCatalog {
                 }
             }
             for _ in 0..<4 { if let check = pending.next() { enqueue(check) } }
+            await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order,
+                cachedChecks: reusedChecks, completedAt: completedAt, runningCheckIDs: running))
             for await (id, result) in group {
+                running.remove(id)
                 results[id] = result
                 completedAt[id] = now()
                 if let check = pending.next() { enqueue(check) }
-                await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order, cachedChecks: reusedChecks.union(context.cachedChecks), completedAt: completedAt))
+                await onProgress?(RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order,
+                    cachedChecks: reusedChecks.union(context.cachedChecks), completedAt: completedAt, runningCheckIDs: running))
             }
         }
         let report = RepositoryInspectionReport(snapshot: snapshot, results: results, checkOrder: order,

@@ -20,6 +20,28 @@ final class CodexAgentTests: XCTestCase {
         CodexAgent(executable: { path.path }, storage: CodexStorage(homeDirectory: path.deletingLastPathComponent().appendingPathComponent("codex-home")))
     }
 
+    func testDeliveryToolRegistrationResponsesAndOneTestLimit() async throws {
+        let (path, original) = try fixture()
+        let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try GitRunner.run(["init", "-b", "main"], at: root)
+        try "domains = ['test.tsilva.eu']".write(to: root.appendingPathComponent(".repo-metadata.toml"), atomically: true, encoding: .utf8)
+        try "delivery-tool".write(to: root.appendingPathComponent("settings"), atomically: true, encoding: .utf8)
+        let recipe = try XCTUnwrap(RepositoryWebsiteChecks.recipes.first { $0.id == "website.sentry" })
+        let finding = RepositoryFinding(repositoryID: original.finding.repositoryID, checkID: recipe.id,
+            subject: "test.tsilva.eu", title: "README", evidence: "", category: .setup, symbol: "network")
+        var task = RepairTask(finding: finding, repository: RepositorySnapshot(url: root, name: "fixture", branch: "main", upstream: nil, remoteURL: nil, ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: []), prompt: recipe.prompt, recipeID: recipe.id)
+        let agent = CodexAgent(executable: { path.path }, storage: CodexStorage(homeDirectory: root.appendingPathComponent("codex-home")),
+            websiteDeliveryTest: { _, domain in "\(domain): correlated test accepted" })
+        let outcome = try await agent.run(task) { _ in }
+        XCTAssertEqual(outcome, .completed)
+        // Reproduce an existing chat whose plain-text retry lost its saved preset.
+        task.threadID = "fixture-thread"; task.pendingPrompt = "FOLLOWUP_ONLY: try again"; task.recipeID = nil
+        task.codexStorageVersion = 1
+        let retry = try await agent.run(task) { _ in }
+        XCTAssertEqual(retry, .completed)
+    }
+
     func testCancellingRecoveryStopsTheConnectionPromptlyWithoutStartingATurn() async throws {
         let (path, initial) = try fixture()
         let root = path.deletingLastPathComponent()
@@ -213,6 +235,10 @@ final class CodexAgentTests: XCTestCase {
             XCTAssertTrue(instructions.contains("STOP before that step and use request_user_input"))
             XCTAssertTrue(instructions.contains("Wait for the user's explicit approval"))
             XCTAssertTrue(instructions.contains("does not authorize bypassing the enforced permission profile"))
+            XCTAssertTrue(instructions.contains("Reading, listing, and searching installed global skills"))
+            XCTAssertTrue(instructions.contains("authorized without additional approval"))
+            XCTAssertTrue(instructions.contains("read-only skill paths"))
+            XCTAssertTrue(instructions.contains("does not authorize modifying outside skills"))
             XCTAssertFalse(instructions.contains("../sibling"), "The selected prompt must remain separate from mandatory instructions")
         }
     }
@@ -583,6 +609,99 @@ final class CodexAgentTests: XCTestCase {
         XCTAssertEqual(permissions.temporaryDirectory.deletingLastPathComponent(), root.resolvingSymlinksInPath())
     }
 
+    func testSkillDiscoveryIncludesGlobalCustomAndPluginSkillDirectoriesOnly() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("RepoMan skill discovery \(UUID().uuidString)")
+        defer { try? fm.removeItem(at: home) }
+        let custom = home.appendingPathComponent("custom-codex")
+        let expected = [home.appendingPathComponent(".codex/skills"), home.appendingPathComponent(".agents/skills"),
+            custom.appendingPathComponent("skills"), home.appendingPathComponent(".codex/plugins/cache/vendor/package/1.0/skills"),
+            custom.appendingPathComponent("plugins/cache/documents/1.0/skills")]
+        for directory in expected { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let directories = CodexRepositoryPermissions.skillDirectories(homeDirectory: home, codexHomeDirectories: [custom])
+        let paths = Set(directories.map { $0.resolvingSymlinksInPath().path })
+        for directory in expected { XCTAssertTrue(paths.contains(directory.resolvingSymlinksInPath().path), directory.path) }
+        XCTAssertFalse(paths.contains(home.resolvingSymlinksInPath().path))
+        XCTAssertFalse(paths.contains(custom.resolvingSymlinksInPath().path))
+        XCTAssertFalse(paths.contains(home.appendingPathComponent(".codex/plugins/cache").resolvingSymlinksInPath().path))
+    }
+
+    func testSkillPermissionsResolveGlobalAndRepositorySkillLinksWithoutGrantingTheirParents() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("RepoMan skill links \(UUID().uuidString)")
+        defer { try? fm.removeItem(at: base) }
+        let root = base.appendingPathComponent("repo")
+        let global = base.appendingPathComponent("home/.codex/skills")
+        let local = root.appendingPathComponent(".agents/skills")
+        let linked = base.appendingPathComponent("other-repo/.agents/skills/shared")
+        for directory in [root, global, local, linked] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let support = base.appendingPathComponent("other-repo/support.txt")
+        try "Skill support".write(to: support, atomically: true, encoding: .utf8)
+        try fm.createSymbolicLink(at: global.appendingPathComponent("shared"), withDestinationURL: linked)
+        try fm.createSymbolicLink(at: local.appendingPathComponent("shared"), withDestinationURL: linked)
+        try fm.createSymbolicLink(at: linked.appendingPathComponent("support.txt"), withDestinationURL: support)
+        try fm.createSymbolicLink(at: linked.appendingPathComponent("cycle"), withDestinationURL: global)
+        let permissions = try CodexRepositoryPermissions(repositoryURL: root, executable: URL(fileURLWithPath: "/bin/sh"), skillDirectories: [global])
+        defer { permissions.cleanUp() }
+        XCTAssertEqual(Set(permissions.readableSkillRoots), Set([global, linked, support].map { $0.resolvingSymlinksInPath() }))
+        let definition = try XCTUnwrap(permissions.arguments.first { $0.hasPrefix("permissions.") })
+        for path in permissions.readableSkillRoots { XCTAssertTrue(definition.contains("\"\(path.path)\"=\"read\"")) }
+        XCTAssertFalse(definition.contains("\"\(linked.deletingLastPathComponent().path)\"="))
+        XCTAssertFalse(definition.contains("\"\(global.deletingLastPathComponent().path)\"="))
+        XCTAssertFalse(definition.contains("\"\(base.path)\"="))
+    }
+
+    func testInstalledSandboxAllowsSkillReadsButDeniesGlobalSkillWritesAndUnrelatedFiles() throws {
+        guard ProcessInfo.processInfo.environment["REPOMAN_VERIFY_CODEX"] == "1" else {
+            throw XCTSkip("Opt in to an OS-enforced check of installed Codex skill permissions.")
+        }
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("RepoMan skill sandbox \(UUID().uuidString)")
+        defer { try? fm.removeItem(at: base) }
+        let root = base.appendingPathComponent("repo")
+        let home = base.appendingPathComponent("home")
+        let global = home.appendingPathComponent(".codex/skills/example")
+        let agentGlobal = home.appendingPathComponent(".agents/skills/example")
+        let plugin = home.appendingPathComponent(".codex/plugins/cache/vendor/package/1.0/skills/example")
+        let local = root.appendingPathComponent(".codex/skills")
+        let linked = base.appendingPathComponent("other-repo/.agents/skills/shared")
+        for directory in [global, agentGlobal, plugin, local, linked] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let skillFiles = [global, agentGlobal, plugin, linked].map { $0.appendingPathComponent("SKILL.md") }
+        for file in skillFiles { try "Skill instructions".write(to: file, atomically: true, encoding: .utf8) }
+        let support = base.appendingPathComponent("other-repo/support.txt")
+        try "Supporting file".write(to: support, atomically: true, encoding: .utf8)
+        try fm.createSymbolicLink(at: global.deletingLastPathComponent().appendingPathComponent("shared"), withDestinationURL: linked)
+        try fm.createSymbolicLink(at: local.appendingPathComponent("shared"), withDestinationURL: linked)
+        try fm.createSymbolicLink(at: linked.appendingPathComponent("support.txt"), withDestinationURL: support)
+        let unrelated = home.appendingPathComponent(".codex/config.toml")
+        try "Private configuration".write(to: unrelated, atomically: true, encoding: .utf8)
+        let binary = try CodexAgent.locateExecutable()
+        let directories = CodexRepositoryPermissions.skillDirectories(homeDirectory: home)
+        let permissions = try CodexRepositoryPermissions(repositoryURL: root, executable: binary, skillDirectories: directories)
+        defer { permissions.cleanUp() }
+        let script = #"""
+        set -eu
+        blocked="$1"
+        shift
+        for skill in "$@"; do
+            cat "$skill" >/dev/null
+            if (printf forbidden > "$skill") 2>/dev/null; then exit 10; fi
+        done
+        cat .codex/skills/shared/SKILL.md >/dev/null
+        cat .codex/skills/shared/support.txt >/dev/null
+        if cat "$blocked" >/dev/null 2>&1; then exit 11; fi
+        if (printf forbidden > "$blocked") 2>/dev/null; then exit 12; fi
+        printf allowed > .codex/skills/local.md
+        """#
+        let result = try runSandbox(binary: binary, permissions: permissions, script: script,
+            arguments: [unrelated.path] + skillFiles.map(\.path) + [support.path, global.deletingLastPathComponent().appendingPathComponent("shared/SKILL.md").path])
+        XCTAssertEqual(result.status, 0, result.output)
+        for file in skillFiles { XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "Skill instructions") }
+        XCTAssertEqual(try String(contentsOf: support, encoding: .utf8), "Supporting file")
+        XCTAssertEqual(try String(contentsOf: unrelated, encoding: .utf8), "Private configuration")
+        XCTAssertTrue(fm.fileExists(atPath: local.appendingPathComponent("local.md").path))
+    }
+
     func testUnsafeSandboxPathsFailBeforeCreatingRuntimeFiles() throws {
         for path in ["/tmp/repo\"quoted", "/tmp/repo\\path", "/tmp/repo\nnewline"] {
             XCTAssertThrowsError(try CodexRepositoryPermissions(repositoryURL: URL(fileURLWithPath: path),
@@ -641,7 +760,8 @@ if profile:
     assert ':root' not in policy and ':tmpdir' not in policy and ':slash_tmp' not in policy
     assert any(alias in policy for alias in [str(Path(__file__).parent), str(Path(__file__).parent.resolve())])
     temporary = Path(os.environ['TMPDIR'])
-    assert temporary.is_dir() and temporary.parent.resolve() == Path(__file__).parent.resolve()
+    expected_parent = Path(__file__).parent / '.git' if (Path(__file__).parent / '.git').is_dir() else Path(__file__).parent
+    assert temporary.is_dir() and temporary.parent.resolve() == expected_parent.resolve()
     assert temporary.stat().st_mode & 0o777 == 0o700
     assert str(temporary) in overrides['shell_environment_policy.set']
 def read():
@@ -701,6 +821,11 @@ assert request['params']['config']['model_reasoning_effort'] == 'high'
 assert request['params']['config']['features.default_mode_request_user_input'] is True
 settings_path = Path(__file__).parent / 'settings'
 settings = settings_path.read_text() if settings_path.exists() else ''
+if settings == 'delivery-tool' and not resuming:
+    assert request['params']['dynamicTools'][0]['name'] == 'test_website_delivery'
+    assert request['params']['dynamicTools'][0]['type'] == 'function'
+elif not resuming:
+    assert 'dynamicTools' not in request['params']
 if settings == 'resume-error':
     send({'id': request['id'], 'error': {'code': -32000, 'message': 'Fixture resume failure'}})
     read()  # Any further request is a test failure.
@@ -770,6 +895,21 @@ if 'FORCE_FAILURE' in request['params']['input'][0]['text']:
     send({'method': 'turn/completed', 'params': {'turn': {'id': turn_id, 'status': 'failed', 'error': {'message': 'Fixture failure'}}}})
     sys.exit(0)
 send({'method': 'turn/started', 'params': {'threadId': 'fixture-thread', 'turn': {'id': turn_id}}})
+if settings == 'delivery-tool':
+    result(request, {'turn': {'id': turn_id}})
+    for domain, success in [('evil.tsilva.eu', False), ('test.tsilva.eu', True), ('test.tsilva.eu', False)]:
+        send({'id': 'delivery', 'method': 'item/tool/call', 'params': {
+            'threadId': 'fixture-thread', 'turnId': turn_id, 'callId': 'delivery-call',
+            'tool': 'test_website_delivery', 'arguments': {'domain': domain}}})
+        response = read()
+        assert response['id'] == 'delivery'
+        assert response['result']['success'] is success
+        assert response['result']['contentItems'][0]['type'] == 'inputText'
+        if success:
+            assert 'correlated test accepted' in response['result']['contentItems'][0]['text']
+    send({'method': 'turn/completed', 'params': {'turn': {'id': turn_id, 'status': 'completed'}}})
+    read()
+    sys.exit(0)
 if settings == 'async-question':
     result(request, {'turn': {'id': turn_id}})
     send({'method': 'item/started', 'params': {'turnId': turn_id, 'item': async_question}})

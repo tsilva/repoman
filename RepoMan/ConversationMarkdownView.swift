@@ -24,6 +24,9 @@ struct ConversationMarkdownView: View {
         .font(.system(size: 12))
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .environment(\.openURL, OpenURLAction { url in
+            .systemAction(ConversationMarkdown.openDestination(for: url))
+        })
     }
 
     fileprivate static func inline(_ source: String) -> AttributedString {

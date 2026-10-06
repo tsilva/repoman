@@ -19,7 +19,8 @@ public enum GitError: Error, LocalizedError {
 
 enum GitRunner {
     static func run(_ arguments: [String], at directory: URL, timeout: TimeInterval = 20,
-                    successfulExitCodes: Set<Int32> = [0], maximumOutputBytes: Int? = nil) throws -> Data {
+                    successfulExitCodes: Set<Int32> = [0], maximumOutputBytes: Int? = nil,
+                    environmentOverrides: [String: String] = [:]) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", directory.path] + arguments
@@ -30,7 +31,9 @@ enum GitRunner {
         if environment["GIT_SSH_COMMAND"] == nil {
             environment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=8"
         }
+        environment.merge(environmentOverrides) { _, value in value }
         process.environment = environment
+        process.standardInput = FileHandle.nullDevice
 
         let outputPipe = Pipe()
         let errorPipe = Pipe()

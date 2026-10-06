@@ -2,6 +2,22 @@ import Foundation
 
 enum RepositoryReadmeChecks {
     static let id = "docs.readmeConsistency"
+    /// Carry the shipped criteria into the repair, without requiring an installed skill.
+    static let repairRecipe: RepairRecipe = {
+        let requirements: String
+        do {
+            requirements = try contract().rules.map { "- \($0.title): \($0.condition)" }.joined(separator: "\n")
+        } catch {
+            requirements = "The bundled README acceptance criteria could not be loaded. Report this limitation and repair only the explicitly reported findings using repository evidence."
+        }
+        return RepairRecipe(id: id, title: "Repair README consistency", prompt: """
+        Inspect the reported README consistency findings and bring the root Markdown README into conformance with the requirements below. Verify setup and usage commands against the actual repository. Preserve useful information and unrelated changes. Use existing logo and architecture assets; report missing prerequisites instead of generating assets or inserting broken references. Leave changes uncommitted; do not push or publish. The README will be independently checked again afterwards.
+
+        README requirements:
+        \(requirements)
+        """)
+    }()
+
     static func contract() throws -> SkillAcceptanceContract {
         #if SWIFT_PACKAGE
         let bundle = Bundle.module
@@ -35,9 +51,13 @@ enum RepositoryReadmeChecks {
                 let revision = settings.revision
                 do {
                     let configuration = settings.configuration(for: id)
-                    guard let token = try settings.token(), !token.isEmpty else {
-                        throw RepairError.blocked("Add an OpenRouter API key in Settings → Providers to check README clarity.")
-                    }
+                    let token: String
+                    if configuration.service == .openRouter {
+                        guard let key = try settings.token(), !key.isEmpty else {
+                            throw RepairError.blocked("Add an OpenRouter API key in Settings → Providers to check README clarity.")
+                        }
+                        token = key
+                    } else { token = "" }
                     let result = try await evaluator.review(contract, documents: input.documents,
                         configuration: configuration, token: token, allowCached: context.allowCachedModelChecks)
                     guard settings.revision == revision else { throw RepairError.blocked("Model settings changed during review. Refresh this check.") }

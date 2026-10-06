@@ -12,12 +12,15 @@ final class RepairTaskQueueTests: XCTestCase {
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
     private var storage: RepairTaskStorage { RepairTaskStorage(url: root.appendingPathComponent("tasks.json")) }
     // Queue tests must never use the developer's Keychain or paid model endpoints.
-    // Keep the README detector's mechanical coverage with explicitly absent credentials.
+    // Keep mechanical README coverage with an explicitly offline semantic evaluator.
     private var testCatalog: RepositoryIssueCatalog {
         let settings = ModelCheckSettings(readToken: { nil }, writeToken: { _ in })
+        let evaluator = SkillConsistencyEvaluator(cacheURL: nil, infer: { _, _ in
+            throw RepairError.blocked("Semantic review is offline in queue tests.")
+        })
         return RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter {
             $0.id != "docs.readmeConsistency"
-        } + RepositoryReadmeChecks.checks(settings: settings))
+        } + RepositoryReadmeChecks.checks(settings: settings, evaluator: evaluator))
     }
     private func makeQueue(storage: RepairTaskStorage,
                            agentFactory: @escaping @MainActor () -> any RepairAgent,
@@ -34,8 +37,56 @@ final class RepairTaskQueueTests: XCTestCase {
         _ = try GitRunner.run(["init", "-b", "main"], at: url)
         return try GitRepositoryScanner.scan(url)
     }
+    func testAcceptedWebsiteReceiptResolvesSilentDeliveryWithoutDashboardAccess() async throws {
+        let snapshot = try repository()
+        try "domains = ['test.tsilva.eu']".write(to: snapshot.url.appendingPathComponent(".repo-metadata.toml"), atomically: true, encoding: .utf8)
+        let catalog = RepositoryIssueCatalog(checks: RepositoryWebsiteChecks.checks(load: { _, _ in
+            WebsiteProbe(status: 200, cloudflare: true, isHTML: true,
+                analytics: WebsiteTelemetryEvidence(accepted: true), sentry: WebsiteTelemetryEvidence(configured: true))
+        }))
+        let report = await catalog.inspect(snapshot)
+        let finding = try XCTUnwrap(report.findings().first { $0.checkID == "website.sentry" })
+        let recipe = try XCTUnwrap(RepositoryWebsiteChecks.recipes.first { $0.id == "website.sentry" })
+        let receipt = WebsiteDeliveryReceipt(repositoryID: snapshot.id, checkID: finding.checkID,
+            domain: finding.subject, declaredDomains: [finding.subject], acceptedAt: Date())
+        let queue = try makeQueue(storage: storage, agentFactory: { WebsiteReceiptAgent(receipt: receipt) },
+            catalog: catalog, inspect: { _ in snapshot })
+        _ = try queue.enqueue(finding: finding, repository: snapshot, prompt: recipe.prompt, recipeID: recipe.id)
+        queue.start()
+        try await waitForCompletion(queue)
+        XCTAssertEqual(queue.tasks.first?.state, .resolved)
+        XCTAssertTrue(queue.tasks.first?.verification?.evidence.contains("correlated 2xx") == true)
+        XCTAssertTrue(queue.tasks.first?.interactions.isEmpty == true)
+        XCTAssertEqual(try storage.load().first?.websiteDeliveryReceipts?[finding.id], receipt)
+    }
+
     private func finding(_ snapshot: RepositorySnapshot) throws -> RepositoryFinding {
         try XCTUnwrap(testCatalog.findings(in: snapshot).first { $0.checkID == "files.readme" })
+    }
+
+    func testPlainDeliveryRetryRetainsPresetAcrossRestart() throws {
+        let snapshot = try repository()
+        let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: "website.sentry",
+            subject: "test.tsilva.eu", title: "Sentry", evidence: "", category: .setup, symbol: "network")
+        let recipe = try XCTUnwrap(RepositoryWebsiteChecks.recipes.first { $0.id == finding.checkID })
+        var task = RepairTask(finding: finding, repository: snapshot, prompt: recipe.prompt, recipeID: recipe.id)
+        task.state = .stillPresent; task.threadID = "delivery-thread"
+        try storage.save([task])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        queue.canRun = { false }
+        try queue.continueSession(task.id, prompt: "try again")
+        let resumed = try XCTUnwrap(storage.load().first)
+        XCTAssertEqual(resumed.recipeID, recipe.id)
+        XCTAssertEqual(resumed.threadID, task.threadID)
+        XCTAssertEqual(resumed.pendingPrompt, "try again")
+        XCTAssertEqual(WebsiteDeliveryTest.service(for: resumed), "sentry")
+        // Selecting a different preset still replaces the previous choice.
+        try storage.save([task])
+        let replacement = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() })
+        replacement.canRun = { false }
+        try replacement.continueSession(task.id, prompt: "Use a different preset", recipeID: "other.preset")
+        XCTAssertEqual(replacement.tasks.first?.recipeID, "other.preset")
+        XCTAssertNil(WebsiteDeliveryTest.service(for: try XCTUnwrap(replacement.tasks.first)))
     }
     private func waitForCompletion(_ queue: RepairTaskQueue) async throws {
         for _ in 0..<500 {
@@ -52,6 +103,231 @@ final class RepairTaskQueueTests: XCTestCase {
         }
         throw RepairError.blocked("Async question did not survive completion")
     }
+    private var groupedCatalog: RepositoryIssueCatalog {
+        RepositoryIssueCatalog(checks: [RepositoryCheck(id: "test.files", title: "Missing example files",
+            category: .setup, symbol: "doc", availability: { $0.rootFiles == nil ? "Files unavailable" : nil }) { snapshot in
+                ["a.txt", "b.txt"].filter { !(snapshot.rootFiles ?? []).contains($0) }.map {
+                    RepositoryFinding(repositoryID: snapshot.id, checkID: "test.files", subject: $0,
+                        title: "Missing example files", evidence: "Missing " + $0, category: .setup, symbol: "doc")
+                }
+            }])
+    }
+
+    func testSharedSessionVerifiesEachInstanceAndResumesFixedScopeAfterRestart() async throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        let agent = GroupedRepairAgent()
+        let queue = try makeQueue(storage: storage, agentFactory: { agent }, catalog: groupedCatalog)
+        let id = try queue.enqueue(findings: findings, repository: snapshot, prompt: "Fix a.txt")
+        try await waitForCompletion(queue)
+        let first = try XCTUnwrap(queue.tasks.first)
+        XCTAssertEqual(first.state, .stillPresent)
+        XCTAssertEqual(first.state(for: findings[0]), .resolved)
+        XCTAssertEqual(first.state(for: findings[1]), .stillPresent)
+        XCTAssertTrue(first.message.contains("1 resolved · 1 remaining"))
+        let visible = RepositoryIssueListItem.items(findings: groupedCatalog.findings(in: try GitRepositoryScanner.scan(snapshot.url)),
+                                                   tasks: queue.tasks, includeCompleted: true)
+        XCTAssertEqual(visible.count, 2)
+        XCTAssertEqual(Set(visible.map(\.id)).count, 2)
+        XCTAssertEqual(RepositoryIssueStatus.counts(in: visible), [.completed: 1, .waiting: 1])
+        XCTAssertTrue(visible.allSatisfy { $0.task?.id == id })
+
+        let reopened = try makeQueue(storage: storage, agentFactory: { agent }, catalog: groupedCatalog)
+        let followUp = try reopened.continueSession(id, prompt: "Fix b.txt")
+        XCTAssertEqual(followUp, id)
+        try await waitForCompletion(reopened)
+        let submissions = await agent.submissions
+        XCTAssertEqual(submissions.count, 2)
+        XCTAssertEqual(submissions.last?.threadID, "grouped-thread")
+        XCTAssertEqual(submissions.last?.findings, findings)
+        XCTAssertTrue(submissions.last?.agentPrompt.contains("subject: a.txt") == true)
+        XCTAssertTrue(submissions.last?.agentPrompt.contains("subject: b.txt") == true)
+        XCTAssertEqual(reopened.tasks.first?.state, .resolved)
+        XCTAssertEqual(try storage.load(), reopened.tasks)
+    }
+
+    func testGroupedSelectionPreservesOldConversationAndRejectsOverlappingSessions() throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        var old = RepairTask(finding: findings[0], repository: snapshot, prompt: "Earlier repair")
+        old.state = .stillPresent; old.threadID = "old-thread"
+        old.conversation = [RepairConversationEntry(id: "old-message", kind: .assistant, text: "Earlier result")]
+        try storage.save([old])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, catalog: groupedCatalog)
+        queue.canRun = { false }
+        let shared = try queue.enqueue(findings: findings, repository: snapshot, prompt: "Fix both")
+        XCTAssertNotEqual(shared, old.id)
+        XCTAssertEqual(queue.tasks.first?.conversation, old.conversation)
+        XCTAssertEqual(queue.tasks.first?.threadID, old.threadID)
+        XCTAssertTrue(queue.tasks.first?.isSuperseded(for: findings[0]) == true)
+        XCTAssertThrowsError(try queue.enqueue(findings: [findings[1]], repository: snapshot, prompt: "Competing repair"))
+        XCTAssertThrowsError(try queue.continueSession(old.id, prompt: "Competing follow-up"))
+        XCTAssertEqual(try queue.enqueue(finding: findings[0], repository: snapshot, prompt: "Duplicate"), shared)
+        let items = RepositoryIssueListItem.items(findings: findings, tasks: queue.tasks)
+        XCTAssertTrue(items.allSatisfy { $0.task?.id == shared })
+        XCTAssertEqual(queue.tasks.count, 2)
+        XCTAssertEqual(try storage.load().first?.conversation, old.conversation)
+        queue.cancel(shared)
+        try queue.enqueue(finding: findings[1], repository: snapshot, prompt: "Later turn")
+        XCTAssertThrowsError(try queue.continueSession(old.id, prompt: "Resume replaced session"))
+        var completed = queue.tasks
+        for index in completed.indices { completed[index].state = .resolved }
+        let finished = RepositoryIssueListItem.items(findings: [], tasks: completed, includeCompleted: true)
+        XCTAssertEqual(finished.count, 2, "Earlier superseded associations belong in history, not duplicate instance rows")
+    }
+
+    func testGroupedSelectionRejectsDifferentRepositoriesTypesAndDuplicateInstances() throws {
+        let snapshot = try repository()
+        let other = try repository("other")
+        let findings = groupedCatalog.findings(in: snapshot)
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, catalog: groupedCatalog)
+        queue.canRun = { false }
+        XCTAssertThrowsError(try queue.enqueue(findings: [], repository: snapshot, prompt: "Fix"))
+        XCTAssertThrowsError(try queue.enqueue(findings: [findings[0], findings[0]], repository: snapshot, prompt: "Fix"))
+        XCTAssertThrowsError(try queue.enqueue(findings: [findings[0], groupedCatalog.findings(in: other)[0]], repository: snapshot, prompt: "Fix"))
+        XCTAssertThrowsError(try queue.enqueue(findings: [findings[0], finding(snapshot)], repository: snapshot, prompt: "Fix"))
+        XCTAssertTrue(queue.tasks.isEmpty)
+    }
+
+    func testLegacySessionLoadsWithoutScopeFieldsAndGroupedIDsStayDistinct() throws {
+        let snapshot = try repository()
+        let task = RepairTask(finding: try finding(snapshot), repository: snapshot, prompt: "Legacy")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(task)) as? [String: Any])
+        json.removeValue(forKey: "additionalFindings"); json.removeValue(forKey: "instanceVerifications")
+        json.removeValue(forKey: "supersededFindingIDs")
+        let legacy = try JSONDecoder().decode(RepairTask.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(legacy.findings, [task.finding])
+        XCTAssertEqual(legacy.id, task.id)
+        XCTAssertEqual(legacy.agentPrompt, task.agentPrompt)
+
+        let findings = groupedCatalog.findings(in: snapshot)
+        var grouped = RepairTask(finding: findings[0], repository: snapshot, prompt: "Fix both", additionalFindings: [findings[1]])
+        grouped.state = .resolved
+        grouped.instanceVerifications = Dictionary(uniqueKeysWithValues: findings.map { ($0.id, .absent("Fixed")) })
+        let items = RepositoryIssueListItem.items(findings: [], tasks: [grouped], includeCompleted: true)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(Set(items.map(\.id)).count, 2)
+        let other = try repository("other")
+        let groups = RepositoryIssueGroup.groups(items + groupedCatalog.findings(in: other).map { RepositoryIssueListItem(finding: $0) })
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups.first?.resolvedCount, 2)
+        XCTAssertTrue(groups.first?.selectableItems.isEmpty == true)
+    }
+
+    func testGroupedInspectionUpdatesPartialResultsWithoutClosingWholeSession() async throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        var task = RepairTask(finding: findings[0], repository: snapshot, prompt: "Fix both", additionalFindings: [findings[1]])
+        task.state = .stillPresent
+        try storage.save([task])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, catalog: groupedCatalog)
+        try "Fixed".write(to: snapshot.url.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        queue.acceptInspection(await groupedCatalog.inspect(try GitRepositoryScanner.scan(snapshot.url)))
+        XCTAssertEqual(queue.tasks.first?.state, .stillPresent)
+        XCTAssertEqual(queue.tasks.first?.state(for: findings[0]), .resolved)
+        XCTAssertEqual(queue.tasks.first?.state(for: findings[1]), .stillPresent)
+        try "Fixed".write(to: snapshot.url.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        queue.acceptInspection(await groupedCatalog.inspect(try GitRepositoryScanner.scan(snapshot.url)))
+        XCTAssertEqual(queue.tasks.first?.state, .resolved)
+    }
+
+    func testGroupedUnknownPreflightDoesNotRunAndUnavailableMemberIsNotResolved() async throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        let unavailable = RepositoryIssueCatalog(checks: [RepositoryCheck(id: "test.files", title: "Missing files", category: .setup,
+            symbol: "doc", inspect: { _ in throw RepairError.blocked("Unavailable") })])
+        let agent = TestRepairAgent()
+        let queue = try makeQueue(storage: storage, agentFactory: { agent }, catalog: unavailable)
+        try queue.enqueue(findings: findings, repository: snapshot, prompt: "Fix both")
+        try await waitForCompletion(queue)
+        let runs = await agent.runs
+        XCTAssertEqual(runs, 0)
+        XCTAssertEqual(queue.tasks.first?.state, .couldntVerify)
+        XCTAssertTrue(findings.allSatisfy { queue.tasks.first?.state(for: $0) == .couldntVerify })
+    }
+
+    func testSharedVerificationSummaryKeepsDistinctEvidenceWithoutRepeatedConfirmations() {
+        let reason = "Fresh inspection confirms this finding is absent."
+        let summary = RepairTask.aggregate(Array(repeating: .absent(reason), count: 8))
+        XCTAssertEqual(summary.evidence, "8 resolved · 0 remaining.\n" + reason)
+        let legacy = "8 resolved · 0 remaining.\n" + Array(repeating: reason, count: 8).joined(separator: "\n")
+        XCTAssertEqual(RepairVerification.conciseEvidence(legacy), summary.evidence)
+        let mixed = RepairTask.aggregate([.absent(reason), .present("Still mutable"), .present("Still mutable"), .unknown("Cannot inspect")])
+        XCTAssertEqual(mixed.evidence, "1 resolved · 3 remaining (1 couldn’t verify).\n" + reason + "\nStill mutable\nCannot inspect")
+    }
+
+    func testBulkArchiveDeduplicatesSharedSessionsAndPreservesActiveWorkAndHistory() throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        var shared = RepairTask(finding: findings[0], repository: snapshot, prompt: "Fix both", additionalFindings: [findings[1]])
+        shared.state = .resolved
+        shared.conversation = [RepairConversationEntry(id: "reply", kind: .assistant, text: "Fixed both")]
+        let third = RepositoryFinding(repositoryID: snapshot.id, checkID: "test.files", subject: "c.txt",
+            title: "Missing example files", evidence: "Missing c.txt", category: .setup, symbol: "doc")
+        let fourth = RepositoryFinding(repositoryID: snapshot.id, checkID: "test.files", subject: "d.txt",
+            title: "Missing example files", evidence: "Missing d.txt", category: .setup, symbol: "doc")
+        var individual = RepairTask(finding: third, repository: snapshot, prompt: "Fix c.txt")
+        individual.state = .noLongerNeeded
+        let active = RepairTask(finding: fourth, repository: snapshot, prompt: "Fix d.txt")
+        try storage.save([shared, individual, active])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, catalog: groupedCatalog)
+        let items = RepositoryIssueListItem.items(findings: [fourth], tasks: queue.tasks, includeCompleted: true)
+        let group = try XCTUnwrap(RepositoryIssueGroup.groups(items).first)
+        XCTAssertEqual(group.completedSessionIDs, [shared.id, individual.id])
+        XCTAssertEqual(group.resolvedCount, 3)
+        var changes = 0
+        queue.onChange = { changes += 1 }
+        try queue.archiveCompleted(group.completedSessionIDs)
+        XCTAssertEqual(changes, 1, "Group confirmation is one persisted transaction")
+        try queue.archiveCompleted(group.completedSessionIDs)
+        XCTAssertEqual(changes, 1, "Repeated group archiving is idempotent")
+        let saved = try storage.load()
+        XCTAssertTrue(saved[0].isArchived && saved[1].isArchived)
+        XCTAssertEqual(saved[0].conversation, shared.conversation)
+        XCTAssertEqual(saved[2], active)
+        let remaining = RepositoryIssueListItem.items(findings: [fourth], tasks: saved, includeCompleted: true)
+        XCTAssertEqual(remaining.count, 1)
+        XCTAssertEqual(remaining.first?.task?.id, active.id)
+    }
+
+    func testBulkArchiveRejectsIncompleteOrMissingSessionsWithoutPartialChanges() throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        var completed = RepairTask(finding: findings[0], repository: snapshot, prompt: "Fix a.txt")
+        completed.state = .resolved
+        let active = RepairTask(finding: findings[1], repository: snapshot, prompt: "Fix b.txt")
+        try storage.save([completed, active])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, catalog: groupedCatalog)
+        let before = queue.tasks
+        XCTAssertThrowsError(try queue.archiveCompleted([completed.id, active.id]))
+        XCTAssertEqual(queue.tasks, before)
+        XCTAssertThrowsError(try queue.archiveCompleted([completed.id, UUID()]))
+        XCTAssertEqual(try storage.load(), before)
+        var partial = RepairTask(finding: findings[0], repository: snapshot, prompt: "Fix both", additionalFindings: [findings[1]])
+        partial.state = .stillPresent
+        partial.instanceVerifications = [findings[0].id: .absent("Fixed"), findings[1].id: .present("Still missing")]
+        let partialGroup = try XCTUnwrap(RepositoryIssueGroup.groups(RepositoryIssueListItem.items(findings: [findings[1]],
+            tasks: [partial], includeCompleted: true)).first)
+        XCTAssertEqual(partialGroup.resolvedCount, 1)
+        XCTAssertTrue(partialGroup.completedSessionIDs.isEmpty, "One resolved child must not archive a still-open shared session")
+    }
+
+    func testBulkArchiveSaveFailureRollsBackAllConversationVisibility() throws {
+        let snapshot = try repository()
+        let findings = groupedCatalog.findings(in: snapshot)
+        var first = RepairTask(finding: findings[0], repository: snapshot, prompt: "Fix a.txt")
+        var second = RepairTask(finding: findings[1], repository: snapshot, prompt: "Fix b.txt")
+        first.state = .resolved; second.state = .resolved
+        try storage.save([first, second])
+        let queue = try makeQueue(storage: storage, agentFactory: { TestRepairAgent() }, catalog: groupedCatalog)
+        let before = queue.tasks
+        try FileManager.default.removeItem(at: storage.url)
+        try FileManager.default.createDirectory(at: storage.url, withIntermediateDirectories: true)
+        XCTAssertThrowsError(try queue.archiveCompleted([first.id, second.id]))
+        XCTAssertEqual(queue.tasks, before)
+        XCTAssertFalse(queue.tasks.contains(where: \.isArchived))
+    }
+
     func testCompletedQuestionRemainsAnswerableOnRestartWhileRepairsArePaused() throws {
         let snapshot = try repository()
         var saved = RepairTask(finding: try finding(snapshot), repository: snapshot, prompt: "Inspect first")
@@ -1120,4 +1396,31 @@ private actor HeldRepairAgent: RepairAgent {
         continuation?.resume(returning: .completed); continuation = nil
     }
     func cancel() async { continuation?.resume(returning: .cancelled); continuation = nil }
+}
+
+private actor GroupedRepairAgent: RepairAgent {
+    var submissions: [RepairTask] = []
+    func run(_ task: RepairTask, event: @escaping @Sendable (RepairAgentEvent) async -> Void) async throws -> RepairExecutionOutcome {
+        submissions.append(task)
+        await event(.session(threadID: task.threadID ?? "grouped-thread", turnID: "turn-\(submissions.count)"))
+        let filename = task.currentPrompt.contains("b.txt") ? "b.txt" : "a.txt"
+        try "Fixed".write(to: task.repositoryURL.appendingPathComponent(filename), atomically: true, encoding: .utf8)
+        return .completed
+    }
+    func recover(_ task: RepairTask) async throws -> RepairExecutionOutcome { .completed }
+    func respond(to interaction: AgentInteraction, answers: [String: String], approved: Bool) async throws {}
+    func cancel() async {}
+}
+
+
+private actor WebsiteReceiptAgent: RepairAgent {
+    let receipt: WebsiteDeliveryReceipt
+    init(receipt: WebsiteDeliveryReceipt) { self.receipt = receipt }
+    func run(_ task: RepairTask, event: @escaping @Sendable (RepairAgentEvent) async -> Void) async throws -> RepairExecutionOutcome {
+        await event(.websiteDelivery(receipt))
+        return .completed
+    }
+    func recover(_ task: RepairTask) async throws -> RepairExecutionOutcome { .completed }
+    func respond(to interaction: AgentInteraction, answers: [String: String], approved: Bool) async throws {}
+    func cancel() async {}
 }

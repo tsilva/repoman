@@ -73,33 +73,74 @@ public final class RepairTaskQueue {
 
     @discardableResult
     public func enqueue(finding: RepositoryFinding, repository: RepositorySnapshot, prompt: String, recipeID: String? = nil) throws -> UUID {
-        guard error == nil else { throw RepairError.blocked(error!) }
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RepairError.blocked("Enter repair instructions.") }
         guard finding.repositoryID == repository.id else { throw RepairError.blocked("The finding belongs to another repository.") }
-        if let index = tasks.firstIndex(where: { $0.finding.id == finding.id && !$0.state.isClosed && !$0.isArchived }) {
-            if tasks[index].state.isActive { return tasks[index].id }
-            let previous = tasks
-            tasks[index].pendingPrompt = prompt
-            tasks[index].recipeID = recipeID
-            tasks[index].state = .queued
-            tasks[index].execution = nil
-            tasks[index].verification = nil
-            tasks[index].turnID = nil
-            tasks[index].message = ""
-            tasks[index].interactions = []
-            tasks[index].updatedAt = Date()
-            tasks[index].upsertConversation(RepairConversationEntry(id: UUID().uuidString, kind: .user, text: prompt))
-            let id = tasks[index].id
-            do { try saveTasks() } catch { tasks = previous; throw error }
-            onChange?(); start()
-            return id
+        let matching = tasks.filter { $0.contains(finding) && !$0.isSuperseded(for: finding) && !$0.state(for: finding).isClosed && !$0.isArchived }
+        if let existing = matching.first(where: { $0.state.isActive }) ?? matching.last {
+            return try continueSession(existing.id, prompt: prompt, recipeID: recipeID)
         }
-        let task = RepairTask(finding: finding, repository: repository, prompt: prompt, recipeID: recipeID)
+        return try enqueue(findings: [finding], repository: repository, prompt: prompt, recipeID: recipeID)
+    }
+
+    /// An explicit selection starts a new session; existing conversations remain readable as history.
+    @discardableResult
+    public func enqueue(findings: [RepositoryFinding], repository: RepositorySnapshot, prompt: String, recipeID: String? = nil) throws -> UUID {
+        try validatePrompt(prompt)
+        guard let first = findings.first, findings.allSatisfy({ $0.repositoryID == repository.id && $0.checkID == first.checkID }),
+              Set(findings.map(\.id)).count == findings.count else {
+            throw RepairError.blocked("Select distinct instances of one issue type in the same repository.")
+        }
+        try requireAvailableScope(findings)
+        let task = RepairTask(finding: first, repository: repository, prompt: prompt, recipeID: recipeID,
+                              additionalFindings: Array(findings.dropFirst()))
         let previous = tasks
+        let selectedIDs = Set(findings.map(\.id))
+        for index in tasks.indices where !tasks[index].state.isActive && !tasks[index].isArchived {
+            let replaced = tasks[index].findings.filter { selectedIDs.contains($0.id) && !tasks[index].state(for: $0).isClosed }.map(\.id)
+            if !replaced.isEmpty {
+                tasks[index].supersededFindingIDs = Array(Set((tasks[index].supersededFindingIDs ?? []) + replaced)).sorted()
+            }
+        }
         tasks.append(task)
         do { try saveTasks() } catch { tasks = previous; throw error }
         onChange?(); start()
         return task.id
+    }
+
+    @discardableResult
+    public func continueSession(_ id: UUID, prompt: String, recipeID: String? = nil) throws -> UUID {
+        try validatePrompt(prompt)
+        guard let index = tasks.firstIndex(where: { $0.id == id && !$0.isArchived && !$0.state.isClosed && !$0.hasSupersededInstances }) else {
+            throw RepairError.blocked("This conversation is no longer available for repair.")
+        }
+        if tasks[index].state.isActive { return id }
+        try requireAvailableScope(tasks[index].findings, excluding: id)
+        let previous = tasks
+        tasks[index].pendingPrompt = prompt
+        // A plain follow-up keeps the existing preset's bounded tool authorization.
+        if let recipeID { tasks[index].recipeID = recipeID }
+        tasks[index].state = .queued
+        tasks[index].execution = nil
+        tasks[index].verification = nil
+        tasks[index].turnID = nil
+        tasks[index].message = ""
+        tasks[index].interactions = []
+        tasks[index].updatedAt = Date()
+        tasks[index].upsertConversation(RepairConversationEntry(id: UUID().uuidString, kind: .user, text: prompt))
+        do { try saveTasks() } catch { tasks = previous; throw error }
+        onChange?(); start()
+        return id
+    }
+
+    private func validatePrompt(_ prompt: String) throws {
+        guard error == nil else { throw RepairError.blocked(error!) }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw RepairError.blocked("Enter repair instructions.") }
+    }
+    private func requireAvailableScope(_ findings: [RepositoryFinding], excluding id: UUID? = nil) throws {
+        let ids = Set(findings.map(\.id))
+        guard !tasks.contains(where: { $0.id != id && !$0.isArchived && $0.state.isActive &&
+            !$0.findings.allSatisfy({ !ids.contains($0.id) }) }) else {
+            throw RepairError.blocked("An instance is already being repaired in another conversation. Open that conversation or wait for it to finish.")
+        }
     }
 
     /// Hide an idle conversation without deleting its history or changing detector results.
@@ -119,7 +160,26 @@ public final class RepairTaskQueue {
         onChange?()
     }
 
-    /// Each issue owns its agent connection; only turns within the same issue are serialized.
+    /// Archive completed conversations together, persisting all changes in one transaction.
+    public func archiveCompleted(_ ids: Set<UUID>) throws {
+        guard error == nil else { throw RepairError.blocked(error!) }
+        let selected = tasks.filter { ids.contains($0.id) }
+        guard selected.count == ids.count else { throw RepairError.blocked("A selected conversation is no longer available.") }
+        guard selected.allSatisfy({ $0.state.isClosed && workers[$0.id] == nil }) else {
+            throw RepairError.blocked("Only fully completed conversations can be confirmed and archived together.")
+        }
+        guard selected.contains(where: { !$0.isArchived }) else { return }
+        let previous = tasks
+        let now = Date()
+        for index in tasks.indices where ids.contains(tasks[index].id) && !tasks[index].isArchived {
+            tasks[index].archivedAt = now
+            tasks[index].updatedAt = now
+        }
+        do { try saveTasks() } catch { tasks = previous; throw error }
+        onChange?()
+    }
+
+    /// Each repair session owns its connection; overlapping instance scopes are rejected.
     /// Reconciliation never replays a prompt and takes priority over new queued work.
     public func start() {
         started = true
@@ -225,6 +285,7 @@ public final class RepairTaskQueue {
             }
             return "Question: \(question.question)\nAnswer: \(answer)"
         }.joined(separator: "\n\n")
+        try requireAvailableScope(tasks[index].findings, excluding: taskID)
         let previous = tasks
         let message = "Answers to Codex questions:\n\n" + response
         tasks[index].pendingQuestionResponse = [tasks[index].pendingQuestionResponse, message].compactMap { $0 }.joined(separator: "\n\n")
@@ -249,6 +310,7 @@ public final class RepairTaskQueue {
     public func recheck(_ id: UUID) {
         guard workers[id] == nil, workers.count < maximumConcurrentTurns, error == nil, canRun(),
               let task = tasks.first(where: { $0.id == id }), !task.isArchived, !task.state.isActive, !task.state.isClosed else { return }
+        guard (try? requireAvailableScope(task.findings, excluding: id)) != nil else { return }
         update(id) { $0.state = .checking }
         workers[id] = Task {
             await verify(task)
@@ -261,11 +323,13 @@ public final class RepairTaskQueue {
             let snapshot = report.snapshot
             guard snapshot.branch == task.branch, snapshot.upstream == task.upstream,
                   task.remoteURL == nil || snapshot.remoteURL == task.remoteURL else { continue }
-            if case .absent(let reason) = catalog.verify(task.finding, in: report) {
-                update(task.id) {
-                    $0.state = .resolved; $0.verification = .absent(reason); $0.message = reason
-                    Self.recordCheck(&$0)
-                }
+            let results = Dictionary(uniqueKeysWithValues: task.findings.map { ($0.id, catalog.verify($0, in: report)) })
+            let aggregate = RepairTask.aggregate(task.findings.compactMap { results[$0.id] })
+            update(task.id) {
+                $0.instanceVerifications = results
+                $0.verification = aggregate
+                if case .absent = aggregate { $0.state = .resolved; $0.message = aggregate.evidence; Self.recordCheck(&$0) }
+                else if $0.findings.count > 1 { $0.message = aggregate.evidence }
             }
         }
     }
@@ -305,9 +369,22 @@ public final class RepairTaskQueue {
         onInspection?(report)
         guard snapshot.branch == task.branch, snapshot.upstream == task.upstream,
               task.remoteURL == nil || snapshot.remoteURL == task.remoteURL else {
-            return .unknown("The branch, upstream, or remote changed. Review the repository before submitting another repair.")
+            return unknownAssessment(task, reason: "The branch, upstream, or remote changed. Review the repository before submitting another repair.")
         }
-        return catalog.verify(task.finding, in: report)
+        let receipts = tasks.first(where: { $0.id == task.id })?.websiteDeliveryReceipts ?? [:]
+        let domains = (try? WebsiteDomains.load(RepositoryInspectionContext(snapshot: snapshot))) ?? []
+        let results = Dictionary(uniqueKeysWithValues: task.findings.map { finding in
+            (finding.id, receipts[finding.id]?.verification(for: finding, in: report, domains: domains)
+                ?? catalog.verify(finding, in: report))
+        })
+        update(task.id) { $0.instanceVerifications = results }
+        return RepairTask.aggregate(task.findings.compactMap { results[$0.id] })
+    }
+    private func unknownAssessment(_ task: RepairTask, reason: String) -> RepairVerification {
+        update(task.id) {
+            $0.instanceVerifications = Dictionary(uniqueKeysWithValues: task.findings.map { ($0.id, .unknown(reason)) })
+        }
+        return .unknown(reason)
     }
     private func perform(_ task: RepairTask, agent: any RepairAgent) async {
         do {
@@ -369,6 +446,7 @@ public final class RepairTaskQueue {
             update(task.id) { $0.execution = cancellationRequested.contains(task.id) ? .cancelled : outcome }
             await verify(task)
         } catch {
+            _ = unknownAssessment(task, reason: error.localizedDescription)
             update(task.id) { $0.execution = .notRun; $0.verification = .unknown(error.localizedDescription); $0.state = .couldntVerify; $0.message = error.localizedDescription; Self.recordCheck(&$0) }
         }
     }
@@ -388,7 +466,7 @@ public final class RepairTaskQueue {
         do {
             let snapshot = try await inspect(task.repositoryURL)
             result = await assessment(task, snapshot)
-        } catch { result = .unknown(error.localizedDescription) }
+        } catch { result = unknownAssessment(task, reason: error.localizedDescription) }
         update(task.id) {
             $0.verification = result
             switch result {
@@ -424,6 +502,12 @@ public final class RepairTaskQueue {
             case .session(let threadID, let turnID):
                 $0.threadID = threadID; $0.codexStorageVersion = 1
                 if let turnID { $0.turnID = turnID }
+            case .websiteDelivery(let receipt):
+                guard let finding = $0.findings.first(where: {
+                    $0.repositoryID == receipt.repositoryID && $0.checkID == receipt.checkID && $0.subject == receipt.domain
+                }) else { return }
+                if $0.websiteDeliveryReceipts == nil { $0.websiteDeliveryReceipts = [:] }
+                $0.websiteDeliveryReceipts?[finding.id] = receipt
             case .activity(let text):
                 $0.activity += text
                 if $0.activity.count > 200_000 { $0.activity = String($0.activity.suffix(200_000)) }
