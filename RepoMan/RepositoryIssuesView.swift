@@ -144,7 +144,8 @@ struct RepositoryIssuesView: View {
             }.frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 if isRunning {
-                    ProgressView().progressViewStyle(.circular).controlSize(.mini).tint(Theme.blue)
+                    Image(systemName: "circle.dotted").font(.system(size: 13))
+                        .symbolEffect(.rotate.clockwise, isActive: true)
                         .frame(width: 14, height: 14)
                 } else {
                     Image(systemName: isPassed ? "checkmark.circle" : "circle")
@@ -153,7 +154,7 @@ struct RepositoryIssuesView: View {
                 Text(status).font(.system(size: 11))
             }.foregroundStyle(isRunning ? Theme.blue : (isPassed ? Theme.green : Theme.secondary))
         }
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        .padding(.horizontal, 12).padding(.vertical, 6)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.repository.name), \(item.title)")
         .accessibilityValue(status)
