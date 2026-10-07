@@ -2,7 +2,7 @@
   <img src="logo.png" alt="RepoMan logo" width="280" />
   <br />
   <!-- repo-tagline:start -->
-  <strong>🔎 Find issues across your Git repositories. Fix them with AI. 🤖</strong>
+  <strong>🔎 Find issues across your Git repositories. Fix them with AI 🤖</strong>
   <!-- repo-tagline:end -->
 </p>
 
