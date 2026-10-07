@@ -115,6 +115,7 @@ final class RepositoryHealthChecksTests: XCTestCase {
         if case .absent = catalog("files.secrets").verify(finding, in: after) {} else { XCTFail("Removal was not verified") }
     }
     func testPrivateKeyAndBinaryScope() async throws {
+        // Intentionally invalid PEM body: tests detection without storing a usable key.
         try write("key.pem", "-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n-----END OPENSSH PRIVATE KEY-----")
         try write("example.swift", "let header = \"-----BEGIN PRIVATE KEY-----\"")
         try Data([0, 255, 0, 1]).write(to: root.appendingPathComponent("asset.bin"))
