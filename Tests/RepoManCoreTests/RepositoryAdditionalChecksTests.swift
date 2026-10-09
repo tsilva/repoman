@@ -14,10 +14,10 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
 
-    func testAllTwelveChecksHaveRecipesAndUniqueIDs() {
+    func testAdditionalChecksHaveRecipesAndUniqueIDs() {
         let additional = RepositoryDependencyChecks.checks() + RepositoryWorkflowChecks.checks() + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
-        XCTAssertEqual(additional.count, 12)
-        XCTAssertEqual(Set(additional.map(\.id)).count, 12)
+        XCTAssertEqual(additional.count, 13)
+        XCTAssertEqual(Set(additional.map(\.id)).count, 13)
         let catalog = RepositoryIssueCatalog(), recipes = RepairRecipeCatalog()
         for check in additional {
             XCTAssertTrue(catalog.checks.contains { $0.id == check.id })
@@ -496,7 +496,7 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         let before = try Data(contentsOf:index)
         let modified = try FileManager.default.attributesOfItem(atPath:index.path)[.modificationDate] as? Date
         let checks = RepositoryIssueCatalog.standardChecks.filter {
-            $0.requiresExtendedInspection && !["ci.failing", "ci.coverage", "github.description"].contains($0.id)
+            $0.requiresExtendedInspection && !["ci.failing", "ci.coverage", "github.description", "github.privateVisibility"].contains($0.id)
         }
         let report = await RepositoryIssueCatalog(checks:checks).inspect(try snapshot(checkedAt:Date().addingTimeInterval(35 * 86_400)))
         XCTAssertTrue(report.unavailableChecks.isEmpty)

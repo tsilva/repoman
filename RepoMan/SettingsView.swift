@@ -22,11 +22,11 @@ struct SettingsView: View {
                         header
                         if query.isEmpty {
                             if section == .general { generalSettings }
-                            else if section == .providers { OpenRouterSettingsView() }
+                            else if section == .providers { AgentBridgeSettingsView() }
                             else { issueChecks }
                         } else {
                             if matchesGeneral { generalSettings }
-                            if matches("Providers OpenRouter API key token models") { OpenRouterSettingsView() }
+                            if matches("Providers OpenRouter API key token models") { AgentBridgeSettingsView() }
                             issueChecks
                             if !matchesGeneral && !matches("Providers OpenRouter API key token models") && matchingGroups.isEmpty {
                                 ContentUnavailableView.search(text: query)
@@ -106,12 +106,6 @@ struct SettingsView: View {
             .background(Theme.selection, in: Capsule())
             .padding(.horizontal, 12)
             .padding(.bottom, 20)
-
-            Text("RepoMan")
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.subtle)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 8)
 
             ForEach(SettingsSection.allCases) { item in
                 Button {
@@ -394,6 +388,7 @@ private extension RepositoryCheck {
         case "dependencies.lockfileDrift": "The project's dependency list and lockfile specify different packages or versions, so installs may not match the declared requirements."
         case "dependencies.runtime": "Node.js or Python version requirements conflict across project settings, version files, containers, or automated checks."
         case "github.description": "The description on GitHub differs from the marked tagline in the README published on the default branch. Local README edits do not count."
+        case "github.privateVisibility": "A GitHub repository whose name starts with private- must have private visibility. Public and internal repositories with this prefix need attention."
         case "website.online": "Checks HTTPS availability for the tsilva.eu domains declared in .repo-metadata.toml. DNS, TLS, HTTP errors, and redirects outside the declared domains need attention."
         case "website.sentry": "Visits the public site in an isolated browser and looks for accepted Sentry events. Configuration alone stays unverified; no synthetic errors are sent."
         case "website.analytics": "Looks for Google Analytics collection in an isolated browser. Queued beacons and configured tags stay unverified until successful delivery is observed. Consent is not changed."

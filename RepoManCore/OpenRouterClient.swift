@@ -10,8 +10,8 @@ public struct OpenRouterProvider: Identifiable, Equatable, Sendable {
     public let supportedParameters: Set<String>
 }
 
-/// OpenRouter is an adapter for the generic skill evaluator. No repository-specific logic lives here.
-public struct OpenRouterClient: Sendable {
+/// AgentBridge is the sole model transport for the generic skill evaluator.
+public struct AgentBridgeClient: Sendable {
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     private let transport: Transport
     private let catalog: OpenRouterProviderCatalog
@@ -56,14 +56,14 @@ public struct OpenRouterClient: Sendable {
             return OpenRouterProvider(id: id, name: name, supportedParameters: Set(parameters))
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
-    public func testConnection(token: String) async throws { _ = try await send(path: "key", token: token) }
+    public func testConnection(token: String = "") async throws { _ = try await send(path: "capabilities", token: token) }
 
     public func evaluate(_ input: SkillModelRequest, token: String) async throws -> [String: SkillRuleDecision] {
         try input.configuration.validate()
-        guard input.configuration.service == .openRouter else { throw RepairError.blocked("Choose OpenRouter for this review.") }
         let rules = input.contract.rules.filter { $0.evaluation == .semantic }
         guard !rules.isEmpty else { return [:] }
-        let endpoints = try await providers(for: input.configuration.modelID)
+        let isCodex = input.configuration.service == .codex
+        let endpoints = isCodex ? [OpenRouterProvider(id: "", name: "Codex", supportedParameters: ["reasoning", "temperature"])] : try await providers(for: input.configuration.modelID)
         let selected = input.configuration.providerID.isEmpty ? endpoints : endpoints.filter { $0.id == input.configuration.providerID }
         guard !selected.isEmpty else { throw RepairError.blocked("The selected OpenRouter provider does not offer structured reviews for this model.") }
         if input.configuration.reasoning != .automatic, !selected.contains(where: { $0.supportedParameters.contains("reasoning") }) {
@@ -75,11 +75,11 @@ public struct OpenRouterClient: Sendable {
             preferences["only"] = [input.configuration.providerID]
             preferences["allow_fallbacks"] = false
         }
-        var body: [String: Any] = ["model": input.configuration.modelID, "max_tokens": 2_000,
-            "provider": preferences,
+        var body: [String: Any] = ["model": isCodex ? "codex/" + input.configuration.modelID : "openrouter/" + input.configuration.modelID, "max_tokens": 2_000,
             "response_format": ["type": "json_schema", "json_schema": ["name": "skill_consistency", "strict": true, "schema": schema]],
             "messages": [["role": "system", "content": input.instructions],
                          ["role": "user", "content": try input.context()]]]
+        if !isCodex { body["provider"] = preferences }
         if selected.contains(where: { $0.supportedParameters.contains("temperature") }) { body["temperature"] = 0 }
         switch input.configuration.reasoning {
         case .automatic: break
@@ -103,26 +103,32 @@ public struct OpenRouterClient: Sendable {
     private struct ReviewResponse: Decodable { let rules: [String: SkillRuleDecision] }
 
     private func send(path: String, token: String? = nil, body: Data? = nil, maximumBytes: Int = 2_097_152) async throws -> Data {
-        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/" + path)!)
-        request.timeoutInterval = 30
+        let configured = ProcessInfo.processInfo.environment["AGENTBRIDGE_BASE_URL"] ?? "http://127.0.0.1:8082/api/v1"
+        guard let base = URL(string: configured), ["http", "https"].contains(base.scheme ?? ""),
+              let host = base.host, host != "openrouter.ai" else {
+            throw RepairError.blocked("Configure an AgentBridge HTTP endpoint.")
+        }
+        let gatewayPath = body == nil && path != "capabilities" ? "openrouter/" + path : path
+        var request = URLRequest(url: base.appendingPathComponent(gatewayPath))
+        request.timeoutInterval = 660
         request.httpMethod = body == nil ? "GET" : "POST"
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("RepoMan", forHTTPHeaderField: "X-Title")
-        if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        if let token, !token.isEmpty { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         let response: (Data, HTTPURLResponse)
         let outbound = request
         do { response = try await OpenRouterRequestLimiter.shared.run { try await transport(outbound) } }
         catch is CancellationError { throw CancellationError() }
         catch {
             if Task.isCancelled { throw CancellationError() }
-            throw RepairError.blocked("OpenRouter could not be reached. Check the connection and retry.")
+            throw RepairError.blocked("AgentBridge could not be reached. Check the connection and retry.")
         }
         guard (200..<300).contains(response.1.statusCode) else {
             // Never echo remote error bodies: they may contain credentials or request content.
             let message: String
             switch response.1.statusCode {
-            case 401, 403: message = "OpenRouter authentication failed. Check the saved API key and account access."
+            case 401, 403: message = "OpenRouter authentication failed. Check gateway authentication and account access."
             case 402: message = "OpenRouter has insufficient credits."
             case 429: message = "OpenRouter rate limit reached. Retry later."
             case 400, 404: message = "OpenRouter rejected the model, provider or review settings. Check this rule’s configuration."
@@ -138,8 +144,8 @@ public struct OpenRouterClient: Sendable {
 private enum OpenRouterSession {
     static let shared: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 45
+        config.timeoutIntervalForRequest = 660
+        config.timeoutIntervalForResource = 660
         config.httpMaximumConnectionsPerHost = 4
         config.httpShouldSetCookies = false
         return URLSession(configuration: config, delegate: OpenRouterRedirectPolicy(), delegateQueue: nil)

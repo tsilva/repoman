@@ -140,14 +140,15 @@ final class SkillConsistencyTests: XCTestCase {
         XCTAssertTrue(report.findings().contains { $0.subject.hasSuffix("tagline.markers") })
     }
 
-    func testMissingAssetsAndMissingTokenKeepKnownViolationsAndCannotVerifyAbsence() async throws {
+    func testMissingAssetsAndGatewayFailureKeepKnownViolationsAndCannotVerifyAbsence() async throws {
         let snapshot = try prepare()
         try FileManager.default.removeItem(at: root.appendingPathComponent("architecture.png"))
         let missingKey = settings(token: nil)
         try missingKey.setConfiguration(.init(service: .openRouter), for: RepositoryReadmeChecks.id)
-        let report = await inspect(snapshot, settings: missingKey)
+        let offline = SkillConsistencyEvaluator(cacheURL: nil, infer: { _, _ in throw RepairError.blocked("AgentBridge is unavailable") })
+        let report = await inspect(snapshot, settings: missingKey, evaluator: offline)
         XCTAssertTrue(report.findings().contains { $0.subject.hasSuffix("architecture.position") })
-        XCTAssertTrue(report.unavailableChecks[RepositoryReadmeChecks.id]?.contains("API key") == true)
+        XCTAssertTrue(report.unavailableChecks[RepositoryReadmeChecks.id]?.contains("AgentBridge") == true)
         let catalog = RepositoryIssueCatalog(checks: RepositoryReadmeChecks.checks(settings: missingKey))
         let previous = RepositoryFinding(repositoryID: snapshot.id, checkID: RepositoryReadmeChecks.id,
             subject: "README.md · opening.identity", title: "Opening", evidence: "Old violation", category: .documentation, symbol: "doc")
@@ -159,10 +160,7 @@ final class SkillConsistencyTests: XCTestCase {
     }
 
     func testDefaultCodexReviewNeedsNoOpenRouterCredentialOrKeychainRead() async throws {
-        let settings = ModelCheckSettings(defaults: defaults, readToken: {
-            XCTFail("Codex review must not read OpenRouter Keychain credentials")
-            throw RepairError.blocked("Keychain unavailable")
-        })
+        let settings = ModelCheckSettings(defaults: defaults, readToken: { nil })
         let evaluator = SkillConsistencyEvaluator(cacheURL: nil, infer: { request, token in
             XCTAssertEqual(request.configuration.service, .codex)
             XCTAssertTrue(token.isEmpty)
@@ -250,20 +248,20 @@ final class SkillConsistencyTests: XCTestCase {
         XCTAssertFalse(stored.contains("unit-key")); XCTAssertFalse(stored.contains("other-key"))
     }
 
-    func testCodexCacheInvalidatesWhenLoginRevisionChanges() async throws {
-        let revision = root.appendingPathComponent("auth-revision")
-        try Data("login-one".utf8).write(to: revision)
+    func testGatewayCacheInvalidatesWhenEndpointChanges() async throws {
+        let revision = root.appendingPathComponent("endpoint-revision")
+        try Data("gateway-one".utf8).write(to: revision)
         let calls = Calls()
         let evaluator = SkillConsistencyEvaluator(cacheURL: nil, infer: { request, _ in
             await calls.record(); return Self.passes(request)
-        }, codexAuthenticationRevision: { (try? String(contentsOf: revision, encoding: .utf8)) ?? "signed-out" })
+        }, gatewayConfigurationRevision: { (try? String(contentsOf: revision, encoding: .utf8)) ?? "gateway-missing" })
         let contract = try RepositoryReadmeChecks.contract()
         let documents = [SkillEvidenceDocument(id: "README.md", text: "For developers.")]
         let first = try await evaluator.review(contract, documents: documents, configuration: .init(), allowCached: true)
         XCTAssertFalse(first.cached)
         let cached = try await evaluator.review(contract, documents: documents, configuration: .init(), allowCached: true)
         XCTAssertTrue(cached.cached)
-        try Data("login-two".utf8).write(to: revision)
+        try Data("gateway-two".utf8).write(to: revision)
         let changed = try await evaluator.review(contract, documents: documents, configuration: .init(), allowCached: true)
         XCTAssertFalse(changed.cached)
         let count = await calls.value(); XCTAssertEqual(count, 2)
@@ -318,16 +316,16 @@ final class SkillConsistencyTests: XCTestCase {
 
     func testOpenRouterPinsProviderUsesStructuredRulesAndDoesNotRequestOverall() async throws {
         let contract = try RepositoryReadmeChecks.contract()
-        let client = OpenRouterClient(transport: { request in
+        let client = AgentBridgeClient(transport: { request in
             if request.url!.path.hasSuffix("/endpoints") { return try Self.providerResponse(request) }
-            XCTAssertEqual(request.url?.absoluteString, "https://openrouter.ai/api/v1/chat/completions")
+            XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:8082/api/v1/chat/completions")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer unit-key")
             let payload = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
             let provider = payload["provider"] as! [String: Any]
             XCTAssertEqual(provider["only"] as? [String], ["wafer"])
             XCTAssertEqual(provider["allow_fallbacks"] as? Bool, false)
             XCTAssertEqual(provider["require_parameters"] as? Bool, true)
-            XCTAssertEqual(payload["model"] as? String, "deepseek/deepseek-v4.1-flash")
+            XCTAssertEqual(payload["model"] as? String, "openrouter/deepseek/deepseek-v4.1-flash")
             XCTAssertEqual(payload["temperature"] as? Int, 0)
             XCTAssertFalse(String(describing: payload["messages"]!).contains("unit-key"))
             let format = payload["response_format"] as! [String: Any]
@@ -346,13 +344,13 @@ final class SkillConsistencyTests: XCTestCase {
     func testOpenRouterErrorsNeverEchoResponseAndTruncatedReviewsFail() async throws {
         let contract = try RepositoryReadmeChecks.contract()
         for status in [401, 402, 429, 500] {
-            let client = OpenRouterClient(transport: { request in
+            let client = AgentBridgeClient(transport: { request in
                 (Data("unit-key and private request details".utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
             })
             do { try await client.testConnection(token: "unit-key"); XCTFail("Expected HTTP failure") }
             catch { XCTAssertFalse(error.localizedDescription.contains("unit-key")); XCTAssertFalse(error.localizedDescription.contains("private request")) }
         }
-        let client = OpenRouterClient(transport: { request in
+        let client = AgentBridgeClient(transport: { request in
             if request.url!.path.hasSuffix("/endpoints") { return try Self.providerResponse(request) }
             let data = try JSONSerialization.data(withJSONObject: ["choices":[["finish_reason":"length","message":["content":"{}"]]]])
             return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)

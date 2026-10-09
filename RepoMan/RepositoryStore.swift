@@ -40,23 +40,23 @@ final class RepositoryStore: ObservableObject {
     let issueCatalog = RepositoryIssueCatalog()
     let recipeCatalog = RepairRecipeCatalog()
     @Published var requestedSettingsCheckID: String?
-    @Published private(set) var hasOpenRouterKey = false
-    @Published private(set) var openRouterSettingsError: String?
+    @Published private(set) var hasAgentBridgeToken = false
+    @Published private(set) var agentBridgeSettingsError: String?
 
-    func refreshOpenRouterStatus() {
+    func refreshAgentBridgeStatus() {
         guard !isDemo else { return }
-        do { hasOpenRouterKey = try ModelCheckSettings.shared.token()?.isEmpty == false; openRouterSettingsError = nil }
-        catch { hasOpenRouterKey = false; openRouterSettingsError = error.localizedDescription }
+        do { hasAgentBridgeToken = try ModelCheckSettings.shared.token()?.isEmpty == false; agentBridgeSettingsError = nil }
+        catch { hasAgentBridgeToken = false; agentBridgeSettingsError = error.localizedDescription }
     }
     @discardableResult
-    func saveOpenRouterKey(_ key: String?) -> Bool {
-        guard !isDemo else { openRouterSettingsError = "Demo mode does not save credentials."; return false }
+    func saveAgentBridgeToken(_ key: String?) -> Bool {
+        guard !isDemo else { agentBridgeSettingsError = "Demo mode does not save credentials."; return false }
         do {
             try ModelCheckSettings.shared.setToken(key)
-            refreshOpenRouterStatus()
+            refreshAgentBridgeStatus()
             invalidateModelChecks()
             return true
-        } catch { openRouterSettingsError = error.localizedDescription; return false }
+        } catch { agentBridgeSettingsError = error.localizedDescription; return false }
     }
     func saveModelCheckConfiguration(_ configuration: ModelCheckConfiguration, for checkID: String) throws {
         try configuration.validate()

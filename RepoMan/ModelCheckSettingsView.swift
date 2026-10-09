@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct OpenRouterSettingsView: View {
+struct AgentBridgeSettingsView: View {
     @EnvironmentObject private var store: RepositoryStore
     @State private var token = ""
     @State private var connectionMessage: String?
@@ -9,24 +9,23 @@ struct OpenRouterSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("OpenRouter").font(.system(size: 15, weight: .semibold))
+                Text("AgentBridge").font(.system(size: 15, weight: .semibold))
                 Spacer()
-                Link("Create API key", destination: URL(string: "https://openrouter.ai/settings/keys")!)
             }
-            Text("README reviews use your RepoMan Codex login by default. OpenRouter is optional; when selected in a check’s configuration, it receives README text and selected project manifests and charges your OpenRouter account.")
+            Text("Model reviews use AgentBridge. Codex reviews retain GPT-6.1 Sol with low reasoning; OpenRouter models retain their saved model and provider. An optional gateway token stays in Keychain. Set AGENTBRIDGE_BASE_URL for another gateway.")
                 .font(.system(size: 13)).foregroundStyle(Theme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Label(store.hasOpenRouterKey ? "API key saved in Keychain" : "No API key saved",
-                  systemImage: store.hasOpenRouterKey ? "checkmark.circle" : "key")
-                .font(.system(size: 13)).foregroundStyle(store.hasOpenRouterKey ? Theme.green : Theme.secondary)
+            Label(store.hasAgentBridgeToken ? "Gateway token configured" : "No gateway token needed locally",
+                  systemImage: store.hasAgentBridgeToken ? "checkmark.circle" : "key")
+                .font(.system(size: 13)).foregroundStyle(store.hasAgentBridgeToken ? Theme.green : Theme.secondary)
                 .accessibilityIdentifier("settings.openrouter.status")
             HStack {
-                SecureField(store.hasOpenRouterKey ? "Replace API key" : "OpenRouter API key", text: $token)
+                SecureField(store.hasAgentBridgeToken ? "Replace API key" : "AgentBridge token", text: $token)
                     .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("OpenRouter API key")
+                    .accessibilityLabel("AgentBridge token")
                     .accessibilityIdentifier("settings.openrouter.token")
                 Button("Save key") {
-                    if store.saveOpenRouterKey(token) { token = ""; connectionMessage = "Key saved. README reviews run on the next refresh." }
+                    if store.saveAgentBridgeToken(token) { token = ""; connectionMessage = "Key saved. README reviews run on the next refresh." }
                 }
                 .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isDemo)
                 .accessibilityIdentifier("settings.openrouter.save")
@@ -37,25 +36,23 @@ struct OpenRouterSettingsView: View {
                     Task {
                         defer { testing = false }
                         do {
-                            guard let key = try ModelCheckSettings.shared.token() else {
-                                throw RepairError.blocked("Save an OpenRouter key first.")
-                            }
-                            try await OpenRouterClient().testConnection(token: key)
-                            connectionMessage = "OpenRouter connection succeeded."
+                            let key = try ModelCheckSettings.shared.token() ?? ""
+                            try await AgentBridgeClient().testConnection(token: key)
+                            connectionMessage = "AgentBridge connection succeeded."
                         } catch { connectionMessage = error.localizedDescription }
                     }
                 }
-                .disabled(!store.hasOpenRouterKey || testing || store.isDemo)
+                .disabled(testing || store.isDemo)
                 .accessibilityIdentifier("settings.openrouter.test")
-                if store.hasOpenRouterKey {
+                if store.hasAgentBridgeToken {
                     Button("Remove key", role: .destructive) {
-                        if store.saveOpenRouterKey(nil) { token = ""; connectionMessage = "API key removed." }
+                        if store.saveAgentBridgeToken(nil) { token = ""; connectionMessage = "API key removed." }
                     }
                     .disabled(testing || store.isDemo)
                     .accessibilityIdentifier("settings.openrouter.remove")
                 }
             }
-            if let message = store.openRouterSettingsError ?? connectionMessage {
+            if let message = store.agentBridgeSettingsError ?? connectionMessage {
                 Text(message).font(.system(size: 13)).foregroundStyle(Theme.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -67,7 +64,7 @@ struct OpenRouterSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.panel, in: RoundedRectangle(cornerRadius: 14))
         .overlay { RoundedRectangle(cornerRadius: 14).stroke(Theme.border, lineWidth: 1) }
-        .onAppear { store.refreshOpenRouterStatus() }
+        .onAppear { store.refreshAgentBridgeStatus() }
         .onDisappear { token = "" }
     }
 }
@@ -106,19 +103,19 @@ struct ModelCheckSettingsView: View {
             Text("Choose how this check reviews rules that need a model’s judgment.")
                 .foregroundStyle(Theme.secondary)
             Form {
-                Picker("Service", selection: $configuration.service) {
+                Picker("Model family", selection: $configuration.service) {
                     Text("Codex (default)").tag(ModelCheckConfiguration.Service.codex)
-                    Text("OpenRouter").tag(ModelCheckConfiguration.Service.openRouter)
+                    Text("OpenRouter via AgentBridge").tag(ModelCheckConfiguration.Service.openRouter)
                 }
                 .accessibilityIdentifier("settings.model.service")
                 if configuration.service == .codex {
-                    LabeledContent("Account") { Text("RepoMan Codex login") }
+                    LabeledContent("Account") { Text("AgentBridge Codex login") }
                     LabeledContent("Model") { Text("GPT-6.1 Sol") }
                     LabeledContent("Reasoning") { Text("Low") }
                 } else {
-                    LabeledContent("API key") {
+                    LabeledContent("Gateway token") {
                         HStack {
-                            Text(store.hasOpenRouterKey ? "Saved in Keychain" : "Not configured")
+                            Text(store.hasAgentBridgeToken ? "Saved in Keychain" : "Optional")
                             Button("Provider settings…", action: openProviderSettings)
                                 .accessibilityIdentifier("settings.model.providerSettings")
                         }
@@ -153,7 +150,7 @@ struct ModelCheckSettingsView: View {
             }
             .formStyle(.grouped)
             Text(configuration.service == .codex
-                 ? "Reviews use the same Codex login as repairs and commit messages. Only supplied README evidence is reviewed."
+                 ? "Reviews use AgentBridge’s Codex login. Only supplied README evidence is reviewed."
                  : configuration.providerID.isEmpty
                  ? "OpenRouter chooses a compatible provider. Reviews may use different providers."
                  : "Reviews use this provider only. If it is unavailable, the check stays incomplete.")
@@ -190,11 +187,11 @@ struct ModelCheckSettingsView: View {
         .task(id: configuration.service) {
             models = []; modelError = nil; loadingModels = false
             guard configuration.service == .openRouter else { return }
-            store.refreshOpenRouterStatus()
+            store.refreshAgentBridgeStatus()
             loadingModels = true
             defer { loadingModels = false }
             do {
-                let available = try await OpenRouterClient().models()
+                let available = try await AgentBridgeClient().models()
                 try Task.checkCancellation()
                 models = available
             }
@@ -213,7 +210,7 @@ struct ModelCheckSettingsView: View {
             loadingProviders = true; providers = []; providerError = nil
             defer { if model == configuration.modelID { loadingProviders = false } }
             do {
-                let available = try await OpenRouterClient().providers(for: model)
+                let available = try await AgentBridgeClient().providers(for: model)
                 try Task.checkCancellation()
                 providers = available
             } catch {

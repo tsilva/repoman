@@ -51,13 +51,7 @@ enum RepositoryReadmeChecks {
                 let revision = settings.revision
                 do {
                     let configuration = settings.configuration(for: id)
-                    let token: String
-                    if configuration.service == .openRouter {
-                        guard let key = try settings.token(), !key.isEmpty else {
-                            throw RepairError.blocked("Add an OpenRouter API key in Settings → Providers to check README clarity.")
-                        }
-                        token = key
-                    } else { token = "" }
+                    let token = try settings.token() ?? ""
                     let result = try await evaluator.review(contract, documents: input.documents,
                         configuration: configuration, token: token, allowCached: context.allowCachedModelChecks)
                     guard settings.revision == revision else { throw RepairError.blocked("Model settings changed during review. Refresh this check.") }

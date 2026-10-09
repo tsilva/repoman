@@ -1,8 +1,8 @@
 # Additional repository checks
 
-README consistency also supports reusable model-backed acceptance rules. Configure OpenRouter in **Settings → Providers** and use the check's cog to select its model and provider. See [model-backed skill checks](readme-consistency.md) for scope, evidence, caching and repair verification.
+README consistency also supports reusable model-backed acceptance rules. Configure AgentBridge in **Settings → Providers** and use the check's cog to select its model and provider. See [model-backed skill checks](readme-consistency.md) for scope, evidence, caching and repair verification.
 
-RepoMan registers twenty-two additional detectors in the existing Issues, Settings, repair composer and verification workflow. Refresh reads files, Git metadata and GitHub metadata and fetches remote-tracking refs. It does not install packages, execute scripts or notebook cells, mutate monitored files, apply stashes, change branches, or publish anything. Selecting a repair preset only fills the composer; sending it explicitly starts agent work.
+RepoMan registers twenty-three additional detectors in the existing Issues, Settings, repair composer and verification workflow. Refresh reads files, Git metadata and GitHub metadata and fetches remote-tracking refs. It does not install packages, execute scripts or notebook cells, mutate monitored files, apply stashes, change branches, or publish anything. Selecting a repair preset only fills the composer; sending it explicitly starts agent work.
 
 ## Detectors
 
@@ -18,6 +18,7 @@ RepoMan registers twenty-two additional detectors in the existing Issues, Settin
 | `git.oldStashes` | Old stashes | Stashes at least 30 days old, showing their commit hash and up to ten affected paths, including untracked paths. Identity uses the commit hash, not the changing stash index. |
 | `git.unfinishedOperation` | Git operation unfinished | Unmerged index entries; merge, rebase/am, cherry-pick, revert or sequencer markers; detached HEAD. Inspection works with Git-managed separate Git directories and linked checkouts. |
 | `github.description` | GitHub description drift | The actual GitHub description compared with the marked README tagline from the latest published default-branch commit. Local or feature-branch README edits do not influence it. |
+| `github.privateVisibility` | Private repository visibility | GitHub remote repository names starting with `private-` (case-insensitive) must have `PRIVATE` visibility. `PUBLIC` and `INTERNAL` produce a blocked finding, identified by `owner/repository`. Uses the remote name rather than the local folder name. Other names and non-GitHub remotes are skipped. |
 | `docs.brokenLinks` | Broken local documentation links | Markdown inline/reference links, HTML image/link references, and relative skill references in root AGENTS.md. Checks root README variants, AGENTS.md, tracked SKILL.md files and tracked Markdown under docs/. Resolves paths relative to each document and decodes percent-encoded filenames. Skips external URLs, site-root routes, fragments, inline/fenced/indented code examples and HTML comments. Backticked skill paths in AGENTS.md are inspected as actual instruction references. |
 | `notebooks.hygiene` | Notebook hygiene | Saved error outputs or serialized outputs exceeding 256 KiB in tracked nbformat 4 notebooks. Repository opt-in is required, because teaching notebooks may deliberately contain errors and large outputs. Cells are never executed. |
 | `git.unpublishedBranches` | Unpublished branch work | Commits on inactive local branches unreachable from all fetched remote branches. Branches checked out in any worktree are excluded. Identity is the full local branch ref. No remotes means skipped; absent remote refs and failed fetches remain unavailable. Patch-equivalent, rebased or squash-merged work still needs review. |
@@ -69,6 +70,8 @@ Changing a repository exception changes the detector's policy, and can verify a 
 Unknown configuration fields, unsupported versions, empty exception reasons and out-of-range thresholds make the new checks unavailable. `stashAgeDays` accepts 1–3650; notebook output limits accept 1024–8388608 bytes. `maximumTrackedFileBytes` accepts 1024–1073741824 bytes (default 10485760). Missing fields retain defaults; notebook checks default to disabled until a repository opts in.
 
 ## Published metadata
+
+The visibility check uses a separate read-only GraphQL query with the existing GitHub CLI login, so it works without a README or a published default branch. Background refresh may reuse visibility for ten minutes, keyed by remote owner/repository; cached absence cannot verify a repair. Repair preflight and verification read fresh visibility. Missing visibility, authentication failures and API errors remain unavailable. Refresh never changes visibility. The repair recipe verifies the destination and administrator access, reviews GitHub Pages and fork consequences, changes only its visibility to private, and verifies the result.
 
 The metadata check uses the installed GitHub CLI and its existing login. A read-only GraphQL request discovers the actual root README filename; a second request returns the description and that README together from the latest default-branch commit. All root README variants recognized by RepoMan are supported. Repositories without README files or tagline markers are skipped. It does not copy credentials or change descriptions during refresh.
 

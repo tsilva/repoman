@@ -59,8 +59,11 @@ public final class ModelCheckSettings: @unchecked Sendable {
     private let writeToken: @Sendable (String?) throws -> Void
 
     public init(defaults: UserDefaults = .standard,
-                readToken: @escaping @Sendable () throws -> String? = { try OpenRouterKeychain.read() },
-                writeToken: @escaping @Sendable (String?) throws -> Void = { try OpenRouterKeychain.write($0) }) {
+                readToken: @escaping @Sendable () throws -> String? = {
+                    if let token = ProcessInfo.processInfo.environment["AGENTBRIDGE_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty { return token }
+                    return try AgentBridgeKeychain.read()
+                },
+                writeToken: @escaping @Sendable (String?) throws -> Void = { try AgentBridgeKeychain.write($0) }) {
         self.defaults = defaults; self.readToken = readToken; self.writeToken = writeToken
     }
     public func configuration(for checkID: String) -> ModelCheckConfiguration {
@@ -86,7 +89,7 @@ public final class ModelCheckSettings: @unchecked Sendable {
     public func setToken(_ token: String?) throws {
         let cleaned = token?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let cleaned, cleaned.isEmpty || cleaned.count > 512 || cleaned.contains(where: { $0.isWhitespace }) {
-            throw RepairError.blocked("Enter an OpenRouter API key without spaces.")
+            throw RepairError.blocked("Enter an AgentBridge token without spaces.")
         }
         try writeToken(cleaned)
         lock.lock(); defer { lock.unlock() }
@@ -94,8 +97,8 @@ public final class ModelCheckSettings: @unchecked Sendable {
     }
 }
 
-public enum OpenRouterKeychain {
-    private static let service = "com.tsilva.RepoMan.openrouter"
+public enum AgentBridgeKeychain {
+    private static let service = "com.tsilva.RepoMan.agentbridge"
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: "api-key", kSecAttrSynchronizable as String: false]
@@ -111,7 +114,7 @@ public enum OpenRouterKeychain {
         let status = SecItemCopyMatching(request as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data, let key = String(data: data, encoding: .utf8) else {
-            throw RepairError.blocked("OpenRouter key could not be read from Keychain (\(status)).")
+            throw RepairError.blocked("AgentBridge token could not be read from Keychain (\(status)).")
         }
         return key
     }
@@ -119,7 +122,7 @@ public enum OpenRouterKeychain {
         guard let token else {
             let status = SecItemDelete(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw RepairError.blocked("OpenRouter key could not be removed from Keychain (\(status)).")
+                throw RepairError.blocked("AgentBridge token could not be removed from Keychain (\(status)).")
             }
             return
         }
@@ -130,9 +133,9 @@ public enum OpenRouterKeychain {
             item[kSecValueData as String] = data
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             let added = SecItemAdd(item as CFDictionary, nil)
-            guard added == errSecSuccess else { throw RepairError.blocked("OpenRouter key could not be saved in Keychain (\(added)).") }
+            guard added == errSecSuccess else { throw RepairError.blocked("AgentBridge token could not be saved in Keychain (\(added)).") }
         } else if status != errSecSuccess {
-            throw RepairError.blocked("OpenRouter key could not be saved in Keychain (\(status)).")
+            throw RepairError.blocked("AgentBridge token could not be saved in Keychain (\(status)).")
         }
     }
 }

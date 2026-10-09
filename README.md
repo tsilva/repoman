@@ -52,7 +52,7 @@ Open **Settings…** from the toolbar's overflow menu or press **⌘,** to enabl
 
 **Missing CI coverage** inspects local GitHub Actions workflows in code projects for recognizable build, test, lint, or type-check commands on branch pushes or pull requests. Dependency review, manual workflows, and tag-only releases do not satisfy it. This is a conservative configuration check, not a measurement of test coverage: custom actions, unrecognized scripts, reusable workflows, unsupported YAML, and external CI configurations may require review and are reported as unavailable.
 
-Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, published description drift, and opt-in notebook hygiene. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
+Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, published description drift, and opt-in notebook hygiene. GitHub repositories whose names start with `private-` (case-insensitive) must have private visibility; public and internal visibility are flagged. Refresh only reads visibility; the repair action can make the repository private. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
 
 Repositories declaring `tsilva.eu` domains in `.repo-metadata.toml` also receive separate availability, Sentry, Google Analytics, and Cloudflare proxy checks. See [website checks](docs/website-checks.md) for configuration, delivery verification, and the Vercel domain inventory tool.
 
@@ -97,3 +97,12 @@ bash .codex/skills/build-release/scripts/build-release.sh
 The diagram shows discovery and refresh. The [checks and repairs guide](docs/issues.md) explains issue detection, prompt recipes, queued agent work, and verification.
 
 ![RepoMan refresh architecture: folder discovery, refresh coordination, Git scanning, and the dashboard](docs/architecture.png)
+
+## AgentBridge routing
+
+Model requests use only AgentBridge. Set `AGENTBRIDGE_BASE_URL` to its API root
+(default `http://127.0.0.1:8082/api/v1`). `AGENTBRIDGE_API_KEY` is an optional
+gateway token. OpenRouter credentials belong to AgentBridge. Existing model
+choices are retained; raw upstream IDs gain `openrouter/` only on outbound
+requests. There is no direct OpenRouter endpoint or fallback. Hosted deployments
+must configure a reachable AgentBridge URL instead of the loopback default.

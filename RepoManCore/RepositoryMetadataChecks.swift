@@ -9,7 +9,8 @@ struct PublishedRepositoryMetadata: Sendable {
 
 enum RepositoryMetadataChecks {
     typealias Loader = @Sendable (RepositorySnapshot) async throws -> PublishedRepositoryMetadata
-    static func checks(load: Loader? = nil) -> [RepositoryCheck] {
+    typealias VisibilityLoader = @Sendable (RepositorySnapshot) async throws -> GitHubRepositoryVisibility
+    static func checks(load: Loader? = nil, loadVisibility: VisibilityLoader? = nil) -> [RepositoryCheck] {
         [CheckSupport.check("github.description", "GitHub description drift", .documentation, "text.bubble", inspect: { context, _ in
             guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { return [] }
             let metadata: PublishedRepositoryMetadata
@@ -23,7 +24,68 @@ enum RepositoryMetadataChecks {
             guard (metadata.description ?? "") != tagline else { return [] }
             return [CheckSupport.finding(context, "github.description", repository.owner + "/" + repository.name,
                 "GitHub description drift", "Published README on \(metadata.branch) at \(metadata.sha.prefix(8)) declares: \(tagline)\nGitHub description: \(metadata.description ?? "(empty)"). Local and feature-branch README changes are not used.", .documentation, "text.bubble")]
+        }), CheckSupport.check("github.privateVisibility", "Private repository visibility", .setup, "lock.shield", inspect: { context, _ in
+            guard let repository = GitHubCI.repository(context.snapshot.remoteURL),
+                  repository.name.lowercased().hasPrefix("private-") else { return [] }
+            let visibility: GitHubRepositoryVisibility
+            if let loadVisibility { visibility = try await loadVisibility(context.snapshot) }
+            else {
+                let result = try await RepositoryVisibilityCache.shared.load(context.snapshot, allowCached: context.allowCachedRemoteMetadata)
+                visibility = result.visibility
+                if result.cached { context.markCached("github.privateVisibility") }
+            }
+            guard visibility != .private else { return [] }
+            let subject = repository.owner + "/" + repository.name
+            return [CheckSupport.finding(context, "github.privateVisibility", subject,
+                "Private-named repository is not private", "\(subject) starts with private- but its GitHub visibility is \(visibility.rawValue.lowercased()). Repositories with this prefix must be private.", .setup, "lock.shield", severity: .blocked)]
         })]
+    }
+}
+
+enum GitHubRepositoryVisibility: String, Decodable, Sendable {
+    case `private` = "PRIVATE", `public` = "PUBLIC", `internal` = "INTERNAL"
+
+    static let query = """
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) { visibility }
+    }
+    """
+    static func load(_ snapshot: RepositorySnapshot, run: ([String]) throws -> Data = { try GitHubCLI.run($0) }) throws -> Self {
+        guard let repository = GitHubCI.repository(snapshot.remoteURL) else { throw RepairError.blocked("A GitHub remote is required.") }
+        return try decode(run(["api", "graphql", "--hostname", "github.com", "--raw-field", "query=" + query,
+            "--raw-field", "owner=" + repository.owner, "--raw-field", "name=" + repository.name]))
+    }
+    static func decode(_ data: Data) throws -> Self {
+        let response = try JSONDecoder().decode(Response.self, from: data)
+        guard response.errors?.isEmpty ?? true else {
+            throw RepairError.blocked("GitHub visibility inspection failed: " + response.errors!.map(\.message).joined(separator: "; "))
+        }
+        guard let visibility = response.data?.repository?.visibility else {
+            throw RepairError.blocked("GitHub repository visibility is unavailable. Check repository access and gh authentication.")
+        }
+        return visibility
+    }
+    private struct Response: Decodable { let data: Payload?; let errors: [APIError]? }
+    private struct APIError: Decodable { let message: String }
+    private struct Payload: Decodable { let repository: Repository? }
+    private struct Repository: Decodable { let visibility: GitHubRepositoryVisibility? }
+}
+
+/// Visibility does not depend on a README or a published default branch (empty repositories are checked too).
+actor RepositoryVisibilityCache {
+    static let shared = RepositoryVisibilityCache()
+    private var values: [String: (date: Date, visibility: GitHubRepositoryVisibility)] = [:]
+    func load(_ snapshot: RepositorySnapshot, allowCached: Bool, now: Date = Date(),
+              loader: RepositoryMetadataChecks.VisibilityLoader = { snapshot in
+                  try await Task.detached(priority: .utility) { try GitHubRepositoryVisibility.load(snapshot) }.value
+              }) async throws -> (visibility: GitHubRepositoryVisibility, cached: Bool) {
+        guard let repository = GitHubCI.repository(snapshot.remoteURL) else { throw RepairError.blocked("A GitHub remote is required.") }
+        let key = repository.owner + "/" + repository.name
+        if allowCached, let value = values[key], (0..<600).contains(now.timeIntervalSince(value.date)) { return (value.visibility, true) }
+        let visibility = try await loader(snapshot)
+        if values.count >= 500, values[key] == nil, let oldest = values.min(by: { $0.value.date < $1.value.date })?.key { values.removeValue(forKey: oldest) }
+        values[key] = (now, visibility)
+        return (visibility, false)
     }
 }
 

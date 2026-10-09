@@ -71,23 +71,17 @@ public actor SkillConsistencyEvaluator {
     private var pending: [String: Task<SkillConsistencyReview, Error>] = [:]
     private let cacheURL: URL?
     private let infer: Inference
-    private let codexAuthenticationRevision: @Sendable () -> String
+    private let gatewayConfigurationRevision: @Sendable () -> String
 
     public init(cacheURL: URL? = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("RepoMan/model-check-cache.json"),
-                infer: Inference? = nil, codexAuthenticationRevision: (@Sendable () -> String)? = nil) {
+                infer: Inference? = nil, gatewayConfigurationRevision: (@Sendable () -> String)? = nil) {
         self.cacheURL = cacheURL
-        self.codexAuthenticationRevision = codexAuthenticationRevision ?? {
-            // Invalidate after RepoMan login/logout without reading or persisting credentials.
-            let auth = CodexStorage.defaultHomeDirectory.appendingPathComponent("auth.json")
-            guard let values = try? auth.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey, .fileSizeKey]) else { return "signed-out" }
-            return "\(values.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values.creationDate?.timeIntervalSince1970 ?? 0):\(values.fileSize ?? 0)"
+        self.gatewayConfigurationRevision = gatewayConfigurationRevision ?? {
+            ProcessInfo.processInfo.environment["AGENTBRIDGE_BASE_URL"] ?? "http://127.0.0.1:8082/api/v1"
         }
         self.infer = infer ?? { request, token in
-            switch request.configuration.service {
-            case .codex: return try await CodexSkillReviewer().evaluate(request)
-            case .openRouter: return try await OpenRouterClient().evaluate(request, token: token)
-            }
+            return try await AgentBridgeClient().evaluate(request, token: token)
         }
         if let cacheURL, let data = try? Data(contentsOf: cacheURL), data.count <= 4_194_304,
            let saved = try? JSONDecoder().decode([String: Cached].self, from: data) { values = saved }
@@ -98,9 +92,6 @@ public actor SkillConsistencyEvaluator {
                        configuration: ModelCheckConfiguration, token: String = "",
                        allowCached: Bool, now: Date = Date()) async throws -> (review: SkillConsistencyReview, cached: Bool) {
         try configuration.validate()
-        if configuration.service == .openRouter, token.isEmpty {
-            throw RepairError.blocked("Add an OpenRouter API key in Settings → Providers.")
-        }
         guard !documents.isEmpty, documents.count <= 32, Set(documents.map(\.id)).count == documents.count,
               documents.allSatisfy({ !$0.id.isEmpty }), documents.reduce(0, { $0 + $1.text.utf8.count }) <= 131_072 else {
             throw RepairError.blocked("Model-check evidence is missing, duplicated, or exceeds 128 KiB.")
@@ -114,9 +105,9 @@ public actor SkillConsistencyEvaluator {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         var input = try encoder.encode(contract)
         input.append(try encoder.encode(documents)); input.append(try encoder.encode(configuration))
-        input.append(Data(Self.promptVersion.utf8))
+        input.append(Data((Self.promptVersion + "-agentbridge-v1").utf8))
         input.append(Data(SHA256.hash(data: Data(token.utf8))))
-        if configuration.service == .codex { input.append(Data(codexAuthenticationRevision().utf8)) }
+        input.append(Data(gatewayConfigurationRevision().utf8))
         let key = SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
         if allowCached, let value = values[key] {
             let age = now.timeIntervalSince(value.date)
@@ -226,38 +217,5 @@ extension SkillModelRequest {
                   return Set(fields.keys) == ["verdict", "reason", "evidenceDocument", "evidenceQuote"]
               }) else { throw RepairError.blocked("Model returned an incomplete or invalid review; the result is unknown.") }
         return try JSONDecoder().decode([String: SkillRuleDecision].self, from: JSONEncoder().encode(result["rules"]))
-    }
-}
-
-struct CodexSkillReviewer: Sendable {
-    private let task: CodexStructuredTask
-    init(executable: @escaping @Sendable () -> String? = { nil }, storage: CodexStorage = .init(), timeout: TimeInterval = 60) {
-        task = CodexStructuredTask(executable: executable, storage: storage, timeout: timeout)
-    }
-    func evaluate(_ input: SkillModelRequest) async throws -> [String: SkillRuleDecision] {
-        try input.configuration.validate()
-        guard input.configuration.service == .codex else { throw RepairError.blocked("Choose Codex for this review.") }
-        guard !input.semanticRules.isEmpty else { return [:] }
-        return try await CodexReviewLimiter.shared.run {
-            let result = try await task.run(context: input.context(), instructions: input.instructions,
-                schema: input.outputSchema, purpose: "skill review", directoryPrefix: "review")
-            return try input.decodeReview(result)
-        }
-    }
-}
-
-private actor CodexReviewLimiter {
-    static let shared = CodexReviewLimiter()
-    private var active = 0
-    private var waiting: [CheckedContinuation<Void, Never>] = []
-    func run(_ operation: @Sendable () async throws -> [String: SkillRuleDecision]) async throws -> [String: SkillRuleDecision] {
-        if active < 4 { active += 1 }
-        else { await withCheckedContinuation { waiting.append($0) } }
-        defer {
-            if waiting.isEmpty { active -= 1 }
-            else { waiting.removeFirst().resume() }
-        }
-        try Task.checkCancellation()
-        return try await operation()
     }
 }
