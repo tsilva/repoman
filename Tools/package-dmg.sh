@@ -46,7 +46,9 @@ cp "$design_dir/background.tiff" "$staging_dir/.background/background.tiff"
 cp "$design_dir/finder-layout.DSStore" "$staging_dir/.DS_Store"
 # Keep Finder configuration independent of GUI automation on release runners.
 # The saved layout's background alias is relative to the RepoMan volume root.
-SetFile -a E "$staging_dir/RepoMan.app"
+# Finder flags add com.apple.FinderInfo and invalidate the signed app bundle.
+# Verify the copied app before packaging, without changing its metadata.
+codesign --verify --deep --strict --verbose=2 "$staging_dir/RepoMan.app"
 hdiutil create -quiet -volname RepoMan -fs HFS+ -srcfolder "$staging_dir" -format UDZO "$temporary_dmg"
 hdiutil verify -quiet "$temporary_dmg"
 mv "$temporary_dmg" "$output_path"

@@ -97,12 +97,22 @@ if name == 'plutil':
 if name == 'lipo':
     print(os.environ.get('STUB_ARCH', 'arm64')); sys.exit(0)
 if name == 'codesign':
+    if '--verify' in args and os.environ.get('STUB_INVALID_SIGNATURE'):
+        sys.exit(1)
     if '-dv' in args:
         print(os.environ.get('STUB_SIGNATURE', 'Signature=adhoc'))
     sys.exit(0)
+if name == 'ditto':
+    shutil.copytree(args[0], args[1]); sys.exit(0)
+if name == 'SetFile':
+    sys.exit(91)  # Finder flags must never mutate a signed app during packaging.
+if name == 'hdiutil':
+    if args[0] == 'create':
+        pathlib.Path(args[-1]).write_bytes(b'mock dmg')
+    sys.exit(0)
 sys.exit(91)  # Never allow a real native build or disk-image operation.
 '''
-        for command in ['git', 'gh', 'uname', 'swift', 'xcodebuild', 'plutil', 'lipo', 'codesign', 'hdiutil', 'ditto']:
+        for command in ['git', 'gh', 'uname', 'swift', 'xcodebuild', 'plutil', 'lipo', 'codesign', 'hdiutil', 'ditto', 'SetFile']:
             path = self.bin / command
             path.write_text(stub)
             path.chmod(0o755)
@@ -126,6 +136,36 @@ sys.exit(91)  # Never allow a real native build or disk-image operation.
 
     def commands(self):
         return [json.loads(x) for x in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def package_fixture(self):
+        app = self.base / 'RepoMan.app'
+        (app / 'Contents').mkdir(parents=True)
+        (app / 'Contents/Info.plist').write_text('mock plist')
+        design = self.repo / 'image-assets/dmg'
+        design.mkdir(parents=True)
+        for name in ['background.tiff', 'finder-layout.DSStore']:
+            (design / name).write_bytes(b'mock design')
+        return app, self.base / 'RepoMan.dmg'
+
+    def test_packaging_preserves_signed_app_and_checks_it_before_creating_image(self):
+        app, output = self.package_fixture()
+        result = subprocess.run(['bash', str(self.repo / 'Tools/package-dmg.sh'), str(app), str(output)],
+                                cwd=self.repo, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output.is_file())
+        commands = self.commands()
+        verify = next(i for i, args in enumerate(commands) if args[0] == 'codesign' and '--verify' in args)
+        create = next(i for i, args in enumerate(commands) if args[:2] == ['hdiutil', 'create'])
+        self.assertLess(verify, create)
+
+    def test_packaging_rejects_invalid_copied_app_before_creating_image(self):
+        app, output = self.package_fixture()
+        self.env['STUB_INVALID_SIGNATURE'] = '1'
+        result = subprocess.run(['bash', str(self.repo / 'Tools/package-dmg.sh'), str(app), str(output)],
+                                cwd=self.repo, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertFalse(any(args[0] == 'hdiutil' for args in self.commands()))
 
     def test_reads_consistent_project_version_without_xcode(self):
         self.assertEqual(metadata.project_version(self.project), '0.1.1')

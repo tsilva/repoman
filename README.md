@@ -89,7 +89,7 @@ bash .codex/skills/build-release/scripts/build-release.sh
 - Git counts require a known upstream comparison for push/pull. Routine changes, push/pull, and divergence appear through Sync instead of agent issues. Stale branches have no commits in 90 days, excluding `main`, `master`, and branches checked out in any worktree. Linked worktrees exclude the primary worktree and appear as informational findings.
 - Refresh skips repositories sharing the active repair’s Git common directory, including linked worktrees, while continuing to inspect other repositories. Locks and checks coordinate RepoMan work; external Git tools can still change a checkout.
 - The screenshots and `--demo` mode use illustrative data. Demo mode cannot run agents, answer agent questions, cancel real tasks, or persist repair runs.
-- Local packaging writes a DMG and checksum under `dist/`. Pushing a `vX.Y.Z` tag publishes them through the [release workflow](.github/workflows/release.yml). Packaged builds are signed ad hoc and are not notarized; Gatekeeper may require manual approval.
+- Local packaging writes a DMG and checksum under `dist/`. Pushing a `vX.Y.Z` tag publishes them through the [release workflow](.github/workflows/release.yml). Packaging preserves the signed app's metadata and verifies its signature before creating the DMG and again after mounting it. Packaged builds are signed ad hoc and are not notarized; Gatekeeper may require manual approval.
 - No license is declared in this repository.
 
 ## Architecture
