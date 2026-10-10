@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    @ObservedObject private var updater = AppUpdateController.shared
     @EnvironmentObject private var store: RepositoryStore
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var search = ""
@@ -68,7 +69,10 @@ struct ContentView: View {
         .toolbarBackground(Theme.topBar.opacity(reduceTransparency ? 1 : 0.98), for: .windowToolbar)
         .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .onAppear { store.start() }
-
+        .alert("RepoMan Update", isPresented: Binding(get: { updater.errorMessage != nil },
+                                                     set: { if !$0 { updater.errorMessage = nil } })) {
+            Button("OK", role: .cancel) { updater.errorMessage = nil }
+        } message: { Text(updater.errorMessage ?? "") }
     }
 
     private func topBar(sidebarWidth: CGFloat) -> some View {
@@ -113,6 +117,7 @@ struct ContentView: View {
                         .foregroundStyle(Theme.primary)
                 }
                 Spacer(minLength: 16)
+                if !sidebarVisible { AppUpdateButton() }
                 ToolbarActionButton(symbol: "folder", title: "Open in Finder") {
                     if let repository = store.selectedRepository {
                         NSWorkspace.shared.open(repository.url)
@@ -288,6 +293,23 @@ struct ContentView: View {
             }
 
             repositoryList
+
+            if updater.available != nil {
+                HStack(spacing: 12) {
+                    AppUpdateButton()
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(updater.phase ?? "Update available")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.primary)
+                        Text(updater.phase == nil ? "Install \(updater.available?.version ?? "") and restart" : "RepoMan will reopen automatically")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+            }
 
             HStack(spacing: 8) {
                 Button { store.chooseFolder() } label: {

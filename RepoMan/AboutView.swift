@@ -65,6 +65,9 @@ struct AboutView: View {
                     resourceLink("Report an Issue", symbol: "bubble.left", url: issuesURL)
                 }
                 .padding(.top, 26)
+
+                AppUpdateStatusView()
+                    .padding(.top, 24)
             }
             .padding(.horizontal, 32)
             .padding(.top, 40)
@@ -133,4 +136,5 @@ private struct AboutResourceLinkStyle: ButtonStyle {
 
 #Preview {
     AboutView()
+        .environmentObject(RepositoryStore())
 }

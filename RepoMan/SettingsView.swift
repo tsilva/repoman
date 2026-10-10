@@ -156,6 +156,9 @@ struct SettingsView: View {
 
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 24) {
+            settingsGroup("App updates") {
+                AppUpdateStatusView().padding(20)
+            }
             settingsGroup("Repositories") {
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 5) {
@@ -224,7 +227,7 @@ struct SettingsView: View {
     }
 
     private var matchesGeneral: Bool {
-        matches("General Repositories Monitored folder Visible Git repositories directly inside this folder Path blacklist excluded paths folders symlinks .archived "
+        matches("General App updates GitHub version Check for Updates Update Restart Repositories Monitored folder Visible Git repositories directly inside this folder Path blacklist excluded paths folders symlinks .archived "
                 + (store.folder?.path ?? "") + " " + store.excludedRepositoryPaths.joined(separator: " "))
     }
 

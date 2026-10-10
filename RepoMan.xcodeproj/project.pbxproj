@@ -55,6 +55,9 @@
 		A50000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000002 /* WebsiteBrowserProbe.swift */; };
 		A70000000000000000000001 /* RepositorySyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* RepositorySyncView.swift */; };
 		A70000000000000000000002 /* RepositorySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000002 /* RepositorySync.swift */; };
+		A80000000000000000000001 /* AppUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* AppUpdate.swift */; };
+		A80000000000000000000002 /* AppUpdateInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000002 /* AppUpdateInstaller.swift */; };
+		A80000000000000000000003 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* AppUpdateController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -107,6 +110,9 @@
 		B50000000000000000000002 /* WebsiteBrowserProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebsiteBrowserProbe.swift; sourceTree = "<group>"; };
 		B70000000000000000000001 /* RepositorySyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySyncView.swift; sourceTree = "<group>"; };
 		B70000000000000000000002 /* RepositorySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySync.swift; sourceTree = "<group>"; };
+		B80000000000000000000001 /* AppUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdate.swift; sourceTree = "<group>"; };
+		B80000000000000000000002 /* AppUpdateInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateInstaller.swift; sourceTree = "<group>"; };
+		B80000000000000000000003 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -122,6 +128,7 @@
 		C10000000000000000000002 /* RepoMan */ = {
 			isa = PBXGroup;
 			children = (
+				B80000000000000000000003 /* AppUpdateController.swift */,
 				B70000000000000000000001 /* RepositorySyncView.swift */,
 				B40000000000000000000002 /* ConversationMarkdownView.swift */,
 				B10000000000000000000081 /* RepairDiffView.swift */,
@@ -143,6 +150,8 @@
 		C10000000000000000000003 /* RepoManCore */ = {
 			isa = PBXGroup;
 			children = (
+				B80000000000000000000002 /* AppUpdateInstaller.swift */,
+				B80000000000000000000001 /* AppUpdate.swift */,
 				B70000000000000000000002 /* RepositorySync.swift */,
 				B40000000000000000000001 /* ConversationMarkdown.swift */,
 				B10000000000000000000090 /* RepositoryCheckPolicy.swift */,
@@ -269,6 +278,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A80000000000000000000003 /* AppUpdateController.swift in Sources */,
+				A80000000000000000000002 /* AppUpdateInstaller.swift in Sources */,
+				A80000000000000000000001 /* AppUpdate.swift in Sources */,
 				A70000000000000000000002 /* RepositorySync.swift in Sources */,
 				A70000000000000000000001 /* RepositorySyncView.swift in Sources */,
 				A40000000000000000000002 /* ConversationMarkdownView.swift in Sources */,

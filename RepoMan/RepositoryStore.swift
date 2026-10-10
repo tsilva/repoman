@@ -86,6 +86,21 @@ final class RepositoryStore: ObservableObject {
     private var syncOperationIDs: [String: UUID] = [:]
     private var syncCommonDirectories: [String: String] = [:]
     var isSyncing: Bool { !syncOperationIDs.isEmpty }
+    var isQuittingForUpdate = false
+    var updateUnavailableReason: String? {
+        if isSyncing { return "Wait for Git sync to finish before updating." }
+        if !busyCommonDirectories.isEmpty || tasks.contains(where: { [.queued, .running, .checking].contains($0.state) }) {
+            return "Finish or stop active repairs before updating."
+        }
+        if isScanning || isFetching || !loadingRepositoryIDs.isEmpty { return "Wait for repository checks to finish before updating." }
+        return nil
+    }
+
+    func prepareForAppUpdate() throws {
+        if let reason = updateUnavailableReason { throw AppUpdateError.message(reason) }
+        guard persistIssueThreads() else { throw AppUpdateError.message(taskError ?? "Could not save conversations before updating.") }
+        isQuittingForUpdate = true
+    }
     let isDemo = ProcessInfo.processInfo.arguments.contains("--demo")
 
     var selectedRepository: RepositorySnapshot? {
@@ -232,7 +247,7 @@ final class RepositoryStore: ObservableObject {
 
     @discardableResult
     func runRepair(findings: [RepositoryFinding], repository: RepositorySnapshot, prompt: String, recipeID: String?, sessionID: UUID? = nil) -> UUID? {
-        guard !isDemo else { return nil }
+        guard !isDemo, !isQuittingForUpdate else { return nil }
         do {
             guard let taskQueue else { throw RepairError.blocked(taskError ?? "The repair queue is unavailable.") }
             let id: UUID
@@ -268,7 +283,7 @@ final class RepositoryStore: ObservableObject {
             let queue = try RepairTaskQueue(storage: RepairTaskStorage(url: root.appendingPathComponent("repair-tasks.json")))
             taskQueue = queue
             tasks = queue.tasks
-            queue.canRun = { [weak self] in self?.isScanning == false && self?.isFetching == false && self?.isSyncing == false }
+            queue.canRun = { [weak self] in self?.isScanning == false && self?.isFetching == false && self?.isSyncing == false && self?.isQuittingForUpdate == false }
             queue.onChange = { [weak self, weak queue] in
                 guard let self, let queue else { return }
                 self.tasks = queue.tasks
@@ -323,7 +338,7 @@ final class RepositoryStore: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
-                guard let self, let folder = self.folder, !self.isScanning, !self.isFetching, !self.isSyncing else { continue }
+                guard let self, let folder = self.folder, !self.isScanning, !self.isFetching, !self.isSyncing, !self.isQuittingForUpdate else { continue }
                 await self.scanFolder(folder, fetchRemotes: true, clearFirst: false, dueOnly: true)
             }
         }
@@ -417,12 +432,12 @@ final class RepositoryStore: ObservableObject {
     }
 
     func refreshAll() {
-        guard let folder, !isDemo, !isScanning, !isFetching, !isSyncing else { return }
+        guard let folder, !isDemo, !isScanning, !isFetching, !isSyncing, !isQuittingForUpdate else { return }
         Task { await scanFolder(folder, fetchRemotes: true, clearFirst: false, forceRefresh: true) }
     }
 
     func refreshSelected() {
-        guard let selectedRepository, !isDemo, !isFetching, !isScanning, !isSyncing else { return }
+        guard let selectedRepository, !isDemo, !isFetching, !isScanning, !isSyncing, !isQuittingForUpdate else { return }
         let currentGeneration = generation
         isFetching = true
         let busy = busyCommonDirectories
@@ -457,6 +472,7 @@ final class RepositoryStore: ObservableObject {
     }
 
     func synchronize(_ review: RepositorySyncReview, selectedPaths: Set<String>, message: String) {
+        guard !isQuittingForUpdate else { return }
         let repository = review.snapshot
         // A duplicate request must not replace the active operation's progress.
         guard syncOperationIDs[repository.id] == nil else { return }

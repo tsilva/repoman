@@ -15,6 +15,9 @@ struct RepoManApp: App {
                 .preferredColorScheme(.dark)
                 .onAppear {
                     appDelegate.persistIssueThreads = { store.persistIssueThreads() }
+                    AppUpdateController.shared.prepareToQuit = { try store.prepareForAppUpdate() }
+                    AppUpdateController.shared.resumeAfterCancelledQuit = { store.isQuittingForUpdate = false }
+                    AppUpdateController.shared.start()
                 }
         }
         .defaultSize(width: 1_586, height: 990)
@@ -23,6 +26,12 @@ struct RepoManApp: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About RepoMan") { openWindow(id: "about") }
+            }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    openWindow(id: "about")
+                    Task { await AppUpdateController.shared.check(manually: true) }
+                }
             }
             CommandMenu("Repositories") {
                 Button("Choose Folder…") { store.chooseFolder() }
@@ -35,6 +44,7 @@ struct RepoManApp: App {
 
         Window("About RepoMan", id: "about") {
             AboutView()
+                .environmentObject(store)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -63,6 +73,7 @@ private final class RepoManAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppUpdateController.acknowledgeRelaunch()
         #if DEBUG
         NSApplication.shared.dockTile.badgeLabel = "DEV"
         #endif

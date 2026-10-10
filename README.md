@@ -16,7 +16,13 @@ RepoMan is a macOS app for developers managing several local Git repositories. S
 
 ## Install
 
-Requires **macOS 27 or later**, **Xcode 27**, and Git from the Xcode command line tools.
+Download the Apple Silicon DMG from [GitHub Releases](https://github.com/tsilva/repoman/releases/latest), open it, and drag **RepoMan** to **Applications**. Requires **macOS 27 or later** and Git from the Xcode command line tools. The app is signed ad hoc and is not notarized; macOS may require approval on first launch.
+
+RepoMan checks for a newer stable GitHub release at startup and every six hours. When a compatible DMG and checksum are available, a blue download button appears at the bottom of the sidebar (or in the toolbar when the sidebar is hidden). Click it to download, verify, install, and restart automatically. **RepoMan → Check for Updates…**, **About RepoMan**, and **Settings → General** also provide update controls. Checks use the public GitHub API and need no GitHub login.
+
+The updater verifies the release’s SHA-256 checksum, GitHub asset digest when provided, app identity, version, macOS requirement, and code signature before quitting. Updates are disabled while repairs, repository checks, or Git syncs are running. It saves conversations and replaces the app in its current location. A backup is kept until the replacement launches; installation or launch failures restore the previous version. Install in a writable Applications folder (such as `~/Applications`); apps running from the DMG or macOS App Translocation must be moved first. Development builds and demo mode cannot install updates. Ad-hoc signatures provide integrity checks; update authenticity relies on HTTPS and the repository’s GitHub release assets.
+
+To build from source, install **Xcode 27**:
 
 ```bash
 git clone https://github.com/tsilva/repoman.git
@@ -73,6 +79,12 @@ xcodebuild -project RepoMan.xcodeproj -scheme RepoMan \
 
 # Show illustrative data for design review
 open DerivedData/Build/Products/Debug/RepoMan.app --args --demo
+
+# Verify update replacement and relaunch using disposable demo app copies
+swiftc -parse-as-library RepoManCore/AppUpdate.swift \
+  RepoManCore/AppUpdateInstaller.swift Tools/VerifyAppUpdate.swift \
+  -o .build/verify-app-update
+.build/verify-app-update DerivedData/Build/Products/Debug/RepoMan.app
 
 # Test and package an Apple Silicon DMG with a SHA-256 checksum
 bash .codex/skills/build-release/scripts/build-release.sh
