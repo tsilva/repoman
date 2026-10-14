@@ -153,27 +153,46 @@ struct AppUpdateButton: View {
 struct AppUpdateStatusView: View {
     @ObservedObject private var updater = AppUpdateController.shared
     @EnvironmentObject private var store: RepositoryStore
+    let compact: Bool
+
+    init(compact: Bool = false) { self.compact = compact }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("RepoMan \(updater.version)").font(.system(size: 13, weight: .medium))
-                    Text(updater.phase ?? updater.status).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+        VStack(alignment: compact ? .center : .leading, spacing: compact ? 8 : 10) {
+            if compact {
+                HStack { actions }
+                Text(updater.phase ?? updater.status)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("RepoMan \(updater.version)").font(.system(size: 13, weight: .medium))
+                        Text(updater.phase ?? updater.status).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                    }
+                    Spacer()
+                    actions
                 }
-                Spacer()
-                if updater.available != nil {
-                    Button("Update & Restart") { updater.install() }
-                        .disabled(updater.isInstalling || store.updateUnavailableReason != nil || updater.installationUnavailableReason != nil)
-                }
-                Button(updater.isChecking ? "Checking…" : "Check for Updates") {
-                    Task { await updater.check(manually: true) }
-                }
-                .disabled(updater.isChecking || updater.isInstalling)
             }
             if updater.available != nil, let reason = store.updateUnavailableReason ?? updater.installationUnavailableReason {
                 Text(reason).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                    .multilineTextAlignment(compact ? .center : .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        if updater.available != nil {
+            Button("Update & Restart") { updater.install() }
+                .disabled(updater.isInstalling || store.updateUnavailableReason != nil || updater.installationUnavailableReason != nil)
+        }
+        Button(updater.isChecking ? "Checking…" : "Check for Updates") {
+            Task { await updater.check(manually: true) }
+        }
+        .disabled(updater.isChecking || updater.isInstalling)
     }
 }
