@@ -31,6 +31,9 @@ struct VerifyWindowResizing: App {
 @MainActor
 final class ResizeVerifier: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let icon = NSImage(contentsOfFile: "image-assets/icon/icon-1024.png") {
+            NSApplication.shared.applicationIconImage = icon
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.verify() }
     }
 
@@ -136,6 +139,17 @@ final class ResizeVerifier: NSObject, NSApplicationDelegate {
         let stable = missing == 0 && items.count == 1 && !origins.isEmpty
             && (origins.max()! - origins.min()!) < 1
         print(stable ? "PASS: toolbar remains attached and aligned through repeated double-click resizing" : "FAIL: toolbar jumps or is recreated during double-click resizing")
+        if stable, let screenshotPath = ProcessInfo.processInfo.environment["REPOMAN_SCREENSHOT_PATH"], !screenshotPath.isEmpty {
+            guard let frame = window.contentView?.superview,
+                  let bitmap = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else {
+                fail("Could not capture the native window")
+            }
+            frame.displayIfNeeded()
+            frame.cacheDisplay(in: frame.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { fail("Could not encode screenshot") }
+            do { try png.write(to: URL(fileURLWithPath: screenshotPath)) }
+            catch { fail("Could not save screenshot: \(error.localizedDescription)") }
+        }
         exit(stable ? 0 : 1)
     }
 }

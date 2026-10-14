@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    private static let brandIcon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+        .flatMap { NSImage(contentsOf: $0) }
     @ObservedObject private var updater = AppUpdateController.shared
     @EnvironmentObject private var store: RepositoryStore
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -78,6 +80,23 @@ struct ContentView: View {
     private func topBar(sidebarWidth: CGFloat) -> some View {
         HStack(spacing: 0) {
             HStack(spacing: 8) {
+                Image(nsImage: Self.brandIcon ?? NSApplication.shared.applicationIconImage)
+                    .resizable().interpolation(.high)
+                    .frame(width: 24, height: 24).accessibilityHidden(true)
+                Text("RepoMan")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.primary)
+                    .fixedSize()
+                if sidebarVisible {
+                    Spacer(minLength: 12)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("repoman-titlebar-brand")
+            .frame(width: sidebarVisible ? max(0, sidebarWidth - toolbarLeadingInset) : 120)
+            .padding(.trailing, sidebarVisible ? 9 : 12)
+
+            HStack(spacing: 12) {
                 ToolbarActionButton(
                     symbol: "sidebar.left",
                     title: sidebarVisible ? "Hide sidebar" : "Show sidebar"
@@ -85,14 +104,6 @@ struct ContentView: View {
                     sidebarVisible.toggle()
                 }
                 .accessibilityValue(sidebarVisible ? "Visible" : "Hidden")
-                if sidebarVisible {
-                    Spacer(minLength: 12)
-                }
-            }
-            .frame(width: sidebarVisible ? max(0, sidebarWidth - toolbarLeadingInset) : 34)
-            .padding(.trailing, sidebarVisible ? 9 : 12)
-
-            HStack(spacing: 12) {
                 if let repository = store.selectedRepository {
                     Text(repository.name)
                         .font(.system(size: 13, weight: .semibold))
@@ -871,7 +882,8 @@ private struct NativeRepositoryList: NSViewRepresentable {
                               isSelected: isSelected) { [weak self] in
                     self?.parent.onSelect(data.repository)
                 }
-                .padding(.horizontal, 14)
+                .padding(.leading, 14)
+                .padding(.trailing, 6)
                 .font(.system(size: 12))
                 .preferredColorScheme(.dark)
             )

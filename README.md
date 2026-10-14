@@ -34,6 +34,8 @@ In Xcode, select the **RepoMan** scheme and run it on your Mac.
 
 ## Use
 
+The RepoMan logo and wordmark sit in the top bar beside the window controls, above the left pane. The sidebar toggle and selected repository controls sit above the detail pane; search stays at the top of the sidebar.
+
 Click **Choose Folder…** and select the parent folder containing your repositories. Search, filter, or sort to find repositories needing attention; filter and sort controls sit beside the search field. Select a repository to see its **Issues** tree. Repeated issue types expand into individual file or subject instances. Select an instance to inspect its evidence, or use the aligned checkboxes to select several instances of the same type in one repository. Group arrows expand or collapse their children, with faint separators between issues. The group review offers **Select available instances to repair** for a shared repair. Click a group title to review its instances and conversations, then use **Confirm & archive all completed** to archive finished sessions together. The folder and terminal buttons in the toolbar open the selected repository in Finder or Terminal.
 
 Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. Click the **↑↓ Sync** icon at the top right of **Issues** to pull and push directly when there are no local file changes. A spinner shows progress, the tooltip reports success, and failures show an alert. When files have changed, Sync opens a popup to review files, view the diff, and enter a description. **Commit & Sync** commits selected files, merges incoming commits, and pushes to the current branch's configured upstream. Unselected staged changes are preserved; incoming commits require all local changes to be committed. Sync reports progress and errors directly, and never force-pushes, rebases, or automatically stashes files. A failed push leaves local commits saved. Finish merge conflicts or configure a missing upstream in your editor or Terminal, then reopen Sync. After success, the popup shows the current branch status, committed-file count, and message subject. Click **Done** to close it, or **Review remaining changes** to start a fresh review of files left locally. Clicking outside dismisses the popup.
@@ -79,6 +81,9 @@ xcodebuild -project RepoMan.xcodeproj -scheme RepoMan \
 
 # Show illustrative data for design review
 open DerivedData/Build/Products/Debug/RepoMan.app --args --demo
+
+# Check native toolbar alignment while resizing and capture the complete window
+bash Tools/verify-window-resizing.sh --screenshot "$PWD/.build/native-window.png"
 
 # Verify update replacement and relaunch using disposable demo app copies
 swiftc -parse-as-library RepoManCore/AppUpdate.swift \

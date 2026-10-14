@@ -14,4 +14,15 @@ for source in RepoManCore/*.swift RepoMan/*.swift; do
 done
 cp Tools/VerifyWindowResizing.swift "$build_dir/sources/VerifyWindowResizing.swift"
 swiftc -parse-as-library "$build_dir"/sources/*.swift -o "$build_dir/verify"
-"$build_dir/verify" --demo
+# Keep the output path out of argv: AppKit treats positional file paths as
+# launch documents, which can suppress the initial SwiftUI window.
+screenshot_path=""
+if [[ "${1:-}" == "--screenshot" ]]; then
+    if [[ $# -lt 2 ]]; then
+        echo "--screenshot requires an output path" >&2
+        exit 1
+    fi
+    screenshot_path="$2"
+    shift 2
+fi
+REPOMAN_SCREENSHOT_PATH="$screenshot_path" "$build_dir/verify" --demo "$@"
