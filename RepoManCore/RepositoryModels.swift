@@ -24,6 +24,10 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
     public var fetchError: String?
 
     public var changedFileCount: Int { changes.count }
+    public var hasFreshRemoteComparison: Bool {
+        guard let fetchedAt, fetchError == nil else { return false }
+        return (0..<300).contains(Date().timeIntervalSince(fetchedAt))
+    }
 
     public init(
         url: URL,

@@ -171,7 +171,7 @@ public enum GitRepositoryScanner {
             guard remaining > 0 else { throw GitError.failed("Remote refresh exceeded its 45-second limit.") }
             // Explicit destinations keep custom/mirror fetch settings from updating local branches or tags.
             _ = try GitRunner.run(
-                ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15",
+                ["-c", "core.hooksPath=/dev/null", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=15",
                  "fetch", "--quiet", "--prune", "--no-prune-tags", "--no-tags", "--no-recurse-submodules", "--refmap=",
                  "--", remote, "+refs/heads/*:refs/remotes/\(remote)/*"],
                 at: url, timeout: remaining

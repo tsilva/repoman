@@ -52,7 +52,15 @@ public struct RepositoryCheckReport: Codable, Sendable {
         repository = report.snapshot.url.path
         self.head = head
         observedAt = report.snapshot.checkedAt
-        remoteRefs = "Local remote-tracking refs only; no fetch was performed and freshness is unknown."
+        if report.snapshot.fetchError != nil {
+            remoteRefs = "Git remote refresh failed; comparisons use local remote-tracking refs and remain provisional."
+        } else if report.snapshot.remoteURL == nil && report.snapshot.upstream == nil {
+            remoteRefs = "No configured Git remotes; no fetch required."
+        } else if report.snapshot.hasFreshRemoteComparison {
+            remoteRefs = "Remote-tracking refs were successfully refreshed within the last five minutes."
+        } else {
+            remoteRefs = "Local remote-tracking refs only; freshness is unknown. Use --fetch to refresh them for this run."
+        }
         checks = report.checkOrder.map { id in
             let result = report.results[id]
             let reason: String?
@@ -85,7 +93,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
 }
 
 public enum RepositoryChecker {
-    public static func run(at url: URL, checkIDs: Set<String> = [], remote: Bool = false,
+    public static func run(at url: URL, checkIDs: Set<String> = [], remote: Bool = false, fetch: Bool = false,
                            checkerVersion: String = "development") async throws -> RepositoryCheckReport {
         let standard = RepositoryIssueCatalog.standardChecks
         let unknown = checkIDs.subtracting(standard.map(\.id))
@@ -103,7 +111,19 @@ public enum RepositoryChecker {
             throw InspectionError.blocked("--repo must name a Git working-tree root.")
         }
         let head = try? GitRunner.text(["rev-parse", "--verify", "HEAD"], at: root)
-        let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        var fetchedAt: Date?, fetchError: String?
+        if fetch {
+            do {
+                try GitRepositoryScanner.fetch(root)
+                fetchedAt = Date()
+            } catch {
+                // Provider errors can contain authenticated URLs. Keep local checks usable.
+                fetchError = "Git remote refresh failed."
+            }
+        }
+        var snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        snapshot.fetchedAt = fetchedAt
+        snapshot.fetchError = fetchError
         let report = await RepositoryIssueCatalog(checks: selected).inspect(snapshot, forceRefresh: true)
         return RepositoryCheckReport(report, head: head, checkerVersion: checkerVersion, skipped: skipped)
     }

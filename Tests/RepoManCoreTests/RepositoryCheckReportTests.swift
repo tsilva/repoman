@@ -87,4 +87,84 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertTrue(task.contains("--remote --format json"))
         XCTAssertTrue(task.contains("does not authorize"))
     }
+
+    func testUnfetchedComparisonsRetainLocalCountsWithoutClaimingRemoteHealth() async throws {
+        _ = try GitRunner.run(["remote", "add", "origin", root.appendingPathComponent("unreachable-remote").path], at: root)
+        _ = try GitRunner.run(["update-ref", "refs/remotes/origin/main", "HEAD"], at: root)
+        _ = try GitRunner.run(["config", "branch.main.remote", "origin"], at: root)
+        _ = try GitRunner.run(["config", "branch.main.merge", "refs/heads/main"], at: root)
+        let noDifference = try await RepositoryChecker.run(at: root, checkIDs: ["git.push", "git.pull", "git.diverged"])
+        XCTAssertEqual(noDifference.exitCode, 1)
+        XCTAssertTrue(noDifference.checks.allSatisfy { $0.status == "incomplete" })
+        _ = try GitRunner.run(["commit", "--allow-empty", "-m", "Local work"], at: root)
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ["git.push"])
+        let finding = try XCTUnwrap(report.checks.first?.findings.first)
+        XCTAssertTrue(finding.title.contains("provisional"))
+        XCTAssertEqual(finding.severity, .information)
+        XCTAssertTrue(finding.evidence.contains("1 commits"))
+        XCTAssertTrue(finding.evidence.contains("local remote-tracking refs"))
+        var snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        snapshot.fetchedAt = Date()
+        let catalog = RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter { $0.id == "git.push" })
+        let fresh = await catalog.inspect(snapshot)
+        XCTAssertEqual(fresh.status(for: "git.push"), .findings)
+        XCTAssertEqual(fresh.findings().first?.severity, .attention)
+        snapshot.fetchedAt = Date().addingTimeInterval(-301)
+        XCTAssertFalse(snapshot.hasFreshRemoteComparison)
+        let expired = await catalog.inspect(snapshot)
+        XCTAssertEqual(expired.status(for: "git.push"), .incomplete)
+        snapshot.fetchedAt = Date(); snapshot.fetchError = "Fetch failed"
+        XCTAssertFalse(snapshot.hasFreshRemoteComparison)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".git/FETCH_HEAD").path))
+    }
+
+    func testSiblingTargetsSupportGitFilesWithoutOpeningContentsOrFollowingEscapes() throws {
+        let parent = root.deletingLastPathComponent()
+        let sibling = parent.appendingPathComponent("sibling-" + UUID().uuidString)
+        let metadata = parent.appendingPathComponent("metadata-" + UUID().uuidString)
+        let outside = parent.appendingPathComponent("private-" + UUID().uuidString)
+        defer {
+            for url in [sibling, metadata, outside] { try? FileManager.default.removeItem(at: url) }
+        }
+        _ = try GitRunner.run(["init", "--separate-git-dir", metadata.path, sibling.path], at: root)
+        try "Private fixture contents".write(to: outside, atomically: true, encoding: .utf8)
+        try "Sibling fixture".write(to: sibling.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: sibling.appendingPathComponent("escape.md"), withDestinationURL: outside)
+        let context = RepositoryInspectionContext(snapshot: try GitRepositoryScanner.scan(root, includeDetails: false))
+        let prefix = "../" + sibling.lastPathComponent
+        XCTAssertTrue(try context.localTargetExists(prefix + "/README.md"))
+        XCTAssertTrue(try context.localTargetExists(prefix))
+        XCTAssertFalse(try context.localTargetExists(prefix + "/missing.md"))
+        XCTAssertThrowsError(try context.readText(prefix + "/README.md"))
+        XCTAssertThrowsError(try context.localTargetExists(prefix + "/escape.md")) { error in
+            XCTAssertFalse(error.localizedDescription.contains(outside.path))
+            XCTAssertFalse(error.localizedDescription.contains("Private fixture contents"))
+        }
+        XCTAssertThrowsError(try context.localTargetExists("../../outside.md"))
+        XCTAssertThrowsError(try context.localTargetExists("../unavailable-" + UUID().uuidString + "/README.md"))
+        let alias = root.appendingPathComponent("sibling-link")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: sibling)
+        XCTAssertThrowsError(try context.localTargetExists("sibling-link/README.md"))
+    }
+
+    func testRemoteReportReflectsRefreshAndFailureWithoutExposingErrors() throws {
+        var snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        func report(_ snapshot: RepositorySnapshot) -> RepositoryCheckReport {
+            RepositoryCheckReport(RepositoryInspectionReport(snapshot: snapshot, results: [:], checkOrder: []),
+                                  head: nil, checkerVersion: "fixture")
+        }
+        XCTAssertTrue(report(snapshot).remoteRefs.contains("No configured Git remotes"))
+        _ = try GitRunner.run(["remote", "add", "origin", root.appendingPathComponent("remote").path], at: root)
+        snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        XCTAssertTrue(report(snapshot).remoteRefs.contains("--fetch"))
+        snapshot.fetchedAt = Date()
+        XCTAssertTrue(report(snapshot).remoteRefs.contains("successfully refreshed"))
+        snapshot.fetchError = "private-provider-error"
+        XCTAssertTrue(report(snapshot).remoteRefs.contains("failed"))
+        XCTAssertFalse(report(snapshot).remoteRefs.contains("private-provider-error"))
+        let result = RepositoryCheck.result([], for: "git.push", snapshot: snapshot)
+        guard case .partial(_, let reason) = result else { return XCTFail("A failed fetch cannot establish remote health") }
+        XCTAssertTrue(reason.contains("failed"))
+        XCTAssertFalse(reason.contains("private-provider-error"))
+    }
 }

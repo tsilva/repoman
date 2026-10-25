@@ -57,6 +57,44 @@ enum CheckSupport {
             return context.applyingExceptions(try await inspect(context, policy), policy: policy)
         })
     }
+    /// A failure on one path must not discard evidence from other readable files.
+    static func fileCheck(_ id: String, _ title: String, _ category: IssueCategory, _ symbol: String,
+                          paths: @escaping @Sendable (RepositoryInspectionContext) throws -> [String] = { try $0.trackedPaths() },
+                          inspect: @escaping @Sendable (RepositoryInspectionContext, RepositoryCheckPolicy, String) throws -> [RepositoryFinding]) -> RepositoryCheck {
+        fileCheck(id, title, category, symbol, paths: paths, evaluate: { context, policy, path in
+            .findings(try inspect(context, policy, path))
+        })
+    }
+    /// Some documents can contain both known broken links and targets outside coverage.
+    static func fileCheck(_ id: String, _ title: String, _ category: IssueCategory, _ symbol: String,
+                          paths: @escaping @Sendable (RepositoryInspectionContext) throws -> [String],
+                          evaluate: @escaping @Sendable (RepositoryInspectionContext, RepositoryCheckPolicy, String) throws -> RepositoryCheckResult) -> RepositoryCheck {
+        RepositoryCheck(id: id, title: title, category: category, symbol: symbol, evaluate: { context in
+            let policy = try RepositoryCheckPolicy.load(context)
+            let paths = try paths(context)
+            var findings: [RepositoryFinding] = [], reasons: [String] = [], failedPaths = 0
+            for path in paths {
+                do {
+                    let result = try evaluate(context, policy, path)
+                    findings += result.detectedFindings
+                    switch result {
+                    case .findings: break
+                    case .partial(_, let reason), .unavailable(let reason):
+                        failedPaths += 1
+                        if reasons.count < 5 { reasons.append(reason) }
+                    }
+                }
+                catch {
+                    failedPaths += 1
+                    if reasons.count < 5 { reasons.append(error.localizedDescription) }
+                }
+            }
+            findings = context.applyingExceptions(findings, policy: policy)
+            guard failedPaths > 0 else { return .findings(findings) }
+            let remainder = failedPaths > reasons.count ? "\n\(failedPaths - reasons.count) additional paths could not be inspected." : ""
+            return .partial(findings, reasons.joined(separator: "\n") + remainder)
+        })
+    }
     static func finding(_ context: RepositoryInspectionContext, _ id: String, _ subject: String, _ title: String,
                         _ evidence: String, _ category: IssueCategory = .setup, _ symbol: String = "checkmark.shield",
                         severity: IssueSeverity = .attention) -> RepositoryFinding {

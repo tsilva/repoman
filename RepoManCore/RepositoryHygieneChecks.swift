@@ -48,8 +48,8 @@ enum RepositoryHygieneChecks {
                 if branch.isEmpty { findings.append(CheckSupport.finding(context, "git.unfinishedOperation", "HEAD", "Detached HEAD", "HEAD is detached. Inspect commits and choose how to preserve them before changing branches.", .git, "arrow.triangle.branch", severity: .information)) }
                 return findings
             }),
-            CheckSupport.check("docs.brokenLinks", "Broken local documentation links", .documentation, "link", inspect: { context, _ in
-                try documentationFindings(context)
+            CheckSupport.fileCheck("docs.brokenLinks", "Broken local documentation links", .documentation, "link", paths: { try documentationPaths($0) }, evaluate: { context, _, path in
+                try documentationFindings(context, path: path)
             }),
             CheckSupport.check("notebooks.hygiene", "Notebook hygiene", .documentation, "book.closed", inspect: { context, policy in
                 guard policy.notebooks.enabled else { return [] }
@@ -78,37 +78,50 @@ enum RepositoryHygieneChecks {
             })
         ]
     }
-    private static func documentationFindings(_ context: RepositoryInspectionContext) throws -> [RepositoryFinding] {
+    private static func documentationPaths(_ context: RepositoryInspectionContext) throws -> [String] {
         let root = try CheckSupport.rootFiles(context)
         let paths = Set(root.filter { RepositoryIssueCatalog.isReadme($0) || $0 == "AGENTS.md" } + (try context.trackedPaths(matching: [":(glob)**/SKILL.md", ":(glob)docs/**/*.md"])).filter {
             $0.hasSuffix("SKILL.md") || $0 == "docs/README.md" || ($0.hasPrefix("docs/") && $0.hasSuffix(".md"))
         }).sorted()
         guard paths.count <= 100 else { throw InspectionError.blocked("More than 100 documentation files need inspection.") }
+        return paths
+    }
+    private static func documentationFindings(_ context: RepositoryInspectionContext, path: String) throws -> RepositoryCheckResult {
         var findings: [RepositoryFinding] = []
-        for path in paths {
-            let text = markdownProse(try context.readText(path))
-            let links = text.replacingOccurrences(of: #"`[^`\n]*`"#, with: "", options: .regularExpression)
-                .replacingOccurrences(of: #"(?s)<!--.*?-->"#, with: "", options: .regularExpression)
-            var targets = CheckSupport.captures(links, #"\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)"#).map { $0[1] }
-            targets += CheckSupport.captures(links, #"(?m)^\s*\[[^\]]+\]:\s*(<[^>]+>|\S+)"#).map { $0[1] }
-            targets += CheckSupport.captures(links, #"(?i)(?:src|href)\s*=\s*["']([^"']+)["']"#).map { $0[1] }
-            if (path as NSString).lastPathComponent == "AGENTS.md" {
-                targets += CheckSupport.captures(text, #"`((?:\./)?(?:\.agents|\.codex)/[^`\n]+/SKILL\.md)`"#).map { $0[1] }
-            }
-            var missing: [String] = []
-            for raw in Set(targets).sorted() {
-                let target = raw.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
-                guard !target.isEmpty, !target.hasPrefix("#"), !target.hasPrefix("/"), !target.hasPrefix("//"),
-                      !CheckSupport.matches(target, #"^[a-zA-Z][a-zA-Z0-9+.-]*:"#), !target.contains("${"), !target.contains("{{") else { continue }
-                let file = target.components(separatedBy: CharacterSet(charactersIn: "?#"))[0]
-                guard let decoded = file.removingPercentEncoding, !decoded.isEmpty else { throw InspectionError.blocked("Invalid local link encoding in " + path) }
-                let directory = (path as NSString).deletingLastPathComponent
-                let relative = directory.isEmpty ? decoded : directory + "/" + decoded
-                if !(try context.localTargetExists(relative)) { missing.append(target) }
-            }
-            if !missing.isEmpty { findings.append(CheckSupport.finding(context, "docs.brokenLinks", path, "Broken local documentation links", "\(path) references missing local targets: \(missing.joined(separator: ", ")). Fenced code samples and external URLs are skipped.", .documentation, "link")) }
+        let text = markdownProse(try context.readText(path))
+        let links = text.replacingOccurrences(of: #"`[^`\n]*`"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?s)<!--.*?-->"#, with: "", options: .regularExpression)
+        var targets = CheckSupport.captures(links, #"\]\(\s*(<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)"#).map { $0[1] }
+        targets += CheckSupport.captures(links, #"(?m)^\s*\[[^\]]+\]:\s*(<[^>]+>|\S+)"#).map { $0[1] }
+        targets += CheckSupport.captures(links, #"(?i)(?:src|href)\s*=\s*["']([^"']+)["']"#).map { $0[1] }
+        if (path as NSString).lastPathComponent == "AGENTS.md" {
+            targets += CheckSupport.captures(text, #"`((?:\./)?(?:\.agents|\.codex)/[^`\n]+/SKILL\.md)`"#)
+                .map { $0[1] }
         }
-        return findings
+        var missing: [String] = [], reasons: [String] = []
+        var failedTargets = 0
+        for raw in Set(targets).sorted() {
+            let target = raw.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+            guard !target.isEmpty, !target.hasPrefix("#"), !target.hasPrefix("/"), !target.hasPrefix("//"),
+                  !CheckSupport.matches(target, #"^[a-zA-Z][a-zA-Z0-9+.-]*:"#), !target.contains("${"), !target.contains("{{") else { continue }
+            let file = target.components(separatedBy: CharacterSet(charactersIn: "?#"))[0]
+            guard let decoded = file.removingPercentEncoding, !decoded.isEmpty else {
+                failedTargets += 1
+                if reasons.count < 5 { reasons.append("Invalid local link encoding in " + path) }
+                continue
+            }
+            let directory = (path as NSString).deletingLastPathComponent
+            let relative = directory.isEmpty ? decoded : directory + "/" + decoded
+            do { if !(try context.localTargetExists(relative)) { missing.append(target) } }
+            catch {
+                failedTargets += 1
+                if reasons.count < 5 { reasons.append(error.localizedDescription) }
+            }
+        }
+        if !missing.isEmpty { findings.append(CheckSupport.finding(context, "docs.brokenLinks", path, "Broken local documentation links", "\(path) references missing local targets: \(missing.joined(separator: ", ")). Fenced code samples and external URLs are skipped.", .documentation, "link")) }
+        guard failedTargets > 0 else { return .findings(findings) }
+        let remainder = failedTargets > reasons.count ? "\n\(failedTargets - reasons.count) additional targets could not be inspected." : ""
+        return .partial(findings, path + ": " + reasons.joined(separator: "\n") + remainder)
     }
     private static func markdownProse(_ source: String) -> String {
         var fence: String?, result: [String] = []

@@ -71,8 +71,42 @@ public struct RepositoryInspectionContext: Sendable {
         return !(try gitRead(["ls-files", "-z", "--", ":(literal)" + normalized])).isEmpty
     }
     func localTargetExists(_ relativePath: String) throws -> Bool {
-        if !relativePath.hasPrefix("/"), snapshot.url.appendingPathComponent(relativePath).standardizedFileURL.resolvingSymlinksInPath() == snapshot.url.standardizedFileURL.resolvingSymlinksInPath() { return true }
-        return try exists(relativePath)
+        try atPath(relativePath) {
+            let root = snapshot.url.standardizedFileURL.resolvingSymlinksInPath()
+            let target = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard !relativePath.hasPrefix("/") else { throw InspectionError.blocked("Expected a relative documentation link.") }
+            if target == root { return true }
+            if target.path.hasPrefix(root.path + "/") { return try exists(relativePath) }
+
+            // Only explicit links into a direct sibling Git working tree may leave
+            // the root. Stat the target; never open sibling documentation contents.
+            let parent = root.deletingLastPathComponent()
+            guard target.path.hasPrefix(parent.path + "/") else {
+                throw InspectionError.blocked("Documentation link leaves the repository and its direct siblings.")
+            }
+            let suffix = String(target.path.dropFirst(parent.path.count + 1))
+            guard let name = suffix.split(separator: "/").first, !name.hasPrefix(".") else {
+                throw InspectionError.blocked("Expected a visible sibling Git repository.")
+            }
+            let sibling = parent.appendingPathComponent(String(name)).standardizedFileURL
+            guard sibling != root, sibling.resolvingSymlinksInPath() == sibling else {
+                throw InspectionError.blocked("Sibling repository links must not redirect through symlinks.")
+            }
+            guard FileManager.default.fileExists(atPath: sibling.appendingPathComponent(".git").path) else {
+                throw InspectionError.blocked("Sibling Git repository is unavailable; link could not be validated.")
+            }
+            let actual = String(decoding: try git.read(["rev-parse", "--show-toplevel"], at: sibling,
+                successfulExitCodes: [0]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard URL(fileURLWithPath: actual).resolvingSymlinksInPath() == sibling else {
+                throw InspectionError.blocked("Link does not identify a sibling Git working-tree root.")
+            }
+            let resolved = target.resolvingSymlinksInPath()
+            guard resolved == sibling || resolved.path.hasPrefix(sibling.path + "/") else {
+                throw InspectionError.blocked("Documentation target escapes its sibling repository through a symlink.")
+            }
+            do { _ = try resolved.resourceValues(forKeys: [.isDirectoryKey]); return true }
+            catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
+        }
     }
     public func filenames(in relativeDirectory: String) throws -> [String] {
         let directory = relativeDirectory == "." ? snapshot.url.standardizedFileURL.resolvingSymlinksInPath() : try checkedURL(relativeDirectory)
@@ -86,6 +120,19 @@ public struct RepositoryInspectionContext: Sendable {
         let url = relativePath == "." ? snapshot.url : try checkedURL(relativePath)
         do { return try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true }
         catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
+    }
+    private func atPath<T>(_ relativePath: String, _ operation: () throws -> T) throws -> T {
+        let label = relativePath.hasPrefix("/") ? "Repository path" : relativePath
+        do { return try operation() }
+        catch let error as InspectionError {
+            guard !error.localizedDescription.hasPrefix(label + ": ") else { throw error }
+            throw InspectionError.blocked(label + ": " + error.localizedDescription)
+        } catch {
+            let error = error as NSError
+            let missing = (error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)) ||
+                (error.domain == NSPOSIXErrorDomain && error.code == 2)
+            throw InspectionError.blocked(label + (missing ? ": Path is missing from the working tree." : ": Repository path could not be read."))
+        }
     }
     private func checkedURL(_ relativePath: String) throws -> URL {
         let root = snapshot.url.standardizedFileURL.resolvingSymlinksInPath()

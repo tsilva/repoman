@@ -6,10 +6,10 @@ import RepoManCore
 @main
 struct RepoManCLI {
     static let usage = """
-    Usage: repoman check --repo PATH [--check ID ...] [--remote] [--format text|json]
+    Usage: repoman check --repo PATH [--check ID ...] [--fetch] [--remote] [--format text|json]
            repoman --list-checks
 
-    Fresh repository checks using RepoManCore. No fetch, install, commit, merge or push.
+    Fresh repository checks using RepoManCore. Fetch refs only with --fetch; no install, commit, merge or push.
     Remote checks are skipped unless --remote permits read-only GitHub requests through gh.
     Exit: 0 = selected checks complete and clean, 1 = findings or incomplete checks, 2 = error.
     """
@@ -24,14 +24,15 @@ struct RepoManCLI {
                 return
             }
             guard arguments.first == "check" else { throw CLIError.argument("Expected check command.") }
-            var path: String?, format = "text", remote = false, ids: Set<String> = []
+            var path: String?, format = "text", remote = false, fetch = false, ids: Set<String> = []
             var index = 1
             var seen: Set<String> = []
             while index < arguments.count {
                 let option = arguments[index]
-                if option == "--remote" {
-                    guard seen.insert(option).inserted else { throw CLIError.argument("Duplicate --remote.") }
-                    remote = true; index += 1; continue
+                if option == "--remote" || option == "--fetch" {
+                    guard seen.insert(option).inserted else { throw CLIError.argument("Duplicate \(option).") }
+                    if option == "--remote" { remote = true } else { fetch = true }
+                    index += 1; continue
                 }
                 guard ["--repo", "--check", "--format"].contains(option), index + 1 < arguments.count,
                       !arguments[index + 1].hasPrefix("--"), !arguments[index + 1].isEmpty else {
@@ -50,7 +51,7 @@ struct RepoManCLI {
             let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.resolvingSymlinksInPath()
             let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             let version = Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
-            let report = try await RepositoryChecker.run(at: URL(fileURLWithPath: path), checkIDs: ids, remote: remote, checkerVersion: version)
+            let report = try await RepositoryChecker.run(at: URL(fileURLWithPath: path), checkIDs: ids, remote: remote, fetch: fetch, checkerVersion: version)
             if format == "json" { FileHandle.standardOutput.write(try report.json()); print("") }
             else { print(report.text) }
             exit(report.exitCode)

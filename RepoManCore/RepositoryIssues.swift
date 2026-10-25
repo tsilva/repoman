@@ -91,6 +91,19 @@ public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
 /// Register another check without adding cases to the repository or issue views.
 public struct RepositoryCheck: Identifiable, Sendable {
     public var requiresRemoteAccess: Bool { id == "ci.failing" || id.hasPrefix("github.") }
+    static func result(_ findings: [RepositoryFinding], for id: String, snapshot: RepositorySnapshot) -> RepositoryCheckResult {
+        let comparisons: Set<String> = ["git.push", "git.pull", "git.diverged", "git.unpublishedBranches", "git.upstream"]
+        guard comparisons.contains(id), snapshot.upstream != nil || snapshot.remoteURL != nil,
+              !snapshot.hasFreshRemoteComparison else { return .findings(findings) }
+        let reason = (snapshot.fetchError == nil ? "Remote freshness is unknown" : "Remote refresh failed") +
+            ": comparisons use local remote-tracking refs. Refresh remotes or rerun the CLI with --fetch before deciding whether to synchronize."
+        let provisional = findings.map { finding in
+            RepositoryFinding(repositoryID: finding.repositoryID, checkID: finding.checkID, subject: finding.subject,
+                title: finding.title + " (provisional)", evidence: finding.evidence + "\n" + reason,
+                category: finding.category, severity: .information, symbol: finding.symbol, detailsURL: finding.detailsURL)
+        }
+        return .partial(provisional, reason)
+    }
     public let id: String
     public let title: String
     public let category: IssueCategory
@@ -123,7 +136,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
         }
         self.evaluate = { context in
             if let reason = availability(context.snapshot) { throw InspectionError.blocked(reason) }
-            return .findings(detect(context.snapshot))
+            return Self.result(detect(context.snapshot), for: id, snapshot: context.snapshot)
         }
     }
 
@@ -138,7 +151,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
         detect = { _ in [] }
         availability = { _ in "This detector requires extended inspection." }
         usesContentCache = false
-        evaluate = { context in .findings(try await inspect(context)) }
+        evaluate = { context in Self.result(try await inspect(context), for: id, snapshot: context.snapshot) }
     }
 
     public init(id: String, title: String, category: IssueCategory, symbol: String,
@@ -209,7 +222,11 @@ public struct RepositoryIssueCatalog: Sendable {
             return .unknown("The original detector is no longer registered.")
         }
         if let reason = check.availability(snapshot) { return .unknown(reason) }
-        if let current = check.detect(snapshot).first(where: { $0.id == finding.id }) {
+        let observed = check.detect(snapshot)
+        if case .partial(_, let reason) = RepositoryCheck.result(observed, for: check.id, snapshot: snapshot) {
+            return .unknown(reason)
+        }
+        if let current = observed.first(where: { $0.id == finding.id }) {
             return .present(current.evidence)
         }
         return .absent("Fresh inspection confirms this finding is absent.")
