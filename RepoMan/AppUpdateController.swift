@@ -86,7 +86,7 @@ final class AppUpdateController: ObservableObject {
                 }.value
                 plan = prepared
                 guard let prepareToQuit else { throw AppUpdateError.message("RepoMan is still starting. Try again shortly.") }
-                // This rechecks running work and flushes conversations immediately before handing off.
+                // Recheck active inspections immediately before handing off.
                 try prepareToQuit()
                 phase = "Installing and restarting…"
                 let process = try AppUpdateInstaller.launch(prepared, parentPID: ProcessInfo.processInfo.processIdentifier)

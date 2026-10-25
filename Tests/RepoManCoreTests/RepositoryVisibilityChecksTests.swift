@@ -26,7 +26,6 @@ final class RepositoryVisibilityChecksTests: XCTestCase {
             let finding = try XCTUnwrap(report.findings().first)
             XCTAssertEqual(finding.subject, "owner/private-project")
             XCTAssertEqual(finding.severity, .blocked)
-            XCTAssertEqual(finding.recipeIDs, [checkID])
             XCTAssertTrue(finding.evidence.contains(visibility.rawValue.lowercased()))
         }
         let uppercase = await catalog { _ in .public }.inspect(snapshot("https://github.com/owner/PRIVATE-project.git"))
@@ -40,7 +39,7 @@ final class RepositoryVisibilityChecksTests: XCTestCase {
         let after = await fixed.inspect(snapshot())
         XCTAssertTrue(after.findings().isEmpty)
         if case .absent = fixed.verify(finding, in: after) {} else { XCTFail("Private visibility did not resolve") }
-        let failed = catalog { _ in throw RepairError.blocked("Authentication failed") }
+        let failed = catalog { _ in throw InspectionError.blocked("Authentication failed") }
         let unavailable = await failed.inspect(snapshot())
         XCTAssertNotNil(unavailable.unavailableChecks[checkID])
         if case .unknown = failed.verify(finding, in: unavailable) {} else { XCTFail("Failed read resolved visibility") }

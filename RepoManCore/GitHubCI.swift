@@ -77,19 +77,19 @@ enum GitHubCI {
 
     static func decode(_ data: Data, requiresCurrentBranch: Bool = false) throws -> [CIBranchStatus] {
         let response = try JSONDecoder().decode(Response.self, from: data)
-        if let errors = response.errors, !errors.isEmpty { throw RepairError.blocked("GitHub CI inspection failed: " + errors.map(\.message).joined(separator: "; ")) }
+        if let errors = response.errors, !errors.isEmpty { throw InspectionError.blocked("GitHub CI inspection failed: " + errors.map(\.message).joined(separator: "; ")) }
         guard let repository = response.data?.repository, let defaultBranch = repository.defaultBranchRef else {
-            throw RepairError.blocked("GitHub has no readable default branch. Check repository access and gh authentication.")
+            throw InspectionError.blocked("GitHub has no readable default branch. Check repository access and gh authentication.")
         }
         if requiresCurrentBranch, repository.currentBranch == nil {
-            throw RepairError.blocked("The tracked branch is unavailable on GitHub; CI could not be verified.")
+            throw InspectionError.blocked("The tracked branch is unavailable on GitHub; CI could not be verified.")
         }
         var branches = [defaultBranch]
         if let current = repository.currentBranch, current.name != defaultBranch.name { branches.append(current) }
         return try branches.map { branch in
-            guard let target = branch.target, !target.oid.isEmpty else { throw RepairError.blocked("GitHub did not return a branch commit.") }
+            guard let target = branch.target, !target.oid.isEmpty else { throw InspectionError.blocked("GitHub did not return a branch commit.") }
             guard target.statusCheckRollup?.contexts.pageInfo.hasNextPage != true else {
-                throw RepairError.blocked("More than 100 CI results exist on \(branch.name); inspection is incomplete.")
+                throw InspectionError.blocked("More than 100 CI results exist on \(branch.name); inspection is incomplete.")
             }
             // Reruns replace earlier results with the same provider/workflow/job identity.
             var latest: [String: Context] = [:]
@@ -110,13 +110,13 @@ enum GitHubCI {
             let checks = try latest.keys.sorted().map { key -> CICheckStatus in
                 let context = latest[key]!
                 let name = context.name ?? context.context
-                guard let name, !name.isEmpty else { throw RepairError.blocked("GitHub returned a CI result without a name.") }
+                guard let name, !name.isEmpty else { throw InspectionError.blocked("GitHub returned a CI result without a name.") }
                 let result: String
                 if context.__typename == "CheckRun" {
-                    guard let status = context.status else { throw RepairError.blocked("GitHub returned an incomplete check run.") }
+                    guard let status = context.status else { throw InspectionError.blocked("GitHub returned an incomplete check run.") }
                     result = status == "COMPLETED" ? (context.conclusion ?? "UNKNOWN") : status
                 } else if context.__typename == "StatusContext", let state = context.state { result = state }
-                else { throw RepairError.blocked("GitHub returned an unsupported CI result.") }
+                else { throw InspectionError.blocked("GitHub returned an unsupported CI result.") }
                 let url = (context.detailsUrl ?? context.targetUrl).flatMap(URL.init(string:))
                 return CICheckStatus(name: name, result: result, url: url)
             }
@@ -155,7 +155,7 @@ enum GitHubCLI {
         let directories = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
         let paths = directories.map { $0 + "/gh" } + ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"]
         guard let path = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw RepairError.blocked("GitHub CLI was not found. Install gh and run gh auth login to inspect CI.")
+            throw InspectionError.blocked("GitHub CLI was not found. Install gh and run gh auth login to inspect CI.")
         }
         return URL(fileURLWithPath: path)
     }
@@ -193,12 +193,12 @@ enum GitHubCLI {
         }
         let data = drain(output.fileHandleForReading)
         process.waitUntilExit(); group.wait(); timer.cancel()
-        if state.timedOut { throw RepairError.blocked("GitHub CI inspection timed out. Try refreshing again.") }
+        if state.timedOut { throw InspectionError.blocked("GitHub CI inspection timed out. Try refreshing again.") }
         guard process.terminationStatus == 0 else {
             let message = String(decoding: state.error.prefix(2048), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw RepairError.blocked("GitHub CI inspection failed. Check gh authentication, repository access, and API limits. \(message)")
+            throw InspectionError.blocked("GitHub CI inspection failed. Check gh authentication, repository access, and API limits. \(message)")
         }
-        guard data.count < 2_097_152 else { throw RepairError.blocked("GitHub CI response exceeded the inspection limit.") }
+        guard data.count < 2_097_152 else { throw InspectionError.blocked("GitHub CI response exceeded the inspection limit.") }
         return data
     }
     private static func drain(_ handle: FileHandle) -> Data {

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA0000000000000000000001 /* RepositoryCheckReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* RepositoryCheckReport.swift */; };
 		A20000000000000000000002 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* AboutView.swift */; };
 		A10000000000000000000001 /* RepoManApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* RepoManApp.swift */; };
 		A10000000000000000000002 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* Theme.swift */; };
@@ -19,17 +20,12 @@
 		A60000000000000000000001 /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = B60000000000000000000001 /* AppIcon.icon */; };
 		A10000000000000000000009 /* RepositoryListOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000010 /* RepositoryListOptions.swift */; };
 		A10000000000000000000011 /* RepositoryIssues.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* RepositoryIssues.swift */; };
-		A10000000000000000000012 /* RepositoryRepairs.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* RepositoryRepairs.swift */; };
 		A10000000000000000000013 /* RepositoryIssuesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* RepositoryIssuesView.swift */; };
-		A10000000000000000000014 /* RepositoryRepairTrajectoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* RepositoryRepairTrajectoryView.swift */; };
-		A10000000000000000000015 /* RepairTaskQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* RepairTaskQueue.swift */; };
-		A10000000000000000000016 /* CodexAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* CodexAgent.swift */; };
-				A10000000000000000000102 /* CodexStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000102 /* CodexStorage.swift */; };
 		A10000000000000000000017 /* RepositoryInspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* RepositoryInspection.swift */; };
 		A10000000000000000000018 /* RepositoryCIChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* RepositoryCIChecks.swift */; };
 		A10000000000000000000019 /* GitHubCI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* GitHubCI.swift */; };
-		A10000000000000000000080 /* RepairDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000080 /* RepairDiff.swift */; };
-		A10000000000000000000081 /* RepairDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000081 /* RepairDiffView.swift */; };
+		A10000000000000000000080 /* RepositoryDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000080 /* RepositoryDiff.swift */; };
+		A10000000000000000000081 /* RepositoryDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000081 /* RepositoryDiffView.swift */; };
 		A20000000000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* SettingsView.swift */; };
 		A10000000000000000000090 /* RepositoryCheckPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000090 /* RepositoryCheckPolicy.swift */; };
 		A10000000000000000000091 /* RepositoryDependencyChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000091 /* RepositoryDependencyChecks.swift */; };
@@ -42,25 +38,13 @@
 		A10000000000000000000098 /* RepositoryRuntimeChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000098 /* RepositoryRuntimeChecks.swift */; };
 		A10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift */; };
 		A10000000000000000000100 /* RepositoryProjectReferenceChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000100 /* RepositoryProjectReferenceChecks.swift */; };
-		A10000000000000000000101 /* RepositoryHealthRecipes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000101 /* RepositoryHealthRecipes.swift */; };
-		A30000000000000000000001 /* ModelCheckSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000001 /* ModelCheckSettings.swift */; };
-		A30000000000000000000002 /* OpenRouterClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002 /* OpenRouterClient.swift */; };
-		A30000000000000000000003 /* SkillConsistency.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000003 /* SkillConsistency.swift */; };
-		A30000000000000000000004 /* RepositoryReadmeChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000004 /* RepositoryReadmeChecks.swift */; };
-		A30000000000000000000005 /* ModelCheckSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000005 /* ModelCheckSettingsView.swift */; };
-		A30000000000000000000006 /* optimize-readme.acceptance.json in Resources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000006 /* optimize-readme.acceptance.json */; };
-		A40000000000000000000001 /* ConversationMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000001 /* ConversationMarkdown.swift */; };
-		A40000000000000000000002 /* ConversationMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000002 /* ConversationMarkdownView.swift */; };
-		A50000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000001 /* RepositoryWebsiteChecks.swift */; };
-		A50000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000000000000000000002 /* WebsiteBrowserProbe.swift */; };
-		A70000000000000000000001 /* RepositorySyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* RepositorySyncView.swift */; };
-		A70000000000000000000002 /* RepositorySync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000002 /* RepositorySync.swift */; };
 		A80000000000000000000001 /* AppUpdate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000001 /* AppUpdate.swift */; };
 		A80000000000000000000002 /* AppUpdateInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000002 /* AppUpdateInstaller.swift */; };
 		A80000000000000000000003 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* AppUpdateController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		BB0000000000000000000001 /* RepositoryCheckReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryCheckReport.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* RepoManApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepoManApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -74,17 +58,12 @@
 		B60000000000000000000001 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 		B10000000000000000000010 /* RepositoryListOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryListOptions.swift; sourceTree = "<group>"; };
 		B10000000000000000000011 /* RepositoryIssues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryIssues.swift; sourceTree = "<group>"; };
-		B10000000000000000000012 /* RepositoryRepairs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryRepairs.swift; sourceTree = "<group>"; };
 		B10000000000000000000013 /* RepositoryIssuesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryIssuesView.swift; sourceTree = "<group>"; };
-		B10000000000000000000014 /* RepositoryRepairTrajectoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryRepairTrajectoryView.swift; sourceTree = "<group>"; };
-		B10000000000000000000015 /* RepairTaskQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepairTaskQueue.swift; sourceTree = "<group>"; };
-		B10000000000000000000016 /* CodexAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAgent.swift; sourceTree = "<group>"; };
-				B10000000000000000000102 /* CodexStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexStorage.swift; sourceTree = "<group>"; };
 		B10000000000000000000017 /* RepositoryInspection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryInspection.swift; sourceTree = "<group>"; };
 		B10000000000000000000018 /* RepositoryCIChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryCIChecks.swift; sourceTree = "<group>"; };
 		B10000000000000000000019 /* GitHubCI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubCI.swift; sourceTree = "<group>"; };
-		B10000000000000000000080 /* RepairDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepairDiff.swift; sourceTree = "<group>"; };
-		B10000000000000000000081 /* RepairDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepairDiffView.swift; sourceTree = "<group>"; };
+		B10000000000000000000080 /* RepositoryDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDiff.swift; sourceTree = "<group>"; };
+		B10000000000000000000081 /* RepositoryDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDiffView.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B10000000000000000000090 /* RepositoryCheckPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryCheckPolicy.swift; sourceTree = "<group>"; };
 		B10000000000000000000091 /* RepositoryDependencyChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDependencyChecks.swift; sourceTree = "<group>"; };
@@ -97,19 +76,6 @@
 		B10000000000000000000098 /* RepositoryRuntimeChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryRuntimeChecks.swift; sourceTree = "<group>"; };
 		B10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryWorkflowSecurityChecks.swift; sourceTree = "<group>"; };
 		B10000000000000000000100 /* RepositoryProjectReferenceChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryProjectReferenceChecks.swift; sourceTree = "<group>"; };
-		B10000000000000000000101 /* RepositoryHealthRecipes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryHealthRecipes.swift; sourceTree = "<group>"; };
-		B30000000000000000000001 /* ModelCheckSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModelCheckSettings.swift"; sourceTree = "<group>"; };
-		B30000000000000000000002 /* OpenRouterClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OpenRouterClient.swift"; sourceTree = "<group>"; };
-		B30000000000000000000003 /* SkillConsistency.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SkillConsistency.swift"; sourceTree = "<group>"; };
-		B30000000000000000000004 /* RepositoryReadmeChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RepositoryReadmeChecks.swift"; sourceTree = "<group>"; };
-		B30000000000000000000005 /* ModelCheckSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ModelCheckSettingsView.swift"; sourceTree = "<group>"; };
-		B30000000000000000000006 /* optimize-readme.acceptance.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "Resources/optimize-readme.acceptance.json"; sourceTree = "<group>"; };
-		B40000000000000000000001 /* ConversationMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationMarkdown.swift; sourceTree = "<group>"; };
-		B40000000000000000000002 /* ConversationMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationMarkdownView.swift; sourceTree = "<group>"; };
-		B50000000000000000000001 /* RepositoryWebsiteChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryWebsiteChecks.swift; sourceTree = "<group>"; };
-		B50000000000000000000002 /* WebsiteBrowserProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebsiteBrowserProbe.swift; sourceTree = "<group>"; };
-		B70000000000000000000001 /* RepositorySyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySyncView.swift; sourceTree = "<group>"; };
-		B70000000000000000000002 /* RepositorySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySync.swift; sourceTree = "<group>"; };
 		B80000000000000000000001 /* AppUpdate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdate.swift; sourceTree = "<group>"; };
 		B80000000000000000000002 /* AppUpdateInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateInstaller.swift; sourceTree = "<group>"; };
 		B80000000000000000000003 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
@@ -129,17 +95,13 @@
 			isa = PBXGroup;
 			children = (
 				B80000000000000000000003 /* AppUpdateController.swift */,
-				B70000000000000000000001 /* RepositorySyncView.swift */,
-				B40000000000000000000002 /* ConversationMarkdownView.swift */,
-				B10000000000000000000081 /* RepairDiffView.swift */,
+				B10000000000000000000081 /* RepositoryDiffView.swift */,
 				B10000000000000000000001 /* RepoManApp.swift */,
-				B30000000000000000000005 /* ModelCheckSettingsView.swift */,
 				B20000000000000000000002 /* AboutView.swift */,
 				B10000000000000000000002 /* Theme.swift */,
 				B10000000000000000000003 /* ContentView.swift */,
 				B10000000000000000000004 /* RepositoryStore.swift */,
 				B20000000000000000000001 /* SettingsView.swift */,
-				B10000000000000000000014 /* RepositoryRepairTrajectoryView.swift */,
 				B10000000000000000000013 /* RepositoryIssuesView.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
 				B60000000000000000000001 /* AppIcon.icon */,
@@ -152,10 +114,8 @@
 			children = (
 				B80000000000000000000002 /* AppUpdateInstaller.swift */,
 				B80000000000000000000001 /* AppUpdate.swift */,
-				B70000000000000000000002 /* RepositorySync.swift */,
-				B40000000000000000000001 /* ConversationMarkdown.swift */,
 				B10000000000000000000090 /* RepositoryCheckPolicy.swift */,
-				B10000000000000000000101 /* RepositoryHealthRecipes.swift */,
+				BB0000000000000000000001 /* RepositoryCheckReport.swift */,
 				B10000000000000000000100 /* RepositoryProjectReferenceChecks.swift */,
 				B10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift */,
 				B10000000000000000000098 /* RepositoryRuntimeChecks.swift */,
@@ -166,25 +126,14 @@
 				B10000000000000000000092 /* RepositoryWorkflowChecks.swift */,
 				B10000000000000000000093 /* RepositoryHygieneChecks.swift */,
 				B10000000000000000000094 /* RepositoryMetadataChecks.swift */,
-				B50000000000000000000002 /* WebsiteBrowserProbe.swift */,
-				B50000000000000000000001 /* RepositoryWebsiteChecks.swift */,
-				B10000000000000000000080 /* RepairDiff.swift */,
+				B10000000000000000000080 /* RepositoryDiff.swift */,
 				B10000000000000000000005 /* RepositoryModels.swift */,
-				B30000000000000000000001 /* ModelCheckSettings.swift */,
-				B30000000000000000000002 /* OpenRouterClient.swift */,
-				B30000000000000000000003 /* SkillConsistency.swift */,
-				B30000000000000000000004 /* RepositoryReadmeChecks.swift */,
-				B30000000000000000000006 /* optimize-readme.acceptance.json */,
 				B10000000000000000000010 /* RepositoryListOptions.swift */,
 				B10000000000000000000006 /* GitRunner.swift */,
 				B10000000000000000000007 /* GitRepositoryScanner.swift */,
-				B10000000000000000000012 /* RepositoryRepairs.swift */,
 				B10000000000000000000018 /* RepositoryCIChecks.swift */,
 				B10000000000000000000019 /* GitHubCI.swift */,
 				B10000000000000000000017 /* RepositoryInspection.swift */,
-				B10000000000000000000016 /* CodexAgent.swift */,
-				B10000000000000000000102 /* CodexStorage.swift */,
-				B10000000000000000000015 /* RepairTaskQueue.swift */,
 				B10000000000000000000011 /* RepositoryIssues.swift */,
 			);
 			path = RepoManCore;
@@ -208,6 +157,7 @@
 				E10000000000000000000001 /* Sources */,
 				E10000000000000000000002 /* Frameworks */,
 				E10000000000000000000003 /* Resources */,
+				EE0000000000000000000001 /* Build shared CLI */,
 			);
 			buildRules = (
 			);
@@ -267,27 +217,37 @@
 			files = (
 				A10000000000000000000008 /* Assets.xcassets in Resources */,
 				A60000000000000000000001 /* AppIcon.icon in Resources */,
-				A30000000000000000000006 /* optimize-readme.acceptance.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+        EE0000000000000000000001 /* Build shared CLI */ = {
+            isa = PBXShellScriptBuildPhase;
+            alwaysOutOfDate = 1;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ();
+            name = "Build shared CLI";
+            outputPaths = ("$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/repoman");
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/bash;
+            shellScript = "bash \"$SRCROOT/Tools/build-cli.sh\"";
+        };
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		E10000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0000000000000000000001 /* RepositoryCheckReport.swift in Sources */,
 				A80000000000000000000003 /* AppUpdateController.swift in Sources */,
 				A80000000000000000000002 /* AppUpdateInstaller.swift in Sources */,
 				A80000000000000000000001 /* AppUpdate.swift in Sources */,
-				A70000000000000000000002 /* RepositorySync.swift in Sources */,
-				A70000000000000000000001 /* RepositorySyncView.swift in Sources */,
-				A40000000000000000000002 /* ConversationMarkdownView.swift in Sources */,
-				A40000000000000000000001 /* ConversationMarkdown.swift in Sources */,
-				A10000000000000000000081 /* RepairDiffView.swift in Sources */,
+				A10000000000000000000081 /* RepositoryDiffView.swift in Sources */,
 				A10000000000000000000090 /* RepositoryCheckPolicy.swift in Sources */,
-				A10000000000000000000101 /* RepositoryHealthRecipes.swift in Sources */,
 				A10000000000000000000100 /* RepositoryProjectReferenceChecks.swift in Sources */,
 				A10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift in Sources */,
 				A10000000000000000000098 /* RepositoryRuntimeChecks.swift in Sources */,
@@ -298,15 +258,8 @@
 				A10000000000000000000092 /* RepositoryWorkflowChecks.swift in Sources */,
 				A10000000000000000000093 /* RepositoryHygieneChecks.swift in Sources */,
 				A10000000000000000000094 /* RepositoryMetadataChecks.swift in Sources */,
-				A50000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */,
-				A50000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */,
-				A10000000000000000000080 /* RepairDiff.swift in Sources */,
+				A10000000000000000000080 /* RepositoryDiff.swift in Sources */,
 				A10000000000000000000001 /* RepoManApp.swift in Sources */,
-				A30000000000000000000001 /* ModelCheckSettings.swift in Sources */,
-				A30000000000000000000002 /* OpenRouterClient.swift in Sources */,
-				A30000000000000000000003 /* SkillConsistency.swift in Sources */,
-				A30000000000000000000004 /* RepositoryReadmeChecks.swift in Sources */,
-				A30000000000000000000005 /* ModelCheckSettingsView.swift in Sources */,
 				A20000000000000000000002 /* AboutView.swift in Sources */,
 				A10000000000000000000002 /* Theme.swift in Sources */,
 				A10000000000000000000003 /* ContentView.swift in Sources */,
@@ -316,15 +269,10 @@
 				A10000000000000000000009 /* RepositoryListOptions.swift in Sources */,
 				A10000000000000000000006 /* GitRunner.swift in Sources */,
 				A10000000000000000000007 /* GitRepositoryScanner.swift in Sources */,
-				A10000000000000000000014 /* RepositoryRepairTrajectoryView.swift in Sources */,
 				A10000000000000000000013 /* RepositoryIssuesView.swift in Sources */,
-				A10000000000000000000012 /* RepositoryRepairs.swift in Sources */,
 				A10000000000000000000018 /* RepositoryCIChecks.swift in Sources */,
 				A10000000000000000000019 /* GitHubCI.swift in Sources */,
 				A10000000000000000000017 /* RepositoryInspection.swift in Sources */,
-				A10000000000000000000016 /* CodexAgent.swift in Sources */,
-				A10000000000000000000102 /* CodexStorage.swift in Sources */,
-				A10000000000000000000015 /* RepairTaskQueue.swift in Sources */,
 				A10000000000000000000011 /* RepositoryIssues.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

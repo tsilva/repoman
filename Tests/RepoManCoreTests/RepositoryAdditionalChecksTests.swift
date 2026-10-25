@@ -14,14 +14,13 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
 
-    func testAdditionalChecksHaveRecipesAndUniqueIDs() {
+    func testAdditionalChecksAreRegisteredWithUniqueIDs() {
         let additional = RepositoryDependencyChecks.checks() + RepositoryWorkflowChecks.checks() + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         XCTAssertEqual(additional.count, 13)
         XCTAssertEqual(Set(additional.map(\.id)).count, 13)
-        let catalog = RepositoryIssueCatalog(), recipes = RepairRecipeCatalog()
+        let catalog = RepositoryIssueCatalog()
         for check in additional {
             XCTAssertTrue(catalog.checks.contains { $0.id == check.id })
-            XCTAssertTrue(recipes.recipes.contains { $0.id == check.id })
         }
     }
     func testManagerMismatchIncludesCIAndPreservesSiblingWorkingDirectories() async throws {
@@ -363,7 +362,7 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         XCTAssertTrue(finding.evidence.contains("Published & safe"))
         XCTAssertFalse(finding.evidence.contains("Uncommitted feature"))
         let unavailable = RepositoryIssueCatalog(checks: RepositoryMetadataChecks.checks(load: { _ in
-            throw RepairError.blocked("Authentication failed")
+            throw InspectionError.blocked("Authentication failed")
         }))
         let unknown = await unavailable.inspect(snapshot)
         if case .unknown = unavailable.verify(finding, in: unknown) {} else { XCTFail("Auth failure resolved metadata") }
@@ -515,7 +514,7 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         XCTAssertTrue(evidence.contains("guardrails-ai!=0.10.1"))
     }
 
-    func testMetadataCacheExpiresAndRepairInspectionAlwaysBypassesIt() async throws {
+    func testMetadataCacheExpiresAndForcedInspectionAlwaysBypassesIt() async throws {
         let snapshot = RepositorySnapshot(url: root, name: "test", branch: "main", upstream: nil,
             remoteURL: "git@github.com:owner/project.git", ahead: nil, behind: nil,
             changes: [], staleBranches: [], worktrees: [], commits: [], rootFiles: [])

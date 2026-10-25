@@ -121,7 +121,6 @@ final class RepositoryCIChecksTests: XCTestCase {
         try workflow("ci.yml", "on: pull_request\njobs:\n  test:\n    steps:\n      - run: uv run pytest")
         let after = await catalog.inspect(snapshot())
         if case .absent = catalog.verify(finding, in: after) {} else { XCTFail("Coverage was not verified") }
-        XCTAssertEqual(RepairRecipeCatalog().recipes(for: finding).map(\.id), ["ci.coverage"])
     }
 
     func testBunTypecheckWithNoInstallResolvesCoverageDespiteSetupAction() async throws {
@@ -177,7 +176,7 @@ final class RepositoryCIChecksTests: XCTestCase {
             XCTAssertNotNil(report.unavailableChecks["ci.failing"])
         }
         let catalog = RepositoryIssueCatalog(checks: [RepositoryCIChecks.checks(loadStatus: { _ in
-            throw RepairError.blocked("Authentication failed")
+            throw InspectionError.blocked("Authentication failed")
         })[0]])
         let report = await catalog.inspect(snapshot(remote: "https://github.com/owner/project"))
         XCTAssertEqual(report.unavailableChecks["ci.failing"], "Authentication failed")

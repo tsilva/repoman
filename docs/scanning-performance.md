@@ -10,9 +10,9 @@ Results, including clean results and unavailable reasons, are persisted with the
 
 While the app is open, a scheduler checks for expired results every minute and inspects only repositories that need work. Startup and automatic scans fetch a repository's remote only when its remote Git checks need refreshing. Each repository runs the checker catalog once, after any fetch, rather than before and after fetching.
 
-Refresh in the issue list forces every checker for the selected repository. Refresh in the repository list (or the Refresh All menu command) forces every checker for every discovered repository. These actions also bypass the underlying published-metadata cache. Busy repositories remain protected from concurrent inspection during repairs. Repair preflight and verification always inspect fresh state, and reused results cannot resolve repair conversations.
+Refresh in the top-right window toolbar forces every checker for the selected repository. Refresh in the repository list (or the Refresh All menu command) forces every checker for every discovered repository. These actions also bypass the underlying published-metadata cache. A fresh check is required to confirm that a prior finding is absent.
 
-The inspection Git cache shares identical command results, including failures, for one inspection. Its global lock only protects cache lookup; each command has its own lock so independent commands can run concurrently. Cache keys include the repository, arguments, and accepted exit codes. New inspections create new caches, so repair verification still reads fresh state.
+The inspection Git cache shares identical command results, including failures, for one inspection. Its global lock only protects cache lookup; each command has its own lock so independent commands can run concurrently. Cache keys include the repository, arguments, and accepted exit codes. New inspections create new caches, so subsequent checks read fresh state.
 
 Content detectors compile their fixed regular expressions once. Merge-marker checks skip regex evaluation on ordinary source lines. File-size limits, binary sampling, path containment, redaction, and inspection availability rules remain in place.
 

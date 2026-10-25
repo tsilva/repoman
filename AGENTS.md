@@ -7,6 +7,7 @@
 ## Project layout
 
 - `RepoMan/` contains the macOS SwiftUI app and its `RepositoryStore` refresh logic.
+- `RepoManCLI/` contains the shared read-only command-line entrypoint, embedded at `RepoMan.app/Contents/Helpers/repoman` by `Tools/build-cli.sh`.
 - `RepoManCore/` contains the Git scanner, subprocess runner, and shared models. The app and the Swift package use these sources.
 - `Tests/RepoManCoreTests/` contains integration tests that create temporary Git repositories.
 - `Tools/RenderDemo.swift` renders illustrative app data; `docs/repoman-demo.png` is the README screenshot.
@@ -15,7 +16,7 @@
 ## Build and verification
 
 - Open `RepoMan.xcodeproj` in Xcode 27 and run the `RepoMan` scheme on macOS 27 or later.
-- Run `swift test` after changing `RepoManCore/` or its tests.
+- Run `swift test` after changing `RepoManCore/` or its tests. After CLI changes also run `python3 Tools/test_cli.py .build/debug/repoman` (use `swift build --product repoman` first if needed).
 - For app changes, build the `RepoMan` scheme in Xcode. Use `--demo` when reviewing the UI with illustrative data.
 - After every fix, rebuild and relaunch the development build so the running app includes the latest changes. Confirm that it launches successfully before reporting completion.
 - Keep generated output in `.build/` or `DerivedData/`; do not commit it.

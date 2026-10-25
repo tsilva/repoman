@@ -14,7 +14,6 @@ struct RepoManApp: App {
                 .frame(minWidth: 1_180, minHeight: 720)
                 .preferredColorScheme(.dark)
                 .onAppear {
-                    appDelegate.persistIssueThreads = { store.persistIssueThreads() }
                     AppUpdateController.shared.prepareToQuit = { try store.prepareForAppUpdate() }
                     AppUpdateController.shared.resumeAfterCancelledQuit = { store.isQuittingForUpdate = false }
                     AppUpdateController.shared.start()
@@ -66,12 +65,6 @@ struct RepoManApp: App {
 
 @MainActor
 private final class RepoManAppDelegate: NSObject, NSApplicationDelegate {
-    var persistIssueThreads: (() -> Bool)?
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        persistIssueThreads?() == false ? .terminateCancel : .terminateNow
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppUpdateController.acknowledgeRelaunch()
         #if DEBUG

@@ -27,17 +27,17 @@ enum RepositoryWorkflowSecurityChecks {
                         if value.hasPrefix("{") {
                             let pairs = CheckSupport.captures(value, #"([a-z-]+)\s*:\s*(read|write|none)"#)
                             let residue = pairs.reduce(value) { $0.replacingOccurrences(of: $1[0], with: "") }
-                            guard residue.allSatisfy({ "{}, \t".contains($0) }) else { throw RepairError.blocked("Unsupported token permission syntax.") }
+                            guard residue.allSatisfy({ "{}, \t".contains($0) }) else { throw InspectionError.blocked("Unsupported token permission syntax.") }
                             settings = Dictionary(pairs.map { ($0[1], $0[2]) }, uniquingKeysWith: { _, newest in newest })
                         } else {
                             let fields = WorkflowInspection.block(lines, index)
-                            guard fields.allSatisfy({ ["read", "write", "none"].contains($0.value) }) else { throw RepairError.blocked("Dynamic token permissions need manual review.") }
+                            guard fields.allSatisfy({ ["read", "write", "none"].contains($0.value) }) else { throw InspectionError.blocked("Dynamic token permissions need manual review.") }
                             settings = Dictionary(fields.map { ($0.field, $0.value) }, uniquingKeysWith: { _, newest in newest })
                         }
                         if line.indent == 0, settings.values.contains("write") {
                             evidence.append("Workflow-wide write permissions apply to every job; review whether writes can be scoped to the jobs that need them.")
                         }
-                    } else if value != "read-all" { throw RepairError.blocked("Dynamic token permissions need manual review.") }
+                    } else if value != "read-all" { throw InspectionError.blocked("Dynamic token permissions need manual review.") }
                 }
                 for (number, step) in steps.enumerated() {
                     if CheckSupport.matches(step.commands.joined(separator: "\n"), #"\$\{\{[^}\n]*(?:github\.head_ref|github\.event\.(?:pull_request\.(?:title|body|head\.(?:ref|label))|issue\.(?:title|body)|comment\.body))[^}\n]*\}\}"#) {

@@ -16,16 +16,16 @@ enum RepositoryHygieneChecks {
             CheckSupport.check("git.oldStashes", "Old stashes", .git, "archivebox", inspect: { context, policy in
                 let output = try context.gitRead(["stash", "list", "--format=%H%x09%ct"])
                 let lines = String(decoding: output, as: UTF8.self).split(separator: "\n")
-                guard lines.count <= 100 else { throw RepairError.blocked("More than 100 stashes need review.") }
+                guard lines.count <= 100 else { throw InspectionError.blocked("More than 100 stashes need review.") }
                 var findings: [RepositoryFinding] = []
                 for line in lines {
                     let parts = line.split(separator: "\t")
-                    guard parts.count == 2, CheckSupport.matches(String(parts[0]), #"^[a-f0-9]{40,64}$"#), let timestamp = TimeInterval(parts[1]), timestamp.isFinite, (0...4_102_444_800).contains(timestamp) else { throw RepairError.blocked("Git returned invalid stash metadata.") }
+                    guard parts.count == 2, CheckSupport.matches(String(parts[0]), #"^[a-f0-9]{40,64}$"#), let timestamp = TimeInterval(parts[1]), timestamp.isFinite, (0...4_102_444_800).contains(timestamp) else { throw InspectionError.blocked("Git returned invalid stash metadata.") }
                     let date = Date(timeIntervalSince1970: timestamp)
                     let days = Int(context.snapshot.checkedAt.timeIntervalSince(date) / 86_400)
                     guard days >= policy.stashAgeDays else { continue }
                     let sha = String(parts[0])
-                    guard findings.count < 20 else { throw RepairError.blocked("More than 20 old stashes need review.") }
+                    guard findings.count < 20 else { throw InspectionError.blocked("More than 20 old stashes need review.") }
                     let paths = String(decoding: try context.gitRead(["stash", "show", "--no-ext-diff", "--no-textconv", "--include-untracked", "--name-only", "-z", sha]), as: UTF8.self).split(separator: "\0").prefix(10).joined(separator: ", ")
                     findings.append(CheckSupport.finding(context, "git.oldStashes", sha, "Old stash", "Stash \(sha.prefix(8)) is \(days) days old (threshold: \(policy.stashAgeDays)). Files: \(paths.isEmpty ? "none listed" : paths). Review it before restoring or deleting anything.", .git, "archivebox", severity: .information))
                 }
@@ -37,7 +37,7 @@ enum RepositoryHygieneChecks {
                 if !unmerged.isEmpty { findings.append(CheckSupport.finding(context, "git.unfinishedOperation", "conflicts", "Unmerged files", "The index contains unresolved merge entries. Preserve both sides while reviewing conflicts.", .git, "exclamationmark.triangle", severity: .blocked)) }
                 for (marker, name) in [("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase or am"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("sequencer", "sequencer")] {
                     let path = String(decoding: try context.gitRead(["rev-parse", "--git-path", marker]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !path.isEmpty else { throw RepairError.blocked("Git returned an empty operation marker path.") }
+                    guard !path.isEmpty else { throw InspectionError.blocked("Git returned an empty operation marker path.") }
                     let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : context.snapshot.url.appendingPathComponent(path)
                     do {
                         _ = try url.resourceValues(forKeys: [.isDirectoryKey])
@@ -54,19 +54,19 @@ enum RepositoryHygieneChecks {
             CheckSupport.check("notebooks.hygiene", "Notebook hygiene", .documentation, "book.closed", inspect: { context, policy in
                 guard policy.notebooks.enabled else { return [] }
                 let paths = try context.trackedPaths(matching: [":(glob)**/*.ipynb"])
-                guard paths.count <= 250 else { throw RepairError.blocked("More than 250 notebooks need inspection.") }
+                guard paths.count <= 250 else { throw InspectionError.blocked("More than 250 notebooks need inspection.") }
                 var findings: [RepositoryFinding] = [], totalBytes = 0
                 for path in paths {
                     let text = try context.readNotebook(path)
                     totalBytes += text.utf8.count
-                    guard totalBytes <= 33_554_432 else { throw RepairError.blocked("Notebook inspection exceeds the 32 MiB repository limit.") }
+                    guard totalBytes <= 33_554_432 else { throw InspectionError.blocked("Notebook inspection exceeds the 32 MiB repository limit.") }
                     guard let notebook = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
                           (notebook["nbformat"] as? Int) == 4, let cells = notebook["cells"] as? [[String: Any]] else {
-                        throw RepairError.blocked("Unsupported notebook format in " + path)
+                        throw InspectionError.blocked("Unsupported notebook format in " + path)
                     }
                     var outputBytes = 0, errors = 0
                     for cell in cells where (cell["cell_type"] as? String) == "code" {
-                        guard let outputs = cell["outputs"] as? [[String: Any]] else { throw RepairError.blocked("Invalid notebook outputs in " + path) }
+                        guard let outputs = cell["outputs"] as? [[String: Any]] else { throw InspectionError.blocked("Invalid notebook outputs in " + path) }
                         outputBytes += try JSONSerialization.data(withJSONObject: outputs).count
                         errors += outputs.filter { ($0["output_type"] as? String) == "error" }.count
                     }
@@ -83,7 +83,7 @@ enum RepositoryHygieneChecks {
         let paths = Set(root.filter { RepositoryIssueCatalog.isReadme($0) || $0 == "AGENTS.md" } + (try context.trackedPaths(matching: [":(glob)**/SKILL.md", ":(glob)docs/**/*.md"])).filter {
             $0.hasSuffix("SKILL.md") || $0 == "docs/README.md" || ($0.hasPrefix("docs/") && $0.hasSuffix(".md"))
         }).sorted()
-        guard paths.count <= 100 else { throw RepairError.blocked("More than 100 documentation files need inspection.") }
+        guard paths.count <= 100 else { throw InspectionError.blocked("More than 100 documentation files need inspection.") }
         var findings: [RepositoryFinding] = []
         for path in paths {
             let text = markdownProse(try context.readText(path))
@@ -101,7 +101,7 @@ enum RepositoryHygieneChecks {
                 guard !target.isEmpty, !target.hasPrefix("#"), !target.hasPrefix("/"), !target.hasPrefix("//"),
                       !CheckSupport.matches(target, #"^[a-zA-Z][a-zA-Z0-9+.-]*:"#), !target.contains("${"), !target.contains("{{") else { continue }
                 let file = target.components(separatedBy: CharacterSet(charactersIn: "?#"))[0]
-                guard let decoded = file.removingPercentEncoding, !decoded.isEmpty else { throw RepairError.blocked("Invalid local link encoding in " + path) }
+                guard let decoded = file.removingPercentEncoding, !decoded.isEmpty else { throw InspectionError.blocked("Invalid local link encoding in " + path) }
                 let directory = (path as NSString).deletingLastPathComponent
                 let relative = directory.isEmpty ? decoded : directory + "/" + decoded
                 if !(try context.localTargetExists(relative)) { missing.append(target) }

@@ -23,10 +23,11 @@ enum GitRunner {
                     environmentOverrides: [String: String] = [:]) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", directory.path] + arguments
+        process.arguments = ["-C", directory.path, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"] + arguments
 
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
         environment["GCM_INTERACTIVE"] = "Never"
         if environment["GIT_SSH_COMMAND"] == nil {
             environment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o ConnectTimeout=8"

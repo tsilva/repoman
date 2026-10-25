@@ -1,7 +1,7 @@
 import Foundation
 
-/// The agent's unified diff, decoded for review without reading or changing repository files.
-public struct RepairDiff: Sendable {
+/// A Git unified diff, decoded for review without reading or changing repository files.
+public struct RepositoryDiff: Sendable {
     /// Read staged and unstaged changes against HEAD, plus non-ignored untracked files.
     /// This never writes to the index or working tree. Run it off the main actor.
     public static func workingTreeSource(at directory: URL) throws -> String {

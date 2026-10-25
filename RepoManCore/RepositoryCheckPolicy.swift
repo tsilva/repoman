@@ -35,14 +35,14 @@ struct RepositoryCheckPolicy: Decodable, Sendable {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys).isSubset(of: ["version", "exceptions", "stashAgeDays", "maximumTrackedFileBytes", "notebooks"]),
               (object["notebooks"] as? [String: Any]).map({ Set($0.keys).isSubset(of: ["enabled", "maximumOutputBytes"]) }) ?? true else {
-            throw RepairError.blocked("Unsupported .repoman.json fields.")
+            throw InspectionError.blocked("Unsupported .repoman.json fields.")
         }
         let policy = try JSONDecoder().decode(Self.self, from: data)
         guard policy.version == 1, (1...3650).contains(policy.stashAgeDays),
               (1024...1_073_741_824).contains(policy.maximumTrackedFileBytes),
               (1024...8_388_608).contains(policy.notebooks.maximumOutputBytes),
               policy.exceptions.values.allSatisfy({ $0.values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }) else {
-            throw RepairError.blocked("Invalid .repoman.json version, threshold, or exception reason.")
+            throw InspectionError.blocked("Invalid .repoman.json version, threshold, or exception reason.")
         }
         return policy
     }
@@ -54,17 +54,17 @@ enum CheckSupport {
                       inspect: @escaping Inspector) -> RepositoryCheck {
         RepositoryCheck(id: id, title: title, category: category, symbol: symbol, inspect: { context in
             let policy = try RepositoryCheckPolicy.load(context)
-            return try await inspect(context, policy).filter { policy.exceptions[id]?[$0.subject] == nil }
+            return context.applyingExceptions(try await inspect(context, policy), policy: policy)
         })
     }
     static func finding(_ context: RepositoryInspectionContext, _ id: String, _ subject: String, _ title: String,
                         _ evidence: String, _ category: IssueCategory = .setup, _ symbol: String = "checkmark.shield",
                         severity: IssueSeverity = .attention) -> RepositoryFinding {
         RepositoryFinding(repositoryID: context.snapshot.id, checkID: id, subject: subject, title: title,
-                          evidence: evidence, category: category, severity: severity, symbol: symbol, recipeIDs: [id])
+                          evidence: evidence, category: category, severity: severity, symbol: symbol)
     }
     static func rootFiles(_ context: RepositoryInspectionContext) throws -> [String] {
-        guard let files = context.snapshot.rootFiles else { throw RepairError.blocked("Repository root files could not be inspected.") }
+        guard let files = context.snapshot.rootFiles else { throw InspectionError.blocked("Repository root files could not be inspected.") }
         return files
     }
     static func manifests(_ context: RepositoryInspectionContext) throws -> [String] {
@@ -74,7 +74,7 @@ enum CheckSupport {
             !$0.split(separator: "/").contains(where: { ["node_modules", ".venv", "vendor"].contains(String($0)) })
         }
         let paths = Set(roots + nested).sorted()
-        guard paths.count <= 64 else { throw RepairError.blocked("More than 64 dependency manifests need inspection.") }
+        guard paths.count <= 64 else { throw InspectionError.blocked("More than 64 dependency manifests need inspection.") }
         return paths
     }
     static func workflows(_ context: RepositoryInspectionContext) throws -> [(String, String)] {
@@ -112,9 +112,9 @@ struct InspectionConfig {
             let line = withoutComment(raw)
             guard !line.isEmpty else { continue }
             if pending.isEmpty, line.hasPrefix("[") {
-                guard line.hasSuffix("]") else { throw RepairError.blocked("Unsupported TOML table syntax.") }
+                guard line.hasSuffix("]") else { throw InspectionError.blocked("Unsupported TOML table syntax.") }
                 if line.hasPrefix("[[") {
-                    guard line.hasSuffix("]]") else { throw RepairError.blocked("Unsupported TOML table syntax.") }
+                    guard line.hasSuffix("]]") else { throw InspectionError.blocked("Unsupported TOML table syntax.") }
                     let name = String(line.dropFirst(2).dropLast(2))
                     let count = arrayCounts[name, default: 0]; arrayCounts[name] = count + 1
                     section = name + "." + String(count)
@@ -125,23 +125,23 @@ struct InspectionConfig {
             guard allSections || standaloneUV || section.isEmpty || section == "project" || section.hasPrefix("project.optional-dependencies") || section.hasPrefix("tool.uv") else { continue }
             pending += (pending.isEmpty ? "" : "\n") + line
             guard balanced(pending) else { continue }
-            guard let equals = pending.firstIndex(of: "=") else { throw RepairError.blocked("Unsupported TOML configuration.") }
+            guard let equals = pending.firstIndex(of: "=") else { throw InspectionError.blocked("Unsupported TOML configuration.") }
             let key = String(pending[..<equals]).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
             let value = String(pending[pending.index(after: equals)...]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty, !value.isEmpty, !value.contains("\"\"\""), !value.contains("'''"), !key.contains(" ") else {
-                throw RepairError.blocked("Unsupported TOML value syntax.")
+                throw InspectionError.blocked("Unsupported TOML value syntax.")
             }
             let qualified = section.isEmpty ? key : section + "." + key
-            guard values[qualified] == nil else { throw RepairError.blocked("Duplicate TOML setting: " + qualified) }
+            guard values[qualified] == nil else { throw InspectionError.blocked("Duplicate TOML setting: " + qualified) }
             values[qualified] = value
             pending = ""
         }
-        guard pending.isEmpty else { throw RepairError.blocked("Incomplete TOML value.") }
+        guard pending.isEmpty else { throw InspectionError.blocked("Incomplete TOML value.") }
         return Self(values: values)
     }
     static func yaml(_ source: String) throws -> Self {
         guard !source.contains("\t"), !CheckSupport.matches(source, #"(?m)^\s*(?:<<:|[^#\n]*:\s*[&*])"#) else {
-            throw RepairError.blocked("YAML anchors or tabs require manual review.")
+            throw InspectionError.blocked("YAML anchors or tabs require manual review.")
         }
         var values: [String: String] = [:], parents: [(Int, String)] = []
         for raw in source.components(separatedBy: .newlines) {
@@ -150,14 +150,14 @@ struct InspectionConfig {
             let indent = raw.prefix { $0 == " " }.count
             while parents.last.map({ $0.0 >= indent }) == true { parents.removeLast() }
             if line.hasPrefix("- ") {
-                guard let parent = parents.last else { throw RepairError.blocked("Unsupported YAML sequence.") }
+                guard let parent = parents.last else { throw InspectionError.blocked("Unsupported YAML sequence.") }
                 values[parent.1, default: ""] += "\n" + String(line.dropFirst(2))
                 continue
             }
-            guard let colon = line.firstIndex(of: ":") else { throw RepairError.blocked("Unsupported YAML setting.") }
+            guard let colon = line.firstIndex(of: ":") else { throw InspectionError.blocked("Unsupported YAML setting.") }
             let key = String(line[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
             let path = (parents.last.map { $0.1 + "." } ?? "") + key
-            guard values[path] == nil else { throw RepairError.blocked("Duplicate YAML setting: " + path) }
+            guard values[path] == nil else { throw InspectionError.blocked("Duplicate YAML setting: " + path) }
             values[path] = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             parents.append((indent, path))
         }
@@ -168,9 +168,9 @@ struct InspectionConfig {
         for raw in source.components(separatedBy: .newlines) {
             let line = withoutComment(raw)
             guard !line.isEmpty, !line.hasPrefix(";") else { continue }
-            guard let equals = line.firstIndex(of: "=") else { throw RepairError.blocked("Unsupported npm configuration.") }
+            guard let equals = line.firstIndex(of: "=") else { throw InspectionError.blocked("Unsupported npm configuration.") }
             let key = String(line[..<equals]).trimmingCharacters(in: .whitespaces)
-            guard values[key] == nil else { throw RepairError.blocked("Duplicate npm setting: " + key) }
+            guard values[key] == nil else { throw InspectionError.blocked("Duplicate npm setting: " + key) }
             values[key] = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
         }
         return Self(values: values)
@@ -195,23 +195,4 @@ struct InspectionConfig {
         }
         return quote == nil && depth == 0
     }
-}
-
-/// Presets only compose instructions. Sending a repair remains an explicit user action.
-enum ExtendedRepairRecipes {
-    static let recipes: [RepairRecipe] = [
-        RepairRecipe(id: "github.privateVisibility", title: "Make the repository private", prompt: "Verify the actual GitHub destination from this repository's remote and confirm its name starts with private- (case-insensitive). Using my existing gh login, inspect its current visibility and administrator access. If it is public or internal, change only that repository's visibility to private and verify it with a fresh GitHub read. Review GitHub Pages and fork consequences before changing visibility; report blockers or missing access. Do not rename the repository, change other settings, alter files, commit or push."),
-        RepairRecipe(id: "dependencies.manager", title: "Align the package manager", prompt: "Inspect the manifest, lockfiles, workspace layout, CI and repository instructions. Align the declared package manager and its pinned version with the intended lockfile and installation commands. Preserve dependency age protections and required lifecycle-script exceptions. Ask if the intended manager is ambiguous. Leave changes uncommitted; do not push or trigger workflows."),
-        RepairRecipe(id: "dependencies.safeguards", title: "Restore dependency safeguards", prompt: "Inspect the effective dependency configuration, including uv.toml, bunfig.toml, workspace files, .npmrc, CI overrides and documented exceptions. Restore the repository's seven-day dependency age policy and relevant bad-package exclusions. For pnpm preserve exotic dependency blocking; for npm disable lifecycle scripts unless required. For Bun use install.minimumReleaseAge >= 604800 seconds and disable lifecycle scripts with install.ignoreScripts or .npmrc unless an exception is required; review age exclusions and preserve justified trust exceptions. For pip use committed constraints. Preserve legitimate GPU indexes and project-specific build requirements. Document justified exceptions in .repoman.json with reasons. Leave changes uncommitted; do not upgrade dependencies unnecessarily."),
-        RepairRecipe(id: "dependencies.lockfile", title: "Add the intended lockfile", prompt: "Determine whether this project requires a lockfile and which manager owns it. Generate or repair the appropriate lockfile using existing dependency policy without upgrading dependencies unnecessarily. If this is an intentional library or experiment exception, explain it and record a reason in .repoman.json. Leave changes uncommitted and do not change unrelated staged files."),
-        RepairRecipe(id: "dependencies.sources", title: "Review dependency exceptions", prompt: "Inspect the reported custom sources and policy exclusions. Explain their purpose and check prior authorization in repository instructions. Preserve legitimate workspace dependencies and GPU wheel indexes. Remove unintended exceptions; ask me before approving new external sources, indexes or age-policy exceptions. Record intentional exceptions with reasons in .repoman.json. Do not expose credentials from configuration. Leave changes uncommitted."),
-        RepairRecipe(id: "ci.mutableActions", title: "Pin Actions references", prompt: "Inspect each reported external action, reusable workflow or Docker action. Replace mutable references with verified full commit hashes from the original action repository, or immutable Docker digests, preserving the intended release and workflow behavior. Keep readable version comments. Validate the workflow. Leave changes uncommitted; do not publish or trigger workflows."),
-        RepairRecipe(id: "ci.suppressedFailures", title: "Review suppressed validation", prompt: "Inspect the reported validation steps and why failures are tolerated. Make required validation fail CI correctly while preserving intentionally optional diagnostics. Document justified exceptions with reasons in .repoman.json. Do not disable checks or weaken assertions. Validate relevant commands and leave changes uncommitted; do not trigger remote workflows."),
-        RepairRecipe(id: "files.generatedTracked", title: "Remove generated files from tracking", prompt: "Review the reported tracked paths and verify they are generated rather than intentional fixtures or source. Add appropriate ignore rules and remove only confirmed generated paths from the Git index while keeping local working files. Preserve unrelated staged changes. Record intentional fixtures as .repoman.json exceptions with reasons. Leave changes uncommitted."),
-        RepairRecipe(id: "git.oldStashes", title: "Review old stashes", prompt: "Inspect the identified stash by its commit hash, including tracked and untracked files. Explain what it contains and whether the work exists elsewhere. Ask me before restoring or deleting it; preserve the current working tree and all other stashes. Do not automatically pop, apply or drop a stash."),
-        RepairRecipe(id: "git.unfinishedOperation", title: "Inspect unfinished Git work", prompt: "Inspect the reported Git operation, conflicts or detached HEAD and explain how to preserve the work. Ask me whether to continue, abort or preserve detached commits before changing history or branches. Do not discard files, abort operations or switch branches without my explicit instruction. Preserve unrelated staged and working changes."),
-        RepairRecipe(id: "github.description", title: "Sync the published tagline", prompt: "Read the latest published default-branch README and validate its marked tagline using the repository's existing push/description-sync instructions. Update only the actual destination GitHub repository description if my gh login controls it. Use no uncommitted or feature-branch tagline text. Skip absent markers and report invalid markers or missing access. Do not push, edit the published README or change Actions automation."),
-        RepairRecipe(id: "docs.brokenLinks", title: "Repair local documentation links", prompt: "Inspect the missing local documentation targets and skill references. Correct stale paths or restore genuinely missing documentation or images using repository evidence. Preserve example paths and code samples. Verify the links without running project scripts. Leave changes uncommitted."),
-        RepairRecipe(id: "notebooks.hygiene", title: "Review notebook outputs", prompt: "Inspect saved errors and large outputs in the reported notebook. Preserve deliberate teaching examples and reproducibility evidence; ask if intent is unclear. Clear only unwanted outputs without executing notebook cells or changing source and metadata unnecessarily. Record intentional exceptions with reasons in .repoman.json. Leave changes uncommitted.")
-    ]
 }

@@ -19,7 +19,7 @@ enum RepositoryDependencyChecks {
     }
     private static func json(_ context: RepositoryInspectionContext, _ path: String) throws -> [String: Any] {
         guard let result = try JSONSerialization.jsonObject(with: Data(context.readText(path).utf8)) as? [String: Any] else {
-            throw RepairError.blocked("Expected a JSON object in " + path)
+            throw InspectionError.blocked("Expected a JSON object in " + path)
         }
         return result
     }
@@ -36,7 +36,7 @@ enum RepositoryDependencyChecks {
         let object = try json(context, path)
         if let declared = object["packageManager"] as? String {
             guard let name = declared.split(separator: "@").first, ["pnpm", "npm", "yarn", "bun"].contains(String(name)) else {
-                throw RepairError.blocked("Unsupported package manager in " + path)
+                throw InspectionError.blocked("Unsupported package manager in " + path)
             }
             return String(name)
         }
@@ -177,7 +177,7 @@ enum RepositoryDependencyChecks {
             var reasons: [String] = []
             if path.hasSuffix("package.json") {
                 let name = try manager(context, path)
-                guard ["npm", "pnpm", "bun"].contains(name) else { throw RepairError.blocked("Supply-chain policy for \(name) needs manual review.") }
+                guard ["npm", "pnpm", "bun"].contains(name) else { throw InspectionError.blocked("Supply-chain policy for \(name) needs manual review.") }
                 if name == "bun" {
                     reasons += try bunSafeguards(context, manifest: path)
                 } else {
@@ -277,7 +277,7 @@ enum RepositoryDependencyChecks {
         var reasons: [String] = []
         // Bun uses seconds, whereas npm and pnpm use minutes. TOML permits digit separators.
         let rawAge = config["install.minimumReleaseAge"] ?? "0"
-        guard CheckSupport.matches(rawAge, #"^\d(?:_?\d)*$"#) else { throw RepairError.blocked("Unsupported Bun minimumReleaseAge value.") }
+        guard CheckSupport.matches(rawAge, #"^\d(?:_?\d)*$"#) else { throw InspectionError.blocked("Unsupported Bun minimumReleaseAge value.") }
         let age = rawAge.replacingOccurrences(of: "_", with: "")
         if (Int(age) ?? 0) < 604800 { reasons.append("bunfig.toml lacks install.minimumReleaseAge >= 604800 seconds (seven days).") }
         let ignoreScripts = config["install.ignoreScripts"] ?? rc["ignore-scripts"]

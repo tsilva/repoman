@@ -5,7 +5,7 @@ enum RepositoryProjectReferenceChecks {
         [CheckSupport.check("files.projectReferences", "Broken project references", .setup, "link.badge.plus", inspect: { context, _ in
             var evidence: [String: Set<String>] = [:]
             func missing(_ subject: String, _ path: String, generated: Bool = false) throws {
-                guard !path.contains("$") && !path.contains("~") else { throw RepairError.blocked("Dynamic project paths need manual review.") }
+                guard !path.contains("$") && !path.contains("~") else { throw InspectionError.blocked("Dynamic project paths need manual review.") }
                 if generated {
                     let components = path.split(separator: "/")
                     if components.contains(where: { ["dist", "build", "out", ".next", "target"].contains(String($0)) }) { return }
@@ -27,7 +27,7 @@ enum RepositoryProjectReferenceChecks {
                     var patterns: [String] = []
                     if let workspace = json["workspaces"] {
                         guard let list = workspace as? [String] ?? (workspace as? [String: Any])?["packages"] as? [String] else {
-                            throw RepairError.blocked("Unsupported workspace member syntax.")
+                            throw InspectionError.blocked("Unsupported workspace member syntax.")
                         }
                         patterns = list
                     }
@@ -65,7 +65,7 @@ enum RepositoryProjectReferenceChecks {
                     if directory != "." { try missing(path, directory) }
                     for command in step.commands { for target in try scriptPaths(command) {
                         guard !CheckSupport.matches(step.commands.joined(separator: "\n"), #"(?:^|[;&\n])\s*cd\s"#) else {
-                            throw RepairError.blocked("Shell directory changes need manual reference review.")
+                            throw InspectionError.blocked("Shell directory changes need manual reference review.")
                         }
                         try missing(path, directory == "." ? target : directory + "/" + target)
                     } }
@@ -84,7 +84,7 @@ enum RepositoryProjectReferenceChecks {
         if value is NSNull { return [] }
         if let object = value as? [String: Any] { return try object.values.flatMap { try targets($0) } }
         if let array = value as? [Any] { return try array.flatMap { try targets($0) } }
-        throw RepairError.blocked("Unsupported package entry point syntax.")
+        throw InspectionError.blocked("Unsupported package entry point syntax.")
     }
     private static func stringArray(_ raw: String, yaml: Bool = false) throws -> [String] {
         if yaml, !raw.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[") {
@@ -92,7 +92,7 @@ enum RepositoryProjectReferenceChecks {
         }
         let matches = CheckSupport.captures(raw, #"["']([^"'\\]*)["']"#)
         let residue = matches.reduce(raw) { $0.replacingOccurrences(of: $1[0], with: "") }
-        guard residue.allSatisfy({ "[], \n\r\t".contains($0) }) else { throw RepairError.blocked("Unsupported workspace member syntax.") }
+        guard residue.allSatisfy({ "[], \n\r\t".contains($0) }) else { throw InspectionError.blocked("Unsupported workspace member syntax.") }
         return matches.map { $0[1] }
     }
     private static func workspace(_ patterns: [String], excludes: [String], manifest: String, directory: String, filename: String,
@@ -117,10 +117,10 @@ enum RepositoryProjectReferenceChecks {
         let interpreted = #"(?:^|[;&|\n])\s*(?:python[0-9.]*|node|bash|sh|zsh|ruby)\s+(?:--?[A-Za-z-]+\s+)*["']?([^\s;|&<>"']+\.(?:py|js|mjs|cjs|sh|rb))["']?(?:\s|$|[;&|])"#
         let paths = (CheckSupport.captures(source, direct) + CheckSupport.captures(source, interpreted)).map { $0[1] }.filter { !$0.hasPrefix("http") }
         if !paths.isEmpty, CheckSupport.matches(source, #"(?:^|[;&|\n])\s*cd\s"#) {
-            throw RepairError.blocked("Shell directory changes need manual reference review.")
+            throw InspectionError.blocked("Shell directory changes need manual reference review.")
         }
         if CheckSupport.matches(source, #"(?:^|[;&|\n])\s*(?:python[0-9.]*|node|bash|sh|zsh|ruby)\s+["']?[^\s"']*[$~]"#) {
-            throw RepairError.blocked("Dynamic script paths need manual reference review.")
+            throw InspectionError.blocked("Dynamic script paths need manual reference review.")
         }
         return paths
     }
@@ -132,12 +132,12 @@ enum RepositoryProjectReferenceChecks {
     /// Expand bounded local patterns without following directories outside the repository.
     private static func expand(_ pattern: String, context: RepositoryInspectionContext) throws -> [String] {
         guard !pattern.hasPrefix("/"), !pattern.contains("$"), !pattern.contains("?"), !pattern.contains("{"), !pattern.contains("["),
-              !pattern.split(separator: "/").contains("..") else { throw RepairError.blocked("Unsupported or escaping workspace pattern.") }
+              !pattern.split(separator: "/").contains("..") else { throw InspectionError.blocked("Unsupported or escaping workspace pattern.") }
         let parts = pattern.split(separator: "/").map(String.init).filter { $0 != "." }
         var visited = 0
         func walk(_ directory: String, _ index: Int, _ depth: Int) throws -> [String] {
             visited += 1
-            guard visited <= 256, depth <= 8 else { throw RepairError.blocked("Project reference expansion exceeds inspection limits.") }
+            guard visited <= 256, depth <= 8 else { throw InspectionError.blocked("Project reference expansion exceeds inspection limits.") }
             if index == parts.count { return try context.localTargetExists(directory) ? [directory] : [] }
             let part = parts[index]
             if !part.contains("*") {

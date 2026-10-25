@@ -14,7 +14,7 @@ final class RepositoryInspectionSchedulingTests: XCTestCase {
     private func check(_ id: String, period: TimeInterval, calls: Calls, fails: Bool = false) -> RepositoryCheck {
         RepositoryCheck(id: id, title: id, category: .setup, symbol: "checkmark", validityPeriod: period, inspect: { _ in
             await calls.record(id)
-            if fails { throw RepairError.blocked("Offline") }
+            if fails { throw InspectionError.blocked("Offline") }
             return []
         })
     }
@@ -65,7 +65,7 @@ final class RepositoryInspectionSchedulingTests: XCTestCase {
         XCTAssertEqual(ids.count, 10)
     }
 
-    func testUnavailableChecksRetrySoonerAndCachedResultsCannotVerifyRepairs() async throws {
+    func testUnavailableChecksRetrySoonerAndCachedResultsCannotConfirmAbsences() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let cache = RepositoryInspectionCache(url: root.appendingPathComponent("cache.json"))
@@ -144,7 +144,7 @@ final class RepositoryInspectionSchedulingTests: XCTestCase {
 
     func testForcedRefreshAlsoBypassesUnderlyingMetadataCache() async {
         let check = RepositoryCheck(id: "remote", title: "Remote", category: .documentation, symbol: "checkmark", inspect: { context in
-            if context.allowCachedRemoteMetadata { throw RepairError.blocked("Allowed underlying cache") }
+            if context.allowCachedRemoteMetadata { throw InspectionError.blocked("Allowed underlying cache") }
             return []
         })
         let catalog = RepositoryIssueCatalog(checks: [check])

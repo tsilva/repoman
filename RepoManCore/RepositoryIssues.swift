@@ -22,12 +22,11 @@ public struct RepositoryFinding: Identifiable, Equatable, Codable, Sendable {
     public let category: IssueCategory
     public let severity: IssueSeverity
     public let symbol: String
-    public let recipeIDs: [String]
     public let detailsURL: URL?
 
     public init(repositoryID: String, checkID: String, subject: String = "", title: String,
                 evidence: String, category: IssueCategory, severity: IssueSeverity = .attention,
-                symbol: String, recipeIDs: [String] = [], detailsURL: URL? = nil) {
+                symbol: String, detailsURL: URL? = nil) {
         self.repositoryID = repositoryID
         self.checkID = checkID
         self.subject = subject
@@ -36,119 +35,62 @@ public struct RepositoryFinding: Identifiable, Equatable, Codable, Sendable {
         self.category = category
         self.severity = severity
         self.symbol = symbol
-        self.recipeIDs = recipeIDs
         self.detailsURL = detailsURL
     }
 }
 
-/// A detected issue, stored conversation, or incomplete check for the shared issue list.
+/// A current finding or an incomplete check; no repair history participates in this list.
 public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
     public let finding: RepositoryFinding
-    public let task: RepairTask?
-    /// Incomplete checks use finding metadata for presentation, but are not confirmed findings.
     public let incompleteReason: String?
     public var isIncomplete: Bool { incompleteReason != nil }
-    public var isArchived: Bool { task?.isArchived == true }
-    // Check availability is shown on the row; summary badges track repair state.
-    public var status: RepositoryIssueStatus { RepositoryIssueStatus(state: task.map { $0.state(for: finding) }) }
-    // Recurrences share a detector identity, but each completed or archived conversation has its own identity.
-    public var id: String {
-        if isIncomplete { return "incomplete::" + finding.id }
-        if let task, task.state(for: finding).isClosed || task.isArchived { return "conversation::\(task.id)::\(finding.id)" }
-        return finding.id
-    }
+    public var status: RepositoryIssueStatus { isIncomplete ? .incomplete : .finding }
+    public var id: String { isIncomplete ? "incomplete::" + finding.id : finding.id }
 
-    public init(finding: RepositoryFinding, task: RepairTask? = nil) {
-        self.finding = finding; self.task = task
+    public init(finding: RepositoryFinding) {
+        self.finding = finding
         incompleteReason = nil
     }
-
     public init(incompleteCheck check: RepositoryCheck, repositoryID: String, reason: String) {
         finding = RepositoryFinding(repositoryID: repositoryID, checkID: check.id,
             title: check.id == "dependencies.lockfileDrift" ? "Manifest and lockfile consistency" : check.title,
             evidence: "Could not finish: " + reason, category: check.category,
             symbol: check.id == "dependencies.lockfileDrift" ? "lock" : check.symbol)
-        task = nil
         incompleteReason = reason
     }
+    public static func items(findings: [RepositoryFinding]) -> [Self] {
+        findings.map { Self(finding: $0) }
+    }
 
-    public static func items(findings: [RepositoryFinding], tasks: [RepairTask],
-                             includeCompleted: Bool = false, includeArchived: Bool = false) -> [Self] {
-        let unarchived = tasks.filter { !$0.isArchived }
-        func currentTask(for finding: RepositoryFinding) -> RepairTask? {
-            let matching = unarchived.filter { $0.contains(finding) && !$0.isSuperseded(for: finding) && !$0.state(for: finding).isClosed }
-            return matching.first(where: { $0.state.isActive }) ?? matching.last
-        }
-        var items = findings.map { Self(finding: $0, task: currentTask(for: $0)) }
-        var visible = Set(findings.map(\.id))
-        // Unavailable checks retain the latest conversation for every unresolved instance.
-        for task in unarchived.reversed() {
-            for finding in task.findings where !task.isSuperseded(for: finding) && !task.state(for: finding).isClosed {
-                if visible.insert(finding.id).inserted {
-                    items.append(Self(finding: finding, task: currentTask(for: finding)))
-                }
+    /// Flat category order, then catalog check order; preserve each check's instance order.
+    public static func sortedByCheckCategory(_ items: [Self], checks: [RepositoryCheck]) -> [Self] {
+        let categories = Dictionary(uniqueKeysWithValues: IssueCategory.allCases.enumerated().map { ($0.element, $0.offset) })
+        let checkOrder = Dictionary(uniqueKeysWithValues: checks.enumerated().map { ($0.element.id, $0.offset) })
+        return items.enumerated().sorted { lhs, rhs in
+            let leftCategory = categories[lhs.element.finding.category] ?? Int.max
+            let rightCategory = categories[rhs.element.finding.category] ?? Int.max
+            if leftCategory != rightCategory { return leftCategory < rightCategory }
+            let leftCheck = checkOrder[lhs.element.finding.checkID] ?? Int.max
+            let rightCheck = checkOrder[rhs.element.finding.checkID] ?? Int.max
+            if leftCheck != rightCheck { return leftCheck < rightCheck }
+            if lhs.element.finding.checkID != rhs.element.finding.checkID {
+                return lhs.element.finding.checkID < rhs.element.finding.checkID
             }
-        }
-        if includeCompleted || includeArchived {
-            for task in unarchived {
-                items += task.findings.filter { !task.isSuperseded(for: $0) && task.state(for: $0).isClosed }.map { Self(finding: $0, task: task) }
-            }
-        }
-        if includeArchived {
-            for task in tasks where task.isArchived { items += task.findings.map { Self(finding: $0, task: task) } }
-        }
-        return items
+            return lhs.offset < rhs.offset
+        }.map(\.element)
     }
 }
 
-/// Display grouping is independent of repair session ownership and never crosses repositories.
-public struct RepositoryIssueGroup: Identifiable, Sendable {
-    public let id: String
-    public let items: [RepositoryIssueListItem]
-    public var title: String { items[0].finding.title }
-    public var resolvedCount: Int { items.filter { $0.status == .completed }.count }
-    public var completedSessionIDs: Set<UUID> {
-        Set(items.compactMap { item in
-            guard let task = item.task, task.state.isClosed, !task.isArchived else { return nil }
-            return task.id
-        })
-    }
-    public var selectableItems: [RepositoryIssueListItem] {
-        items.filter { !$0.isIncomplete && $0.status != .completed && $0.task?.state.isActive != true }
-    }
-    public static func groups(_ items: [RepositoryIssueListItem]) -> [Self] {
-        var order: [String] = []
-        var grouped: [String: [RepositoryIssueListItem]] = [:]
-        for item in items {
-            let key = item.finding.repositoryID + "::" + item.finding.checkID
-            if grouped[key] == nil { order.append(key) }
-            grouped[key, default: []].append(item)
-        }
-        return order.map { Self(id: $0, items: grouped[$0]!) }
-    }
-}
-
-/// Shared row and badge categories; each visible issue belongs to exactly one status.
 public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
-    case pending, processing, waiting, completed
-
-    public init(state: RepairTaskState?) {
-        switch state {
-        case nil: self = .pending
-        case .queued, .running, .checking, .interrupted: self = .processing
-        case .needsInput, .stillPresent, .cancelled, .failed, .couldntVerify: self = .waiting
-        case .resolved, .noLongerNeeded: self = .completed
-        }
-    }
-
+    case finding, incomplete
     public static func counts(in items: [RepositoryIssueListItem]) -> [Self: Int] {
-        items.filter { !$0.isArchived }.reduce(into: [:]) { $0[$1.status, default: 0] += 1 }
+        items.reduce(into: [:]) { $0[$1.status, default: 0] += 1 }
     }
 }
 
 /// Register another check without adding cases to the repository or issue views.
 public struct RepositoryCheck: Identifiable, Sendable {
-    public enum ConfigurationKind: Sendable { case model }
+    public var requiresRemoteAccess: Bool { id == "ci.failing" || id.hasPrefix("github.") }
     public let id: String
     public let title: String
     public let category: IssueCategory
@@ -158,8 +100,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
     public let requiresExtendedInspection: Bool
     public let inspect: @Sendable (RepositoryInspectionContext) async throws -> [RepositoryFinding]
     public let availability: @Sendable (RepositorySnapshot) -> String?
-    public let configurationKind: ConfigurationKind?
-    /// Content-cached checks must read fresh inputs before deciding whether a remote request is due.
+    /// Checks with content-dependent caching must read fresh inputs before reuse.
     public let usesContentCache: Bool
     public let evaluate: @Sendable (RepositoryInspectionContext) async throws -> RepositoryCheckResult
 
@@ -175,13 +116,13 @@ public struct RepositoryCheck: Identifiable, Sendable {
         self.requiresExtendedInspection = false
         self.detect = detect
         self.availability = availability
-        configurationKind = nil; usesContentCache = false
+        usesContentCache = false
         self.inspect = { context in
-            if let reason = availability(context.snapshot) { throw RepairError.blocked(reason) }
+            if let reason = availability(context.snapshot) { throw InspectionError.blocked(reason) }
             return detect(context.snapshot)
         }
         self.evaluate = { context in
-            if let reason = availability(context.snapshot) { throw RepairError.blocked(reason) }
+            if let reason = availability(context.snapshot) { throw InspectionError.blocked(reason) }
             return .findings(detect(context.snapshot))
         }
     }
@@ -196,21 +137,21 @@ public struct RepositoryCheck: Identifiable, Sendable {
         self.inspect = inspect
         detect = { _ in [] }
         availability = { _ in "This detector requires extended inspection." }
-        configurationKind = nil; usesContentCache = false
+        usesContentCache = false
         evaluate = { context in .findings(try await inspect(context)) }
     }
 
     public init(id: String, title: String, category: IssueCategory, symbol: String,
-                validityPeriod: TimeInterval = 3_600, configurationKind: ConfigurationKind? = nil,
+                validityPeriod: TimeInterval = 3_600,
                 evaluate: @escaping @Sendable (RepositoryInspectionContext) async throws -> RepositoryCheckResult) {
         self.id = id; self.title = title; self.category = category; self.symbol = symbol
-        self.validityPeriod = validityPeriod; self.configurationKind = configurationKind
+        self.validityPeriod = validityPeriod
         self.evaluate = evaluate; usesContentCache = true; requiresExtendedInspection = true
         detect = { _ in [] }; availability = { _ in "This detector requires extended inspection." }
         inspect = { context in
             switch try await evaluate(context) {
             case .findings(let findings): return findings
-            case .partial(_, let reason), .unavailable(let reason): throw RepairError.blocked(reason)
+            case .partial(_, let reason), .unavailable(let reason): throw InspectionError.blocked(reason)
             }
         }
     }
@@ -239,8 +180,8 @@ public struct RepositoryCheck: Identifiable, Sendable {
 }
 
 public struct RepositoryIssueCatalog: Sendable {
-    /// Retained as detectors for saved repair sessions, but displayed through native Sync.
-    public static let syncCheckIDs: Set<String> = ["git.changes", "git.push", "git.pull", "git.diverged"]
+    /// Git activity is displayed as status, separately from actionable findings.
+    public static let activityCheckIDs: Set<String> = ["git.changes", "git.push", "git.pull", "git.diverged"]
     public let checks: [RepositoryCheck]
 
     public init(checks: [RepositoryCheck] = Self.standardChecks) {
@@ -252,7 +193,7 @@ public struct RepositoryIssueCatalog: Sendable {
         checks.filter { !disabledChecks.contains($0.id) }.flatMap { $0.detect(snapshot) }
     }
 
-    /// Keep incomplete checks separate from detector findings and repair conversations.
+    /// Keep incomplete checks separate from confirmed detector findings.
     public func incompleteItems(in report: RepositoryInspectionReport, disabledChecks: Set<String> = []) -> [RepositoryIssueListItem] {
         let unavailable = report.unavailableChecks
         return checks.compactMap { check in
@@ -262,7 +203,7 @@ public struct RepositoryIssueCatalog: Sendable {
     }
 
     /// Verification always uses the registered detector, independently of display filters.
-    public func verify(_ finding: RepositoryFinding, in snapshot: RepositorySnapshot) -> RepairVerification {
+    public func verify(_ finding: RepositoryFinding, in snapshot: RepositorySnapshot) -> InspectionVerification {
         guard snapshot.id == finding.repositoryID else { return .unknown("Repository identity changed.") }
         guard let check = checks.first(where: { $0.id == finding.checkID }) else {
             return .unknown("The original detector is no longer registered.")
@@ -277,57 +218,57 @@ public struct RepositoryIssueCatalog: Sendable {
     public static let standardChecks: [RepositoryCheck] = [
         check("git.changes", "Uncommitted changes", .git, "circle.fill") { s in
             guard !s.changes.isEmpty else { return nil }
-            return ("\(s.changedFileCount) files have local changes on \(s.branch).", .information, ["git.commit"])
+            return ("\(s.changedFileCount) files have local changes on \(s.branch).", .information)
         },
         check("git.diverged", "Branch has diverged", .git, "arrow.triangle.branch", inspections: ["comparison"]) { s in
             guard let ahead = s.ahead, let behind = s.behind, ahead > 0, behind > 0 else { return nil }
-            return ("\(s.branch) is \(ahead) commits ahead and \(behind) behind \(s.upstream ?? "its upstream"). Review both histories before reconciling them.", .blocked, ["git.inspect"])
+            return ("\(s.branch) is \(ahead) commits ahead and \(behind) behind \(s.upstream ?? "its upstream"). Review both histories before reconciling them.", .blocked)
         },
         check("git.push", "Commits to push", .git, "arrow.up", inspections: ["comparison"]) { s in
             guard let ahead = s.ahead, let behind = s.behind, ahead > 0, behind == 0 else { return nil }
-            return ("\(ahead) commits on \(s.branch) are ahead of \(s.upstream ?? "its upstream").", .attention, ["git.push"])
+            return ("\(ahead) commits on \(s.branch) are ahead of \(s.upstream ?? "its upstream").", .attention)
         },
         check("git.pull", "Commits to pull", .git, "arrow.down", inspections: ["comparison"]) { s in
             guard let ahead = s.ahead, let behind = s.behind, behind > 0, ahead == 0 else { return nil }
-            return ("\(behind) commits are available from \(s.upstream ?? "its upstream").", .attention, ["git.pull"])
+            return ("\(behind) commits are available from \(s.upstream ?? "its upstream").", .attention)
         },
         check("git.staleBranches", "Stale branches", .git, "arrow.triangle.branch", inspections: ["branches"]) { s in
             guard !s.staleBranches.isEmpty else { return nil }
-            return ("\(s.staleBranches.count) local branches have been inactive for 90 days: \(s.staleBranches.joined(separator: ", ")).", .information, ["git.staleBranches"])
+            return ("\(s.staleBranches.count) local branches have been inactive for 90 days: \(s.staleBranches.joined(separator: ", ")).", .information)
         },
         check("git.worktrees", "Linked worktrees", .git, "square.on.square", inspections: ["worktrees"]) { s in
             guard !s.worktrees.isEmpty else { return nil }
-            return ("\(s.worktrees.count) additional linked worktrees: \(s.worktrees.joined(separator: ", ")).", .information, ["git.worktrees"])
+            return ("\(s.worktrees.count) additional linked worktrees: \(s.worktrees.joined(separator: ", ")).", .information)
         },
         check("files.readme", "Missing README", .documentation, "doc.text", inspections: ["files"]) { s in
             guard let files = s.rootFiles, !files.contains(where: isReadme) else { return nil }
-            return ("No README file was found at the repository root.", .attention, ["files.readme"])
+            return ("No README file was found at the repository root.", .attention)
         },
         check("files.gitignore", "Missing .gitignore", .setup, "doc.badge.gearshape", inspections: ["files"]) { s in
             guard let files = s.rootFiles, !files.contains(".gitignore") else { return nil }
-            return ("No root .gitignore file was found. Review suggested rules for this project.", .information, ["files.gitignore"])
+            return ("No root .gitignore file was found. Review suggested rules for this project.", .information)
         },
         check("files.license", "Missing license file", .setup, "text.badge.checkmark", inspections: ["files"]) { s in
             guard let files = s.rootFiles, !files.contains(where: isLicense) else { return nil }
-            return ("No LICENSE, LICENCE, or COPYING file was found. Choose a license only if you intend to license this project.", .information, ["files.license.mit", "files.license"])
+            return ("No LICENSE, LICENCE, or COPYING file was found. Choose a license only if you intend to license this project.", .information)
         },
         check("inspection.remote", "Remote check failed", .inspection, "exclamationmark.circle") { s in
             guard let error = s.fetchError else { return nil }
-            return ("Local status is available; remote counts may be out of date. \(error)", .blocked, ["git.refresh"])
+            return ("Local status is available; remote counts may be out of date. \(error)", .blocked)
         },
         check("inspection.comparison", "Upstream comparison unavailable", .inspection, "questionmark.circle") { s in
             guard s.upstream != nil, s.ahead == nil || s.behind == nil else { return nil }
-            return ("The configured upstream could not be compared with the current branch. Counts are unknown; retry checks to refresh them.", .blocked, ["git.refresh"])
+            return ("The configured upstream could not be compared with the current branch. Counts are unknown; retry checks to refresh them.", .blocked)
         },
         check("inspection.files", "File checks unavailable", .inspection, "questionmark.circle") { s in
             guard s.rootFiles == nil else { return nil }
-            return ("Repository root files could not be inspected. Missing-file checks are unknown.", .blocked, ["git.refresh"])
+            return ("Repository root files could not be inspected. Missing-file checks are unknown.", .blocked)
         }
     ] + RepositoryCIChecks.checks() + RepositoryDependencyChecks.checks() + RepositoryWorkflowChecks.checks()
         + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
         + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
-        + RepositoryReadmeChecks.checks() + RepositoryWebsiteChecks.checks()
+
 
     public static func isReadme(_ filename: String) -> Bool {
         let name = filename.lowercased()
@@ -340,7 +281,7 @@ public struct RepositoryIssueCatalog: Sendable {
     }
 
     private static func check(_ id: String, _ title: String, _ category: IssueCategory, _ symbol: String,
-                              inspections: [String] = [], evaluate: @escaping @Sendable (RepositorySnapshot) -> (String, IssueSeverity, [String])?) -> RepositoryCheck {
+                              inspections: [String] = [], evaluate: @escaping @Sendable (RepositorySnapshot) -> (String, IssueSeverity)?) -> RepositoryCheck {
         RepositoryCheck(id: id, title: title, category: category, symbol: symbol, availability: { s in
             for inspection in inspections {
                 if let error = s.inspectionErrors[inspection] { return error }
@@ -350,10 +291,10 @@ public struct RepositoryIssueCatalog: Sendable {
             }
             return nil
         }) { snapshot in
-            guard let (evidence, severity, actions) = evaluate(snapshot) else { return [] }
+            guard let (evidence, severity) = evaluate(snapshot) else { return [] }
             return [RepositoryFinding(repositoryID: snapshot.id, checkID: id, subject: category == .git ? snapshot.branch : "",
                                       title: title, evidence: evidence, category: category, severity: severity,
-                                      symbol: symbol, recipeIDs: actions)]
+                                      symbol: symbol)]
         }
     }
 }

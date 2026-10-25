@@ -14,14 +14,13 @@ final class RepositoryHealthChecksTests: XCTestCase {
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
 
-    func testAllTenDetectorsAndRecipesAreRegistered() {
+    func testAllTenDetectorsAreRegistered() {
         let checks = RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
             + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
         XCTAssertEqual(checks.count, 10)
         XCTAssertEqual(Set(checks.map(\.id)).count, 10)
         for check in checks {
             XCTAssertTrue(RepositoryIssueCatalog().checks.contains { $0.id == check.id })
-            XCTAssertTrue(RepairRecipeCatalog().recipes.contains { $0.id == check.id })
         }
     }
     func testUnpublishedBranchesUsesEveryRemoteAndSkipsActiveBranch() async throws {

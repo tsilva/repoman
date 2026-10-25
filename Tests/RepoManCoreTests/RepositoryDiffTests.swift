@@ -1,7 +1,7 @@
 import XCTest
 @testable import RepoManCore
 
-final class RepairDiffTests: XCTestCase {
+final class RepositoryDiffTests: XCTestCase {
     func testWorkingTreeDiffIncludesStagedUnstagedAndUntrackedWithoutWriting() throws {
         let directory = try makeRepository()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -23,7 +23,7 @@ final class RepairDiffTests: XCTestCase {
         let indexBefore = try Data(contentsOf: indexURL)
         let statusBefore = try GitRunner.run(["status", "--porcelain", "-z"], at: directory)
 
-        let diff = RepairDiff(try RepairDiff.workingTreeSource(at: directory))
+        let diff = RepositoryDiff(try RepositoryDiff.workingTreeSource(at: directory))
 
         XCTAssertEqual(Set(diff.files.map(\.path)), ["tracked.txt", "deleted.txt", "café with spaces.txt", "binary.dat", "empty.txt"])
         let tracked = try XCTUnwrap(diff.files.first { $0.path == "tracked.txt" })
@@ -40,25 +40,25 @@ final class RepairDiffTests: XCTestCase {
     func testWorkingTreeDiffBeforeFirstCommitAndForCleanRepository() throws {
         let directory = try makeRepository()
         defer { try? FileManager.default.removeItem(at: directory) }
-        XCTAssertTrue(RepairDiff(try RepairDiff.workingTreeSource(at: directory)).files.isEmpty)
+        XCTAssertTrue(RepositoryDiff(try RepositoryDiff.workingTreeSource(at: directory)).files.isEmpty)
         try write("staged\n", to: "new.txt", in: directory)
         _ = try GitRunner.run(["add", "new.txt"], at: directory)
         try write("working\n", to: "new.txt", in: directory)
-        let diff = RepairDiff(try RepairDiff.workingTreeSource(at: directory))
+        let diff = RepositoryDiff(try RepositoryDiff.workingTreeSource(at: directory))
         XCTAssertEqual(diff.files.count, 1)
         XCTAssertEqual(diff.files.first?.status, "Added")
         XCTAssertEqual(diff.files.first?.lines.filter { $0.kind == .addition }.map(\.text), ["working"])
         _ = try GitRunner.run(["add", "."], at: directory)
         _ = try GitRunner.run(["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
                                "commit", "-m", "Initial"], at: directory)
-        XCTAssertTrue(RepairDiff(try RepairDiff.workingTreeSource(at: directory)).files.isEmpty)
+        XCTAssertTrue(RepositoryDiff(try RepositoryDiff.workingTreeSource(at: directory)).files.isEmpty)
     }
 
     func testWorkingTreeDiffReportsInvalidRepository() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        XCTAssertThrowsError(try RepairDiff.workingTreeSource(at: directory))
+        XCTAssertThrowsError(try RepositoryDiff.workingTreeSource(at: directory))
     }
 
     private func makeRepository() throws -> URL {
@@ -73,7 +73,7 @@ final class RepairDiffTests: XCTestCase {
     }
 
     func testCountsAndLineNumbersAcrossHunksAndFiles() {
-        let diff = RepairDiff("""
+        let diff = RepositoryDiff("""
         diff --git a/docs/issues.md b/docs/issues.md
         --- a/docs/issues.md
         +++ b/docs/issues.md
@@ -104,7 +104,7 @@ final class RepairDiffTests: XCTestCase {
     }
 
     func testHeaderLookingContentIsCountedAndFragmentsRemainSeparate() {
-        let diff = RepairDiff("""
+        let diff = RepositoryDiff("""
         --- first.md
         @@ -1 +1 @@
         --- removed content
@@ -120,7 +120,7 @@ final class RepairDiffTests: XCTestCase {
     }
 
     func testRenameBinaryDeletedAndModeChanges() {
-        let diff = RepairDiff("""
+        let diff = RepositoryDiff("""
         diff --git a/old.txt b/new.txt
         similarity index 100%
         rename from old.txt
@@ -149,7 +149,7 @@ final class RepairDiffTests: XCTestCase {
     }
 
     func testSpacesAndGitQuotedUnicodePaths() {
-        let diff = RepairDiff("""
+        let diff = RepositoryDiff("""
         diff --git a/my file.txt b/my file.txt
         --- a/my file.txt
         +++ b/my file.txt
@@ -166,7 +166,7 @@ final class RepairDiffTests: XCTestCase {
     }
 
     func testEmptyDiffHasNoChanges() {
-        let diff = RepairDiff("")
+        let diff = RepositoryDiff("")
         XCTAssertTrue(diff.files.isEmpty)
         XCTAssertEqual(diff.additions, 0)
         XCTAssertEqual(diff.deletions, 0)

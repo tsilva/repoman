@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 # Snapshot the sources so concurrent edits cannot invalidate an in-flight check.
 build_dir=".build/window-resize-verification"
 mkdir -p "$build_dir/sources"
+# Remove deleted/renamed source files from earlier snapshots.
+rm -f "$build_dir"/sources/*.swift
 for source in RepoManCore/*.swift RepoMan/*.swift; do
     case "$source" in
         RepoMan/RepoManApp.swift) continue ;;

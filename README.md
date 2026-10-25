@@ -2,7 +2,7 @@
   <img src="logo.png" alt="RepoMan logo" width="280" />
   <br />
   <!-- repo-tagline:start -->
-  <strong>🔎 Find issues across your Git repositories. Fix them with AI 🤖</strong>
+  <strong>🔎 Check your Git repositories and inspect every issue 🧭</strong>
   <!-- repo-tagline:end -->
 </p>
 
@@ -10,9 +10,9 @@
   <a href="https://github.com/tsilva/repoman/blob/main/RepoMan.xcodeproj/project.pbxproj"><img src="https://img.shields.io/badge/macOS-27%2B-blue" alt="Requires macOS 27 or newer" /></a>
 </p>
 
-RepoMan is a macOS app for developers managing several local Git repositories. See uncommitted changes, commits to push or pull, stale branches, linked worktrees, missing project files, failing CI, and missing CI coverage in one dashboard. Build it from source, choose your repositories' parent folder, and repair issues through a Codex conversation for each issue.
+RepoMan is a macOS app for developers managing several local Git repositories. See uncommitted changes, commits to push or pull, stale branches, linked worktrees, missing project files, failing CI, and missing CI coverage in one dashboard. Choose your repositories' parent folder and inspect each finding's evidence. The dashboard and a shared command-line checker report evidence; Codex skills and your own tools handle maintenance.
 
-![RepoMan app showing repositories, detected issues, and repair instructions with illustrative data](docs/repoman-demo.png)
+![RepoMan app showing repositories, detected issues, and evidence with illustrative data](docs/repoman-demo.png)
 
 ## Install
 
@@ -20,7 +20,7 @@ Download the Apple Silicon DMG from [GitHub Releases](https://github.com/tsilva/
 
 RepoMan checks for a newer stable GitHub release at startup and every six hours. When a compatible DMG and checksum are available, a blue download button appears at the bottom of the sidebar (or in the toolbar when the sidebar is hidden). Click it to download, verify, install, and restart automatically. **RepoMan → Check for Updates…**, **About RepoMan**, and **Settings → General** also provide update controls. Checks use the public GitHub API and need no GitHub login.
 
-The updater verifies the release’s SHA-256 checksum, GitHub asset digest when provided, app identity, version, macOS requirement, and code signature before quitting. Updates are disabled while repairs, repository checks, or Git syncs are running. It saves conversations and replaces the app in its current location. A backup is kept until the replacement launches; installation or launch failures restore the previous version. Install in a writable Applications folder (such as `~/Applications`); apps running from the DMG or macOS App Translocation must be moved first. Development builds and demo mode cannot install updates. Ad-hoc signatures provide integrity checks; update authenticity relies on HTTPS and the repository’s GitHub release assets.
+The updater verifies the release’s SHA-256 checksum, GitHub asset digest when provided, app identity, version, macOS requirement, and code signature before quitting. Updates are disabled while repository checks are running. The updater replaces the app in its current location. A backup is kept until the replacement launches; installation or launch failures restore the previous version. Install in a writable Applications folder (such as `~/Applications`); apps running from the DMG or macOS App Translocation must be moved first. Development builds and demo mode cannot install updates. Ad-hoc signatures provide integrity checks; update authenticity relies on HTTPS and the repository’s GitHub release assets.
 
 To build from source, install **Xcode 27**:
 
@@ -34,37 +34,25 @@ In Xcode, select the **RepoMan** scheme and run it on your Mac.
 
 ## Use
 
-The RepoMan logo and wordmark sit in the top bar beside the window controls, above the left pane. The sidebar toggle and selected repository controls sit above the detail pane; search stays at the top of the sidebar.
+The RepoMan logo and wordmark sit in the top bar beside the window controls, above the left pane. The sidebar toggle sits above the detail pane; selected-repository Refresh sits alongside Finder, Terminal, editor and diff icons at the top right; search stays at the top of the sidebar.
 
-Click **Choose Folder…** and select the parent folder containing your repositories. Search, filter, or sort to find repositories needing attention; filter and sort controls sit beside the search field. Select a repository to see its **Issues** tree. Repeated issue types expand into individual file or subject instances. Select an instance to inspect its evidence, or use the aligned checkboxes to select several instances of the same type in one repository. Group arrows expand or collapse their children, with faint separators between issues. The group review offers **Select available instances to repair** for a shared repair. Click a group title to review its instances and conversations, then use **Confirm & archive all completed** to archive finished sessions together. The folder and terminal buttons in the toolbar open the selected repository in Finder or Terminal.
+Click **Choose Folder…** and select the parent folder containing your repositories. Search, filter, or sort to find repositories needing attention. Select a repository to see its flat **Issues** list, ordered by check category and then check. Every finding appears directly, including repeated files or subjects. Select a finding to read its title, full evidence, subject, check ID and category. Available CI and issue links open in your browser. **Copy maintenance task** copies the evidence and a fresh verification command for use in Codex.
 
-Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. Click the **↑↓ Sync** icon at the top right of **Issues** to pull and push directly when there are no local file changes. A spinner shows progress, the tooltip reports success, and failures show an alert. When files have changed, Sync opens a popup to review files, view the diff, and enter a description. **Commit & Sync** commits selected files, merges incoming commits, and pushes to the current branch's configured upstream. Unselected staged changes are preserved; incoming commits require all local changes to be committed. Sync reports progress and errors directly, and never force-pushes, rebases, or automatically stashes files. A failed push leaves local commits saved. Finish merge conflicts or configure a missing upstream in your editor or Terminal, then reopen Sync. After success, the popup shows the current branch status, committed-file count, and message subject. Click **Done** to close it, or **Review remaining changes** to start a fresh review of files left locally. Clicking outside dismisses the popup.
+Issue rows show current detector results. Incomplete checks remain visibly unknown, separate from confirmed findings. Queued and running checks appear while inspection is in progress; passed checks are hidden. Refresh after fixing something externally to check the result again. The app has no repair presets, selection checkboxes, conversations, agent execution or automatic repair recovery. Earlier conversation files remain on disk but are no longer loaded or resumed.
 
-The commit message box grows as you type and supports a subject and body separated by a blank line. Opening Sync automatically drafts a message from selected changes. The editor stays disabled with a spinner and **Generating commit message...** until the draft is ready. Edit it before committing, or click the wand to generate another draft. Generation uses RepoMan’s Codex login with `gpt-6.1-sol` and low reasoning effort. Large messages scroll within the popup.
+Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. Use your Git tools or the `repo-sync` skill to synchronize repositories; RepoMan does not commit, merge or push.
 
-For other issues, choose a repair preset or write custom instructions, edit the prompt, then click the **send button** at the bottom right of the textarea, or press **⌘Return**. Missing files and worktree or branch cleanup use the agent workflow. Selecting a preset does not run it.
+The folder, terminal and editor toolbar buttons open the selected repository in your own tools. The changes button opens its read-only Git diff. Open **Settings…** from the overflow menu or press **⌘,** to enable or disable checks and change the monitored folder. These preferences do not modify monitored repositories. RepoMan has no model-provider setup or inference calls; use skills such as `optimize-readme` for editorial reviews.
 
-Each repair session has one conversation and a fixed scope of one or more issue instances. Selected instances share a Codex thread, while each is verified independently. Completed and actively repaired instances are excluded from new selections. Conversation history preserves earlier individual and shared sessions; follow-ups continue the selected session. The send button inside the composer (or ⌘Return) sends the draft to Codex; submitted messages become read-only chat bubbles. The composer stays below the stream, and presets help compose the first prompt and disappear once it is sent. Assistant messages use Markdown, and shell commands expand to show their output. Animated thinking and working indicators show progress while waiting for Codex. Answer questions in the stream or stop the current turn from the composer.
-
-After every turn, RepoMan checks the issue again. If it remains or verification is unavailable, send another message in the same Codex thread. Conversations survive switching issues and restarting the app. Different issues can run at the same time, including in the same repository; each chat has its own Codex connection. Confirmed resolution keeps the issue in the list with a Finished state. Its conversation remains selectable and readable, with its composer removed. Finished issues keep their complete conversations across restarts and do not count toward outstanding issues. Repairs run without approval prompts inside the selected repository; sandboxed commands cannot read or write other personal files or repositories.
-
-![RepoMan live repair conversation with illustrative data](docs/repoman-repair.png)
-
-Install and sign in to the **Codex CLI** before running repairs. RepoMan automatically finds Codex and starts `codex app-server` over stdio. Every turn uses **GPT-6.1 Sol** (`gpt-6.1-sol`) with **high** reasoning effort, repository-scoped permissions, and approvals disabled. Authentication remains managed by Codex; RepoMan does not copy its credentials.
-
-After each turn ends, RepoMan collects fresh repository state and reruns the original detector. The issue disappears only when inspection confirms it is absent. An agent finishing successfully can still leave the issue present; failed inspection produces **Couldn’t verify**. Creating a README can resolve that issue while introducing an uncommitted-change finding.
-
-Open **Settings…** from the toolbar's overflow menu or press **⌘,** to enable or disable issue checks globally. Settings groups checks by Git, repository files, CI, and inspection, and saves changes automatically. Search settings to find a check, or use **General** to change the monitored folder. These display preferences do not cancel tasks or count as successful repairs.
-
-**CI failing** reads GitHub check runs and commit statuses for the latest published default-branch commit and the tracked branch (or matching published local branch). Install the GitHub CLI and sign in with `gh auth login`; RepoMan finds `gh` automatically and uses its existing login. Failed checks include a link to CI details. Pending, cancelled, missing, inaccessible, or incomplete results stay unavailable and cannot confirm a repair. Local unpushed changes are not represented by remote CI results.
+**CI failing** reads GitHub check runs and commit statuses for the latest published default-branch commit and the tracked branch (or matching published local branch). Install the GitHub CLI and sign in with `gh auth login`; RepoMan finds `gh` automatically and uses its existing login. Failed checks include a link to CI details. Pending, cancelled, missing, inaccessible, or incomplete results stay unavailable. Local unpushed changes are not represented by remote CI results.
 
 **Missing CI coverage** inspects local GitHub Actions workflows in code projects for recognizable build, test, lint, or type-check commands on branch pushes or pull requests. Dependency review, manual workflows, and tag-only releases do not satisfy it. This is a conservative configuration check, not a measurement of test coverage: custom actions, unrecognized scripts, reusable workflows, unsupported YAML, and external CI configurations may require review and are reported as unavailable.
 
-Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, published description drift, and opt-in notebook hygiene. GitHub repositories whose names start with `private-` (case-insensitive) must have private visibility; public and internal visibility are flagged. Refresh only reads visibility; the repair action can make the repository private. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
+Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, published description drift, and opt-in notebook hygiene. GitHub repositories whose names start with `private-` (case-insensitive) must have private visibility; public and internal visibility are flagged. The app only reads visibility; change repository settings in GitHub yourself. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
 
-Repositories declaring `tsilva.eu` domains in `.repo-metadata.toml` also receive separate availability, Sentry, Google Analytics, and Cloudflare proxy checks. See [website checks](docs/website-checks.md) for configuration, delivery verification, and the Vercel domain inventory tool.
+Live website availability, Sentry, Analytics and Cloudflare probes have been retired from RepoMan. Run live-site audits separately; see [website audit migration and domain inventory](docs/website-checks.md).
 
-See [the detector, recipe, and task architecture](docs/issues.md) for extending the workflow.
+See [the checker and issue-details architecture](docs/issues.md) for extending the workflow.
 
 ## Commands
 
@@ -73,7 +61,8 @@ GitHub Release. Request a local build explicitly to keep the artifacts local.
 The shell helper below builds local artifacts without publishing.
 
 ```bash
-swift test  # run core and Git integration tests
+swift test  # run shared checker and Git integration tests
+swift run repoman check --repo "$PWD" --check dependencies.safeguards --format json
 
 # Build the app locally
 xcodebuild -project RepoMan.xcodeproj -scheme RepoMan \
@@ -98,28 +87,29 @@ bash .codex/skills/build-release/scripts/build-release.sh
 ## Notes
 
 - Discovery scans visible direct child repositories with a `.git` directory or file. Linked worktrees are excluded from the repository list and shown under their primary repository. Nested folders are not scanned.
-- RepoMan remembers your folder, selected repository, filter, sort mode and direction, ignored checks, and disabled checks. Issues and their conversations persist under `~/Library/Application Support/RepoMan/repair-tasks.json`; interrupted sessions are reconciled without automatically replaying their prompts.
+- RepoMan remembers your folder, selected repository, filter, sort mode and direction, ignored checks, and disabled checks. Checker results and completion times persist under `~/Library/Application Support/RepoMan/inspection-cache.json`. Legacy `repair-tasks.json` files are left untouched and never read.
 - While a repository is being checked, a spinner replaces its issue counter. Each repository returns to its issue count as soon as its check finishes.
-- RepoMan automatically checks all repositories once at startup, fetching configured remotes even without an upstream and pruning deleted remote-tracking branches. Checks do not repeat on a timer. Choosing a folder checks its repositories; **Refresh** checks the selected repository and **Refresh All** explicitly checks all repositories. Repairs verify the affected repository when work stops.
+- Startup restores valid checker results and runs missing or expired checks. Every minute the scheduler checks for expired results. Choosing a folder checks its repositories; **Refresh** forces checks for the selected repository and **Refresh All** forces all repositories. Fetch updates configured remote-tracking refs without an upstream and may prune deleted remote-tracking branches.
 - Refresh fetches remote-tracking refs without merging, pulling, pushing, or changing working files. Git commands have timeouts and disable credential prompts. Failed fetches keep local status visible, but remote counts may be outdated.
-- Repository changes come from explicit Sync actions or queued agent repairs. Sync runs off the main actor and pauses refresh and repair scheduling while it changes Git state. RepoMan rechecks the reviewed branch, upstream, index, and files before committing.
-- Git counts require a known upstream comparison for push/pull. Routine changes, push/pull, and divergence appear through Sync instead of agent issues. Stale branches have no commits in 90 days, excluding `main`, `master`, and branches checked out in any worktree. Linked worktrees exclude the primary worktree and appear as informational findings.
-- Refresh skips repositories sharing the active repair’s Git common directory, including linked worktrees, while continuing to inspect other repositories. Locks and checks coordinate RepoMan work; external Git tools can still change a checkout.
-- The screenshots and `--demo` mode use illustrative data. Demo mode cannot run agents, answer agent questions, cancel real tasks, or persist repair runs.
+- Git counts require a known upstream comparison for push/pull. Routine changes and push/pull counts remain status information rather than actionable issue badges. Stale branches have no commits in 90 days, excluding `main`, `master`, and branches checked out in any worktree. Linked worktrees exclude the primary worktree and appear as informational findings.
+- External Git tools can change a checkout during inspection. Findings are observations, not writer clearance or authorization to publish changes.
+- The screenshots and `--demo` mode use illustrative data. Demo mode uses illustrative data and does not inspect real repositories.
 - Local packaging writes a DMG and checksum under `dist/`. Pushing a `vX.Y.Z` tag publishes them through the [release workflow](.github/workflows/release.yml). Packaging preserves the signed app's metadata and verifies its signature before creating the DMG and again after mounting it. Packaged builds are signed ad hoc and are not notarized; Gatekeeper may require manual approval.
 - No license is declared in this repository.
 
 ## Architecture
 
-The diagram shows discovery and refresh. The [checks and repairs guide](docs/issues.md) explains issue detection, prompt recipes, queued agent work, and verification.
+The diagram shows discovery and refresh. The [checks and issue-details guide](docs/issues.md) explains detection, evidence, scheduling and the shared CLI.
 
 ![RepoMan refresh architecture: folder discovery, refresh coordination, Git scanning, and the dashboard](docs/architecture.png)
 
-## AgentBridge routing
+## Shared CLI
 
-Model requests use only AgentBridge. Set `AGENTBRIDGE_BASE_URL` to its API root
-(default `http://127.0.0.1:8082/api/v1`). `AGENTBRIDGE_API_KEY` is an optional
-gateway token. OpenRouter credentials belong to AgentBridge. Existing model
-choices are retained; raw upstream IDs gain `openrouter/` only on outbound
-requests. There is no direct OpenRouter endpoint or fallback. Hosted deployments
-must configure a reachable AgentBridge URL instead of the loopback default.
+Every Xcode app build includes `Contents/Helpers/repoman`. For an app installed in `/Applications`:
+
+```sh
+/Applications/RepoMan.app/Contents/Helpers/repoman --list-checks
+/Applications/RepoMan.app/Contents/Helpers/repoman check --repo /path/to/repo --format json
+```
+
+The CLI uses the same detectors and repository exceptions as the dashboard. It runs fresh checks without reading desktop preferences or writing inspection caches. It never fetches or changes Git state. Add `--remote` to permit read-only GitHub checks through your existing `gh` login; otherwise those checks are explicitly skipped. Exit codes are 0 for complete, clean selected checks, 1 for findings or incomplete checks, and 2 for invocation/startup errors. A local pass does not establish remote health. See [the report contract and skill integration](docs/issues.md#shared-cli).

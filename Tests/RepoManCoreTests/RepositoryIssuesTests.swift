@@ -15,7 +15,7 @@ final class RepositoryIssuesTests: XCTestCase {
         try FileManager.default.removeItem(at: root)
     }
 
-    func testIncompleteChecksSharePendingCountsWithoutBecomingFindings() throws {
+    func testIncompleteChecksHaveSeparateCountsWithoutBecomingFindings() throws {
         let snapshot = try GitRepositoryScanner.scan(repository("incomplete"))
         let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: "git.pull", subject: "main",
             title: "Commits to pull", evidence: "3 commits are available.", category: .git, symbol: "arrow.down")
@@ -28,13 +28,13 @@ final class RepositoryIssuesTests: XCTestCase {
             "dependencies.lockfileDrift": .unavailable("Python groups need resolver review.")
         ], checkOrder: ["git.pull", "ci.coverage", "files.secrets", "dependencies.lockfileDrift"])
         let incomplete = issues.incompleteItems(in: report)
+        XCTAssertTrue(incomplete.allSatisfy(\.isIncomplete))
         XCTAssertEqual(Set(incomplete.map { $0.finding.checkID }), ["files.secrets", "dependencies.lockfileDrift"])
-        XCTAssertTrue(incomplete.allSatisfy { $0.isIncomplete && $0.task == nil && $0.finding.recipeIDs.isEmpty })
         XCTAssertEqual(incomplete.first { $0.finding.checkID == "dependencies.lockfileDrift" }?.finding.title,
             "Manifest and lockfile consistency")
         XCTAssertEqual(report.findings(), [finding, ciFinding])
-        let visible = RepositoryIssueListItem.items(findings: report.findings(), tasks: []) + incomplete
-        XCTAssertEqual(RepositoryIssueStatus.counts(in: visible), [.pending: 4])
+        let visible = RepositoryIssueListItem.items(findings: report.findings()) + incomplete
+        XCTAssertEqual(RepositoryIssueStatus.counts(in: visible), [.finding: 2, .incomplete: 2])
         XCTAssertEqual(issues.incompleteItems(in: report, disabledChecks: ["files.secrets"]).map { $0.finding.checkID },
             ["dependencies.lockfileDrift"])
         let recovered = RepositoryInspectionReport(snapshot: snapshot, results: [
@@ -43,19 +43,42 @@ final class RepositoryIssuesTests: XCTestCase {
         XCTAssertTrue(issues.incompleteItems(in: recovered).isEmpty)
     }
 
-    func testIncompleteCheckDoesNotReplaceAnExistingRepairConversation() throws {
-        let snapshot = try GitRepositoryScanner.scan(repository("conversation"))
-        let check = try XCTUnwrap(issues.checks.first { $0.id == "files.secrets" })
-        let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: check.id,
-            title: check.title, evidence: "Original evidence", category: check.category, symbol: check.symbol)
-        var task = RepairTask(finding: finding, repository: snapshot, prompt: "Review the finding")
-        task.state = .running
-        let incomplete = RepositoryIssueListItem(incompleteCheck: check, repositoryID: snapshot.id, reason: "File too large")
-        let visible = RepositoryIssueListItem.items(findings: [], tasks: [task], includeCompleted: true) + [incomplete]
-        XCTAssertEqual(visible.count, 2)
-        XCTAssertEqual(Set(visible.map(\.id)).count, 2)
-        XCTAssertEqual(visible.first?.task?.id, task.id)
-        XCTAssertEqual(RepositoryIssueStatus.counts(in: visible), [.processing: 1, .pending: 1])
+    func testExternallyCorrectedFindingDisappearsAfterRefresh() throws {
+        let repo = try repository("external-fix", initialFiles: ["README.md", ".gitignore"])
+        let initial = issues.findings(in: try GitRepositoryScanner.scan(repo))
+        XCTAssertTrue(RepositoryIssueListItem.items(findings: initial).contains { $0.finding.checkID == "files.license" })
+        try write("LICENSE", "Example license", in: repo)
+        let current = issues.findings(in: try GitRepositoryScanner.scan(repo))
+        XCTAssertFalse(RepositoryIssueListItem.items(findings: current).contains { $0.finding.checkID == "files.license" })
+    }
+
+    func testFlatIssueOrderingKeepsEveryInstanceInCategoryAndCheckOrder() {
+        func finding(_ checkID: String, _ category: IssueCategory, _ subject: String) -> RepositoryFinding {
+            RepositoryFinding(repositoryID: "/example/repo", checkID: checkID, subject: subject,
+                title: checkID, evidence: subject, category: category, symbol: "doc")
+        }
+        let stashA = finding("git.oldStashes", .git, "first")
+        let stashB = finding("git.oldStashes", .git, "second")
+        let branches = finding("git.staleBranches", .git, "main")
+        let docs = finding("docs.example", .documentation, "README.md")
+        let ci = finding("ci.example", .ci, "build")
+        let checks = [RepositoryCheck(id: "git.staleBranches", title: "Branches", category: .git, symbol: "doc", detect: { _ in [] }),
+                      RepositoryCheck(id: "git.oldStashes", title: "Stashes", category: .git, symbol: "doc", detect: { _ in [] })]
+        let input = RepositoryIssueListItem.items(findings: [ci, stashA, docs, branches, stashB])
+        let ordered = RepositoryIssueListItem.sortedByCheckCategory(input, checks: checks)
+        XCTAssertEqual(ordered.map(\.finding.id), [branches.id, stashA.id, stashB.id, docs.id, ci.id])
+        XCTAssertEqual(Set(ordered.map(\.id)), Set(input.map(\.id)))
+    }
+
+    func testIncompleteChecksRetainIdentityAndCategoryInFlatOrdering() {
+        let check = RepositoryCheck(id: "git.unknown", title: "Unknown", category: .git, symbol: "questionmark", detect: { _ in [] })
+        let incomplete = RepositoryIssueListItem(incompleteCheck: check, repositoryID: "/example/repo", reason: "Unavailable")
+        let finding = RepositoryFinding(repositoryID: "/example/repo", checkID: "docs.example", title: "Docs",
+            evidence: "Missing", category: .documentation, symbol: "doc")
+        let ordered = RepositoryIssueListItem.sortedByCheckCategory([RepositoryIssueListItem(finding: finding), incomplete], checks: [check])
+        XCTAssertEqual(ordered.first?.id, incomplete.id)
+        XCTAssertEqual(ordered.first?.incompleteReason, "Unavailable")
+        XCTAssertEqual(RepositoryIssueStatus.counts(in: ordered), [.finding: 1, .incomplete: 1])
     }
 
     func testFileChecksRecognizeVariantsAndDoNotTreatUnknownAsMissing() throws {
@@ -70,44 +93,11 @@ final class RepositoryIssuesTests: XCTestCase {
         XCTAssertEqual(issues.findings(in: unknown).map(\.checkID), ["inspection.files"])
     }
 
-    func testFinishedLicenseRepairRemainsInIssueListAfterRefreshAndReload() throws {
-        let repo = try repository("license", initialFiles: ["README.md", ".gitignore"])
-        let before = try GitRepositoryScanner.scan(repo)
-        let finding = try XCTUnwrap(issues.findings(in: before).first { $0.checkID == "files.license" })
-        var task = RepairTask(finding: finding, repository: before, prompt: "Add MIT License")
-        task.state = .running
-        let running = RepositoryIssueListItem.items(findings: issues.findings(in: before), tasks: [task], includeCompleted: true)
-        XCTAssertEqual(running.first { $0.finding.id == finding.id }?.task?.id, task.id)
-
-        try write("LICENSE", "MIT License", in: repo)
-        let after = try GitRepositoryScanner.scan(repo)
-        let verification = issues.verify(finding, in: after)
-        guard case .absent = verification else { return XCTFail("License finding should be resolved") }
-        task.state = .resolved
-        task.verification = verification
-        task.upsertConversation(RepairConversationEntry(id: "reply", kind: .assistant, text: "Added LICENSE."))
-        let storage = RepairTaskStorage(url: root.appendingPathComponent("repairs/tasks.json"))
-        try storage.save([task])
-
-        let currentFindings = issues.findings(in: after)
-        let visible = RepositoryIssueListItem.items(findings: currentFindings, tasks: try storage.load(), includeCompleted: true)
-        let finished = try XCTUnwrap(visible.first { $0.task?.id == task.id })
-        XCTAssertEqual(finished.finding, finding)
-        XCTAssertEqual(finished.task?.state, .resolved)
-        XCTAssertEqual(finished.task?.conversation, task.conversation)
-        XCTAssertFalse(finished.isArchived)
-        XCTAssertEqual(visible.filter { $0.finding.id == finding.id }.count, 1)
-        // Finished rows remain selectable without becoming outstanding findings again.
-        XCTAssertFalse(RepositoryIssueListItem.items(findings: currentFindings, tasks: [task])
-            .contains { $0.finding.id == finding.id })
-    }
-
     func testDivergenceProducesOneFindingAndWorktreesAreInformational() {
         let snapshot = RepositorySnapshot(url: root, name: "repo", branch: "feature", upstream: "origin/feature", remoteURL: nil,
                                            ahead: 2, behind: 3, changes: [], staleBranches: ["old"], worktrees: ["linked"], commits: [],
                                            rootFiles: ["README.md", ".gitignore", "LICENSE"])
         XCTAssertEqual(issues.findings(in: snapshot).map(\.checkID), ["git.diverged", "git.staleBranches", "git.worktrees"])
-        XCTAssertEqual(issues.findings(in: snapshot).first?.recipeIDs, ["git.inspect"])
         let informational = issues.findings(in: snapshot, disabledChecks: ["git.diverged"])
         XCTAssertEqual(informational.count, 2)
         XCTAssertTrue(informational.allSatisfy { $0.severity == .information })

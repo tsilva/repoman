@@ -36,7 +36,7 @@ enum RepositoryRuntimeChecks {
                     for raw in try context.readText(path).components(separatedBy: .newlines) {
                         let fields = InspectionConfig.withoutComment(raw).split(whereSeparator: \.isWhitespace)
                         if fields.first == (node ? "nodejs" : "python") {
-                            guard fields.count == 2 else { throw RepairError.blocked("Multiple tool versions need manual review.") }
+                            guard fields.count == 2 else { throw InspectionError.blocked("Multiple tool versions need manual review.") }
                             try add(path, String(fields[1]))
                         }
                     }
@@ -57,7 +57,7 @@ enum RepositoryRuntimeChecks {
                             (step.workingDirectory == nil || step.workingDirectory == ".") {
                             let key = node ? "node-version" : "python-version"
                             if let file = step.inputs[key + "-file"] {
-                                guard !file.contains("${{") else { throw RepairError.blocked("Dynamic runtime version files need manual review.") }
+                                guard !file.contains("${{") else { throw InspectionError.blocked("Dynamic runtime version files need manual review.") }
                                 let contents = try context.readText(file).trimmingCharacters(in: .whitespacesAndNewlines)
                                 if (file as NSString).lastPathComponent == "package.json" {
                                     try add(path, (try RepositoryLockfileChecks.json(context, file)["engines"] as? [String: String])?["node"], ci: true)
@@ -94,9 +94,9 @@ enum RepositoryRuntimeChecks {
     }
     private static func runtimeValue(_ json: [String: Any], field: String) throws -> String? {
         guard let raw = json[field] else { return nil }
-        guard let values = raw as? [String: Any] else { throw RepairError.blocked("Unsupported runtime declaration object.") }
+        guard let values = raw as? [String: Any] else { throw InspectionError.blocked("Unsupported runtime declaration object.") }
         guard let node = values["node"] else { return nil }
-        guard let value = node as? String else { throw RepairError.blocked("Runtime version declarations must be strings.") }
+        guard let value = node as? String else { throw InspectionError.blocked("Runtime version declarations must be strings.") }
         return value
     }
     private static func nearest(_ filename: String, directory: String, context: RepositoryInspectionContext) throws -> String? {
@@ -120,12 +120,12 @@ private struct VersionRange {
         let pattern = #"(>=|<=|==|~=|>|<|=|\^|~)?\s*v?([0-9]+)(?:\.([0-9]+|x|\*))?(?:\.([0-9]+|x|\*))?"#
         let captures = CheckSupport.captures(cleaned, pattern)
         var residue = cleaned, result = Self()
-        guard !captures.isEmpty else { throw RepairError.blocked("Unsupported runtime version selector.") }
+        guard !captures.isEmpty else { throw InspectionError.blocked("Unsupported runtime version selector.") }
         for match in captures {
             residue = residue.replacingOccurrences(of: match[0], with: "")
-            guard let major = Int(match[2]), major < 1000 else { throw RepairError.blocked("Unsupported runtime version.") }
+            guard let major = Int(match[2]), major < 1000 else { throw InspectionError.blocked("Unsupported runtime version.") }
             let minor = Int(match[3]), patch = Int(match[4])
-            guard (minor ?? 0) < 1000, (patch ?? 0) < 1000 else { throw RepairError.blocked("Unsupported runtime version.") }
+            guard (minor ?? 0) < 1000, (patch ?? 0) < 1000 else { throw InspectionError.blocked("Unsupported runtime version.") }
             let value = major * 1_000_000 + (minor ?? 0) * 1000 + (patch ?? 0)
             let selectorUpper = minor == nil ? (major + 1) * 1_000_000 : patch == nil ? major * 1_000_000 + (minor! + 1) * 1000 : value + 1
             switch match[1] {
@@ -144,7 +144,7 @@ private struct VersionRange {
             }
         }
         guard residue.allSatisfy({ $0.isWhitespace || $0 == "," }), result.lower < result.upper else {
-            throw RepairError.blocked("Unsupported or empty runtime version range.")
+            throw InspectionError.blocked("Unsupported or empty runtime version range.")
         }
         return result
     }

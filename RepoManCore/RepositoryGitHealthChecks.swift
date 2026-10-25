@@ -7,13 +7,13 @@ enum RepositoryGitHealthChecks {
                 try requireRemoteState(context)
                 guard try hasRemote(context) else { return [] }
                 let remotes = try context.gitRead(["for-each-ref", "--format=%(refname)", "refs/remotes"])
-                guard !remotes.isEmpty else { throw RepairError.blocked("No fetched remote branches are available for comparison.") }
+                guard !remotes.isEmpty else { throw InspectionError.blocked("No fetched remote branches are available for comparison.") }
                 let occupied = Set(try text(context, ["worktree", "list", "--porcelain"]).components(separatedBy: .newlines)
                     .filter { $0.hasPrefix("branch refs/heads/") }.map { String($0.dropFirst("branch ".count)) })
                 var findings: [RepositoryFinding] = []
                 for branch in try branches(context) where !occupied.contains(branch.ref) {
                     let output = try text(context, ["rev-list", "--count", branch.ref, "--not", "--remotes"])
-                    guard let count = Int(output), count >= 0 else { throw RepairError.blocked("Invalid branch comparison result.") }
+                    guard let count = Int(output), count >= 0 else { throw InspectionError.blocked("Invalid branch comparison result.") }
                     if count > 0 {
                         findings.append(CheckSupport.finding(context, "git.unpublishedBranches", branch.ref, "Unpublished branch work",
                             "\(branch.name) contains \(count) commits unreachable from any fetched remote branch. Review this work before removing the branch.", .git, "arrow.up.doc"))
@@ -44,9 +44,9 @@ enum RepositoryGitHealthChecks {
                 // No submodule traversal, hooks, network access or LFS filter execution.
                 let index = try text(context, ["ls-files", "--stage", "-z"])
                 for entry in index.split(separator: "\0") {
-                    guard let tab = entry.firstIndex(of: "\t") else { throw RepairError.blocked("Invalid Git index record.") }
+                    guard let tab = entry.firstIndex(of: "\t") else { throw InspectionError.blocked("Invalid Git index record.") }
                     let fields = entry[..<tab].split(separator: " ")
-                    guard fields.count == 3 else { throw RepairError.blocked("Invalid Git index metadata.") }
+                    guard fields.count == 3 else { throw InspectionError.blocked("Invalid Git index metadata.") }
                     guard fields[0] == "160000", fields[2] == "0" else { continue }
                     let path = String(entry[entry.index(after: tab)...])
                     guard try context.exists(path + "/.git") else {
@@ -59,7 +59,7 @@ enum RepositoryGitHealthChecks {
                     let top = try text(context, ["-C", path, "rev-parse", "--show-toplevel"])
                     let expected = context.snapshot.url.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath().path
                     guard URL(fileURLWithPath: top).standardizedFileURL.resolvingSymlinksInPath().path == expected else {
-                        throw RepairError.blocked("Submodule metadata does not identify its checkout.")
+                        throw InspectionError.blocked("Submodule metadata does not identify its checkout.")
                     }
                     let head = try text(context, ["-C", path, "rev-parse", "--verify", "HEAD"])
                     if head != fields[1] {
@@ -71,7 +71,7 @@ enum RepositoryGitHealthChecks {
                 guard !paths.isEmpty else { return findings }
                 let attributes = try text(context, ["check-attr", "-z", "filter", "--"] + paths)
                     .split(separator: "\0").map(String.init)
-                guard attributes.count % 3 == 0 else { throw RepairError.blocked("Invalid Git attribute response.") }
+                guard attributes.count % 3 == 0 else { throw InspectionError.blocked("Invalid Git attribute response.") }
                 for offset in stride(from: 0, to: attributes.count, by: 3) where attributes[offset + 2] == "lfs" {
                     let path = attributes[offset]
                     guard let size = try context.regularFileSize(path), size <= 1024 else { continue }
@@ -88,20 +88,20 @@ enum RepositoryGitHealthChecks {
     private static func branches(_ context: RepositoryInspectionContext) throws -> [Branch] {
         let output = try text(context, ["for-each-ref", "--format=%(refname)%09%(upstream)%09%(upstream:track)", "refs/heads"])
         let lines = output.split(separator: "\n")
-        guard lines.count <= 64 else { throw RepairError.blocked("More than 64 local branches need inspection.") }
+        guard lines.count <= 64 else { throw InspectionError.blocked("More than 64 local branches need inspection.") }
         return try lines.map { line in
             let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard parts.count == 3, parts[0].hasPrefix("refs/heads/") else { throw RepairError.blocked("Invalid Git branch metadata.") }
+            guard parts.count == 3, parts[0].hasPrefix("refs/heads/") else { throw InspectionError.blocked("Invalid Git branch metadata.") }
             return Branch(ref: String(parts[0]), upstream: String(parts[1]), tracking: String(parts[2]))
         }
     }
     private static func requireRemoteState(_ context: RepositoryInspectionContext) throws {
-        if context.snapshot.fetchError != nil { throw RepairError.blocked("Remote fetch failed; branch publication and upstream state cannot be verified.") }
+        if context.snapshot.fetchError != nil { throw InspectionError.blocked("Remote fetch failed; branch publication and upstream state cannot be verified.") }
     }
     private static func hasRemote(_ context: RepositoryInspectionContext) throws -> Bool { !(try text(context, ["remote"])).isEmpty }
     private static func text(_ context: RepositoryInspectionContext, _ args: [String], codes: Set<Int32> = [0]) throws -> String {
         let data = try context.gitRead(args, successfulExitCodes: codes)
-        guard let value = String(data: data, encoding: .utf8) else { throw RepairError.blocked("Git metadata is not UTF-8.") }
+        guard let value = String(data: data, encoding: .utf8) else { throw InspectionError.blocked("Git metadata is not UTF-8.") }
         // Preserve tab delimiters, including an empty final upstream field.
         return value.trimmingCharacters(in: .newlines)
     }

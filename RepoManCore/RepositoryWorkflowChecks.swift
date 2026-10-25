@@ -68,7 +68,7 @@ enum WorkflowInspection {
             if scalarIndent == nil {
                 guard !raw.prefix(while: { $0.isWhitespace }).contains("\t"),
                       !CheckSupport.matches(text, #"^(?:<<:|[^:]+:\s*[&*])"#) else {
-                    throw RepairError.blocked("Workflow YAML anchors or tabs require manual review.")
+                    throw InspectionError.blocked("Workflow YAML anchors or tabs require manual review.")
                 }
             }
             let line = Line(indent: indent, text: text)
@@ -76,7 +76,7 @@ enum WorkflowInspection {
             if scalarIndent == nil, line.value.hasPrefix("|") || line.value.hasPrefix(">") { scalarIndent = indent }
         }
         guard let jobs = lines.first(where: { $0.indent == 0 && $0.field == "jobs" }), jobs.value.isEmpty || jobs.value == "{}" else {
-            throw RepairError.blocked("Workflow jobs need supported block YAML.")
+            throw InspectionError.blocked("Workflow jobs need supported block YAML.")
         }
         return lines
     }
@@ -85,12 +85,12 @@ enum WorkflowInspection {
     }
     private static func failurePolicy(_ lines: [Line], indent: Int) throws -> Bool {
         guard let raw = lines.first(where: { $0.indent == indent && $0.field == "continue-on-error" })?.value else { return false }
-        guard ["true", "false"].contains(raw) else { throw RepairError.blocked("Conditional continue-on-error needs manual review.") }
+        guard ["true", "false"].contains(raw) else { throw InspectionError.blocked("Conditional continue-on-error needs manual review.") }
         return raw == "true"
     }
     private static func workingDirectory(_ lines: [Line]) throws -> String? {
         guard let raw = lines.first(where: { $0.field == "working-directory" })?.value else { return nil }
-        guard !raw.contains("${{"), !raw.hasPrefix("{") else { throw RepairError.blocked("Dynamic workflow working-directory needs manual review.") }
+        guard !raw.contains("${{"), !raw.hasPrefix("{") else { throw InspectionError.blocked("Dynamic workflow working-directory needs manual review.") }
         return InspectionConfig.scalar(raw)
     }
     static func references(_ source: String) throws -> [String] {
@@ -104,13 +104,13 @@ enum WorkflowInspection {
             if line.value.hasPrefix("|") || line.value.hasPrefix(">") { scalarIndent = line.indent; continue }
             if line.field == "uses" {
                 guard let reference = InspectionConfig.scalar(line.value), !reference.isEmpty, !reference.contains("${{") else {
-                    throw RepairError.blocked("Dynamic or empty action reference needs manual review.")
+                    throw InspectionError.blocked("Dynamic or empty action reference needs manual review.")
                 }
                 references.append(reference)
             }
             // Inline steps can contain uses fields hidden from the structural reader.
             if line.text.hasPrefix("- {") || (line.field == "steps" && !line.value.isEmpty && line.value != "[]") {
-                throw RepairError.blocked("Inline workflow steps require manual review.")
+                throw InspectionError.blocked("Inline workflow steps require manual review.")
             }
         }
         return references
@@ -124,19 +124,19 @@ enum WorkflowInspection {
         let globalDirectory = try workingDirectory(global.filter { $0.field == "working-directory" })
         var result: [Step] = []
         for index in jobs.indices where jobs[index].indent == jobIndent {
-            guard jobs[index].value.isEmpty else { throw RepairError.blocked("Inline jobs require manual review.") }
+            guard jobs[index].value.isEmpty else { throw InspectionError.blocked("Inline jobs require manual review.") }
             let job = block(jobs, index)
             let fieldIndent = job.first?.indent ?? jobIndent + 2
             let tolerates = try failurePolicy(job, indent: fieldIndent)
             guard let stepsIndex = job.firstIndex(where: { $0.indent == fieldIndent && $0.field == "steps" }) else { continue }
-            guard job[stepsIndex].value.isEmpty || job[stepsIndex].value == "[]" else { throw RepairError.blocked("Inline workflow steps require manual review.") }
+            guard job[stepsIndex].value.isEmpty || job[stepsIndex].value == "[]" else { throw InspectionError.blocked("Inline workflow steps require manual review.") }
             let defaults = Array(job.prefix(stepsIndex))
             let jobDirectory = try workingDirectory(defaults) ?? globalDirectory
             let lines = block(job, stepsIndex)
             guard let stepIndent = lines.first?.indent else { continue }
             var number = 0
             for start in lines.indices where lines[start].indent == stepIndent {
-                guard lines[start].text.hasPrefix("- "), !lines[start].text.hasPrefix("- {") else { throw RepairError.blocked("Unsupported workflow step syntax.") }
+                guard lines[start].text.hasPrefix("- "), !lines[start].text.hasPrefix("- {") else { throw InspectionError.blocked("Unsupported workflow step syntax.") }
                 number += 1
                 let content = [Line(indent: stepIndent + 2, text: String(lines[start].text.dropFirst(2)))] + block(lines, start)
                 let properties = content.filter { $0.indent == stepIndent + 2 }
@@ -153,13 +153,13 @@ enum WorkflowInspection {
                 if includeInputs, let withIndex = content.firstIndex(where: { $0.indent == stepIndent + 2 && $0.field == "with" }) {
                     let value = content[withIndex].value
                     let relevant = inputKeys == nil || inputKeys!.contains(where: { value.contains($0) })
-                    guard value.isEmpty || !relevant else { throw RepairError.blocked("Inline workflow action inputs need manual review.") }
+                    guard value.isEmpty || !relevant else { throw InspectionError.blocked("Inline workflow action inputs need manual review.") }
                     let fields = block(content, withIndex).filter { $0.indent == stepIndent + 4 && (inputKeys == nil || inputKeys!.contains($0.field)) }
                     guard fields.allSatisfy({ !$0.value.hasPrefix("|") && !$0.value.hasPrefix(">") }) else {
-                        throw RepairError.blocked("Unsupported workflow action input syntax.")
+                        throw InspectionError.blocked("Unsupported workflow action input syntax.")
                     }
                     for field in fields {
-                        guard inputs[field.field] == nil else { throw RepairError.blocked("Duplicate workflow action input.") }
+                        guard inputs[field.field] == nil else { throw InspectionError.blocked("Duplicate workflow action input.") }
                         inputs[field.field] = InspectionConfig.scalar(field.value)
                     }
                 }

@@ -1,0 +1,68 @@
+import Foundation
+#if SWIFT_PACKAGE
+import RepoManCore
+#endif
+
+@main
+struct RepoManCLI {
+    static let usage = """
+    Usage: repoman check --repo PATH [--check ID ...] [--remote] [--format text|json]
+           repoman --list-checks
+
+    Fresh repository checks using RepoManCore. No fetch, install, commit, merge or push.
+    Remote checks are skipped unless --remote permits read-only GitHub requests through gh.
+    Exit: 0 = selected checks complete and clean, 1 = findings or incomplete checks, 2 = error.
+    """
+    static func main() async {
+        do {
+            let arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments == ["--help"] || arguments == ["-h"] { print(usage); return }
+            if arguments == ["--list-checks"] {
+                for check in RepositoryIssueCatalog.standardChecks {
+                    print("\(check.id)\(check.requiresRemoteAccess ? " [remote]" : "")\t\(check.title)")
+                }
+                return
+            }
+            guard arguments.first == "check" else { throw CLIError.argument("Expected check command.") }
+            var path: String?, format = "text", remote = false, ids: Set<String> = []
+            var index = 1
+            var seen: Set<String> = []
+            while index < arguments.count {
+                let option = arguments[index]
+                if option == "--remote" {
+                    guard seen.insert(option).inserted else { throw CLIError.argument("Duplicate --remote.") }
+                    remote = true; index += 1; continue
+                }
+                guard ["--repo", "--check", "--format"].contains(option), index + 1 < arguments.count,
+                      !arguments[index + 1].hasPrefix("--"), !arguments[index + 1].isEmpty else {
+                    throw CLIError.argument("Invalid option or missing value: \(option)")
+                }
+                if option != "--check", !seen.insert(option).inserted { throw CLIError.argument("Duplicate \(option).") }
+                let value = arguments[index + 1]
+                switch option {
+                case "--repo": path = value
+                case "--check": ids.insert(value)
+                default: format = value
+                }
+                index += 2
+            }
+            guard let path, ["text", "json"].contains(format) else { throw CLIError.argument("Provide --repo and a valid format.") }
+            let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.resolvingSymlinksInPath()
+            let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            let version = Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
+            let report = try await RepositoryChecker.run(at: URL(fileURLWithPath: path), checkIDs: ids, remote: remote, checkerVersion: version)
+            if format == "json" { FileHandle.standardOutput.write(try report.json()); print("") }
+            else { print(report.text) }
+            exit(report.exitCode)
+        } catch {
+            // Git/provider error output may contain authenticated remote URLs.
+            let message = (error as? CLIError)?.message ?? "Repository checks could not start. Check the path, check IDs, remote opt-in and Git availability."
+            FileHandle.standardError.write(Data(("repoman: " + message + "\n" + usage + "\n").utf8))
+            exit(2)
+        }
+    }
+    enum CLIError: Error {
+        case argument(String)
+        var message: String { switch self { case .argument(let value): value } }
+    }
+}

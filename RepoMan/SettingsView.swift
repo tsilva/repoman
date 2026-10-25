@@ -7,7 +7,6 @@ struct SettingsView: View {
     @State private var section: SettingsSection = .issueChecks
     @State private var search = ""
     @State private var excludedPath = ""
-    @State private var configuringCheck: RepositoryCheck?
 
     private var query: String { search.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -17,18 +16,16 @@ struct SettingsView: View {
                 sidebar
                     .frame(width: min(326, max(240, geometry.size.width * 0.195)))
                 Rectangle().fill(Theme.border).frame(width: 1)
-                CodexScrollView {
+                DashboardScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         header
                         if query.isEmpty {
                             if section == .general { generalSettings }
-                            else if section == .providers { AgentBridgeSettingsView() }
                             else { issueChecks }
                         } else {
                             if matchesGeneral { generalSettings }
-                            if matches("Providers OpenRouter API key token models") { AgentBridgeSettingsView() }
                             issueChecks
-                            if !matchesGeneral && !matches("Providers OpenRouter API key token models") && matchingGroups.isEmpty {
+                            if !matchesGeneral && matchingGroups.isEmpty {
                                 ContentUnavailableView.search(text: query)
                                     .frame(maxWidth: .infinity)
                             }
@@ -63,16 +60,7 @@ struct SettingsView: View {
             }
             .sharedBackgroundVisibility(.hidden)
         }
-        .sheet(item: $configuringCheck) { check in
-            ModelCheckSettingsView(check: check) {
-                configuringCheck = nil
-                section = .providers
-                search = ""
-            }
-            .environmentObject(store)
-        }
-        .onAppear { showRequestedCheck() }
-        .onChange(of: store.requestedSettingsCheckID) { _, _ in showRequestedCheck() }
+
     }
 
     private var sidebar: some View {
@@ -141,11 +129,8 @@ struct SettingsView: View {
             if !query.isEmpty || section == .issueChecks {
                 Text("Choose which issues appear across all repositories.")
                     .foregroundStyle(Theme.secondary)
-                Text("Changes save automatically. Active repairs continue.")
+                Text("Changes save automatically. Refresh to run the selected checks.")
                     .font(.system(size: 13))
-                    .foregroundStyle(Theme.secondary)
-            } else if section == .providers {
-                Text("Connect providers used by configurable issue checks.")
                     .foregroundStyle(Theme.secondary)
             } else {
                 Text("Choose the folder RepoMan monitors for repositories.")
@@ -238,7 +223,7 @@ struct SettingsView: View {
     private func checks(in group: SettingsCheckGroup) -> [RepositoryCheck] {
         store.issueCatalog.checks.filter { check in
             group.categories.contains(check.category)
-                && !RepositoryIssueCatalog.syncCheckIDs.contains(check.id)
+                && !RepositoryIssueCatalog.activityCheckIDs.contains(check.id)
                 && matches("Issue checks \(group.title) \(check.title) \(check.settingsDescription)")
         }
     }
@@ -273,16 +258,6 @@ struct SettingsView: View {
                             .accessibilityLabel(check.title)
                             .accessibilityHint(check.settingsDescription)
                             .accessibilityIdentifier("settings.check.\(check.id)")
-                            if check.configurationKind != nil {
-                                Button { configuringCheck = check } label: {
-                                    Image(systemName: "gearshape").foregroundStyle(Theme.secondary)
-                                        .frame(width: 28, height: 28)
-                                }
-                                .buttonStyle(.plain)
-                                .help("Configure \(check.title)")
-                                .accessibilityLabel("Configure \(check.title)")
-                                .accessibilityIdentifier("settings.configure.\(check.id)")
-                            }
                         }
                         .padding(.horizontal, 18)
                         .padding(.vertical, 8)
@@ -296,14 +271,6 @@ struct SettingsView: View {
                 }
             }
         }
-    }
-
-    private func showRequestedCheck() {
-        guard let id = store.requestedSettingsCheckID else { return }
-        store.requestedSettingsCheckID = nil
-        configuringCheck = store.issueCatalog.checks.first { $0.id == id && $0.configurationKind != nil }
-        section = .issueChecks
-        search = ""
     }
 
     private func settingsGroup<Content: View>(_ title: String,
@@ -325,10 +292,9 @@ struct SettingsView: View {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case issueChecks = "Issue checks"
-    case providers = "Providers"
     var id: Self { self }
     var symbol: String {
-        switch self { case .general: "gearshape"; case .issueChecks: "checkmark.circle"; case .providers: "key" }
+        switch self { case .general: "gearshape"; case .issueChecks: "checkmark.circle" }
     }
 }
 
@@ -377,7 +343,6 @@ private extension RepositoryCheck {
         case "git.checkoutIntegrity": "A nested Git repository (submodule) is missing or at an unexpected commit, or a Git LFS file contains a placeholder instead of its actual content."
         case "files.mergeMarkers": "Git conflict markers such as <<<<<<< remain in tracked source files, indicating a merge conflict may not have been fully resolved."
         case "files.readme": "No README was found in the repository's top-level folder to explain the project and how to use it."
-        case "docs.readmeConsistency": "Checks README layout and clarity against optimize-readme. Uses your RepoMan Codex login for clarity judgments by default; configure the service with the cog."
         case "files.gitignore": "No .gitignore was found in the top-level folder to tell Git which local files to leave untracked."
         case "files.license": "No LICENSE, LICENCE, or COPYING file was found in the top-level folder to explain how others may use the project."
         case "files.generatedTracked": "Git tracks files usually created by tools, such as dependency folders, caches, or build output."
@@ -392,10 +357,6 @@ private extension RepositoryCheck {
         case "dependencies.runtime": "Node.js or Python version requirements conflict across project settings, version files, containers, or automated checks."
         case "github.description": "The description on GitHub differs from the marked tagline in the README published on the default branch. Local README edits do not count."
         case "github.privateVisibility": "A GitHub repository whose name starts with private- must have private visibility. Public and internal repositories with this prefix need attention."
-        case "website.online": "Checks HTTPS availability for the tsilva.eu domains declared in .repo-metadata.toml. DNS, TLS, HTTP errors, and redirects outside the declared domains need attention."
-        case "website.sentry": "Visits the public site in an isolated browser and looks for accepted Sentry events. Configuration alone stays unverified; no synthetic errors are sent."
-        case "website.analytics": "Looks for Google Analytics collection in an isolated browser. Queued beacons and configured tags stay unverified until successful delivery is observed. Consent is not changed."
-        case "website.cloudflare": "Checks for Cloudflare's CF-Ray header on the requested domain's HTTPS response, including canonical redirects."
         case "docs.brokenLinks": "Documentation links or agent skill references point to local files that cannot be found. External websites are not checked."
         case "notebooks.hygiene": "Jupyter notebooks contain saved errors or more than 256 KiB of output by default. Enable this per repository in .repoman.json; cells are never run."
         case "ci.failing": "Automated GitHub checks, such as builds or tests, have failed on published commits."

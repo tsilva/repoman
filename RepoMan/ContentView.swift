@@ -1,6 +1,27 @@
 import AppKit
 import SwiftUI
 
+/// Read-only Git activity survives independently of synchronization tools.
+struct RepositoryGitStatus: View {
+    let repository: RepositorySnapshot
+    var body: some View {
+        HStack(spacing: 8) {
+            if let count = repository.behind, count > 0 { countLabel("↓", count, color: Theme.blue, title: "commits to pull") }
+            if let count = repository.ahead, count > 0 { countLabel("↑", count, color: Theme.blue, title: "commits to push") }
+            if repository.changedFileCount > 0 { countLabel("●", repository.changedFileCount, color: Theme.amber, title: "changed files") }
+        }.font(.system(size: 11)).monospacedDigit().fixedSize()
+    }
+    private func countLabel(_ symbol: String, _ count: Int, color: Color, title: String) -> some View {
+        HStack(spacing: 3) {
+            Text(symbol).foregroundStyle(color)
+            Text(count.formatted()).foregroundStyle(Theme.secondary)
+        }
+        .help("\(count) \(title)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(count) \(title)")
+    }
+}
+
 struct ContentView: View {
     private static let brandIcon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
         .flatMap { NSImage(contentsOf: $0) }
@@ -129,6 +150,14 @@ struct ContentView: View {
                 }
                 Spacer(minLength: 16)
                 if !sidebarVisible { AppUpdateButton() }
+                if let repository = store.selectedRepository {
+                    let isChecking = store.loadingRepositoryIDs.contains(repository.id)
+                    ToolbarActionButton(symbol: "arrow.clockwise", title: "Refresh selected repository issues",
+                        isRotating: isChecking) { store.refreshSelected() }
+                        .disabled(store.isScanning || store.isFetching || isChecking)
+                        .accessibilityIdentifier("refresh-repository-issues-button")
+
+                }
                 ToolbarActionButton(symbol: "folder", title: "Open in Finder") {
                     if let repository = store.selectedRepository {
                         NSWorkspace.shared.open(repository.url)
@@ -370,7 +399,7 @@ struct ContentView: View {
                 onSelect: { store.select($0) }
             )
         } else {
-            CodexScrollView {
+            DashboardScrollView {
                 VStack(spacing: 0) {
                     if !store.repositories.isEmpty {
                         Text("No matching repositories")
@@ -1238,8 +1267,8 @@ struct Panel<Header: View, Content: View>: View {
     }
 }
 
-/// Keeps native scrolling while using the thin, trackless indicators of the Codex theme.
-struct CodexScrollView<Content: View>: View {
+/// Keeps native scrolling while using the thin, trackless indicators of the dashboard.
+struct DashboardScrollView<Content: View>: View {
     @ViewBuilder let content: Content
     @State private var position = ScrollPosition()
     // Keep a stable reference without observing it here. Scroll offsets must only
@@ -1264,7 +1293,7 @@ struct CodexScrollView<Content: View>: View {
             scrollbar.metrics = newValue
         }
         .overlay(alignment: .trailing) {
-            CodexScrollbar(state: scrollbar, position: $position)
+            DashboardScrollbar(state: scrollbar, position: $position)
         }
     }
 }
@@ -1273,7 +1302,7 @@ private final class ScrollbarState: ObservableObject {
     @Published var metrics = ScrollbarMetrics()
 }
 
-private struct CodexScrollbar: View {
+private struct DashboardScrollbar: View {
     @ObservedObject var state: ScrollbarState
     @Binding var position: ScrollPosition
     @State private var dragStartOffset: CGFloat?
@@ -1347,7 +1376,7 @@ private struct ScrollbarMetrics: Equatable {
 }
 
 /// Plain-text editing that fits wrapped content; the surrounding panel handles scrolling.
-struct CodexTextEditor: NSViewRepresentable {
+struct MultilineTextEditor: NSViewRepresentable {
     @Binding var text: String
     let accessibilityLabel: String
     let onSubmit: () -> Void
@@ -1443,40 +1472,3 @@ struct CodexTextEditor: NSViewRepresentable {
 }
 
 /// A native popup that accepts the full width proposed by its SwiftUI container.
-struct CodexPresetPicker: NSViewRepresentable {
-    @Binding var selection: String
-    let options: [(id: String, title: String)]
-
-    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
-    func makeNSView(context: Context) -> NSPopUpButton {
-        let button = NSPopUpButton(frame: .zero, pullsDown: false)
-        button.font = .systemFont(ofSize: 12)
-        button.controlSize = .large
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.selectPreset(_:))
-        button.setAccessibilityLabel("Repair preset")
-        return button
-    }
-    func updateNSView(_ button: NSPopUpButton, context: Context) {
-        context.coordinator.selection = $selection
-        if button.itemArray.map({ $0.representedObject as? String }) != options.map({ Optional($0.id) }) ||
-            button.itemTitles != options.map(\.title) {
-            button.removeAllItems()
-            for option in options {
-                button.addItem(withTitle: option.title)
-                button.lastItem?.representedObject = option.id
-            }
-        }
-        if let index = options.firstIndex(where: { $0.id == selection }) { button.selectItem(at: index) }
-    }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? nsView.intrinsicContentSize.width, height: 30)
-    }
-    final class Coordinator: NSObject {
-        var selection: Binding<String>
-        init(selection: Binding<String>) { self.selection = selection }
-        @objc func selectPreset(_ sender: NSPopUpButton) {
-            if let id = sender.selectedItem?.representedObject as? String { selection.wrappedValue = id }
-        }
-    }
-}

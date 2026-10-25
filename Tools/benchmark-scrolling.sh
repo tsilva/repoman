@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 # Snapshot sources so edits in another chat cannot invalidate an in-flight build.
 build_dir=".build/scrolling-benchmark"
 mkdir -p "$build_dir/sources"
+# Remove deleted/renamed source files from earlier snapshots.
+rm -f "$build_dir"/sources/*.swift
 for source in RepoManCore/*.swift RepoMan/*.swift; do
     case "$source" in
         RepoMan/RepoManApp.swift|RepoMan/RepositoryStore.swift) continue ;;

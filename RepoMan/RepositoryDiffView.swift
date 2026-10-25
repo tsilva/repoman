@@ -1,31 +1,6 @@
 import SwiftUI
 
-struct RepairChangesBadge: View {
-    let diff: RepairDiff
-    let action: () -> Void
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Text(diff.files.isEmpty ? "View changes" : "\(diff.files.count) \(diff.files.count == 1 ? "file" : "files") changed")
-                    .foregroundStyle(Theme.secondary)
-                if !diff.files.isEmpty { RepairDiffCounts(additions: diff.additions, deletions: diff.deletions) }
-            }
-            .font(.system(size: 12)).padding(.horizontal, 12).padding(.vertical, 7)
-            .background(hovered ? Theme.selection : Theme.control, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.border, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 12))
-        }
-        .buttonStyle(.plain).onHover { hovered = $0 }
-        .accessibilityLabel("Review changes")
-        .accessibilityValue("\(diff.files.count) files changed, \(diff.additions) additions, \(diff.deletions) deletions")
-        .accessibilityIdentifier("repair-changes-badge")
-        .help("Open changes sidebar")
-    }
-}
-
-private struct RepairDiffCounts: View {
+private struct RepositoryDiffCounts: View {
     let additions: Int
     let deletions: Int
     var body: some View {
@@ -46,7 +21,7 @@ struct RepositoryWorkingTreeSidebar: View {
     var body: some View {
         Group {
             if let source {
-                RepairDiffSidebar(source: source, title: "Uncommitted changes",
+                RepositoryDiffSidebar(source: source, title: "Uncommitted changes",
                                   emptyTitle: "No uncommitted changes",
                                   emptyDescription: "This repository's working tree is clean.", close: close)
             } else {
@@ -76,7 +51,7 @@ struct RepositoryWorkingTreeSidebar: View {
                     }.joined()
                 } else {
                     loaded = try await Task.detached(priority: .userInitiated) {
-                        try RepairDiff.workingTreeSource(at: directory)
+                        try RepositoryDiff.workingTreeSource(at: directory)
                     }.value
                 }
                 guard !Task.isCancelled else { return }
@@ -91,19 +66,19 @@ struct RepositoryWorkingTreeSidebar: View {
     }
 }
 
-struct RepairDiffSidebar: View {
+struct RepositoryDiffSidebar: View {
     let source: String
     var title = "Changes"
     var emptyTitle = "No file diff available"
-    var emptyDescription = "The agent has not supplied a file diff yet."
+    var emptyDescription = "No changes were found in the selected comparison."
     let close: () -> Void
-    @State private var diff = RepairDiff("")
+    @State private var diff = RepositoryDiff("")
     @State private var selectedFileID: Int?
     @State private var filter = ""
-    private var selectedFile: RepairDiff.File? {
+    private var selectedFile: RepositoryDiff.File? {
         diff.files.first { $0.id == selectedFileID } ?? diff.files.first
     }
-    private var filteredFiles: [RepairDiff.File] {
+    private var filteredFiles: [RepositoryDiff.File] {
         diff.files.filter { filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) }
     }
 
@@ -114,7 +89,7 @@ struct RepairDiffSidebar: View {
                 Text("\(diff.files.count) \(diff.files.count == 1 ? "file" : "files")")
                     .font(.system(size: 11)).foregroundStyle(Theme.secondary)
                 Spacer()
-                RepairDiffCounts(additions: diff.additions, deletions: diff.deletions).font(.system(size: 12))
+                RepositoryDiffCounts(additions: diff.additions, deletions: diff.deletions).font(.system(size: 12))
                 Button(action: close) {
                     Image(systemName: "xmark").font(.system(size: 11)).frame(width: 26, height: 26)
                 }.buttonStyle(.plain).foregroundStyle(Theme.secondary)
@@ -124,7 +99,7 @@ struct RepairDiffSidebar: View {
             HSplitView {
                 Group {
                     if let file = selectedFile {
-                        RepairFileDiffView(file: file).id(file.id)
+                        RepositoryFileDiffView(file: file).id(file.id)
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "doc.text", description: Text(emptyDescription))
                     }
@@ -142,10 +117,10 @@ struct RepairDiffSidebar: View {
                         .background(Theme.control, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border, lineWidth: 1))
                         .padding(.horizontal, 10).padding(.top, 10)
-                    CodexScrollView {
+                    DashboardScrollView {
                         VStack(alignment: .leading, spacing: 3) {
-                            ForEach(RepairDiffTree.nodes(filteredFiles)) { node in
-                                RepairDiffTreeRow(node: node, selection: selectedFile?.id) { selectedFileID = $0 }
+                            ForEach(RepositoryDiffTree.nodes(filteredFiles)) { node in
+                                RepositoryDiffTreeRow(node: node, selection: selectedFile?.id) { selectedFileID = $0 }
                             }
                             if filteredFiles.isEmpty {
                                 Text("No matching files").font(.system(size: 11)).foregroundStyle(Theme.secondary).padding(10)
@@ -159,7 +134,7 @@ struct RepairDiffSidebar: View {
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .task(id: source) {
             let input = source
-            let parsed = await Task.detached(priority: .userInitiated) { RepairDiff(input) }.value
+            let parsed = await Task.detached(priority: .userInitiated) { RepositoryDiff(input) }.value
             guard !Task.isCancelled else { return }
             let path = selectedFile?.path
             diff = parsed
@@ -168,13 +143,13 @@ struct RepairDiffSidebar: View {
     }
 }
 
-private struct RepairDiffTree: Identifiable {
+private struct RepositoryDiffTree: Identifiable {
     let id: String
     let name: String
-    let file: RepairDiff.File?
-    let children: [RepairDiffTree]
+    let file: RepositoryDiff.File?
+    let children: [RepositoryDiffTree]
 
-    static func nodes(_ files: [RepairDiff.File], depth: Int = 0, prefix: String = "") -> [Self] {
+    static func nodes(_ files: [RepositoryDiff.File], depth: Int = 0, prefix: String = "") -> [Self] {
         let groups = Dictionary(grouping: files) { file in
             let parts = file.path.split(separator: "/")
             return depth < parts.count ? String(parts[depth]) : "Changes"
@@ -194,8 +169,8 @@ private struct RepairDiffTree: Identifiable {
     }
 }
 
-private struct RepairDiffTreeRow: View {
-    let node: RepairDiffTree
+private struct RepositoryDiffTreeRow: View {
+    let node: RepositoryDiffTree
     let selection: Int?
     let select: (Int) -> Void
     @State private var expanded = true
@@ -208,7 +183,7 @@ private struct RepairDiffTreeRow: View {
                     Text(node.name).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 3)
                     if file.additions > 0 || file.deletions > 0 {
-                        RepairDiffCounts(additions: file.additions, deletions: file.deletions).font(.system(size: 10))
+                        RepositoryDiffCounts(additions: file.additions, deletions: file.deletions).font(.system(size: 10))
                     }
                 }.font(.system(size: 11)).padding(.horizontal, 6).padding(.vertical, 8)
                     .background(selection == file.id ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
@@ -219,7 +194,7 @@ private struct RepairDiffTreeRow: View {
         } else {
             DisclosureGroup(isExpanded: $expanded) {
                 ForEach(node.children) { child in
-                    RepairDiffTreeRow(node: child, selection: selection, select: select)
+                    RepositoryDiffTreeRow(node: child, selection: selection, select: select)
                 }
             } label: {
                 Text(node.name).font(.system(size: 11, weight: .medium)).padding(.vertical, 6)
@@ -228,12 +203,12 @@ private struct RepairDiffTreeRow: View {
     }
 }
 
-private struct RepairFileDiffView: View {
-    let file: RepairDiff.File
+private struct RepositoryFileDiffView: View {
+    let file: RepositoryDiff.File
     private var emphasizedRanges: [Int: Range<Int>] {
         var ranges: [Int: Range<Int>] = [:]
-        var removed: [RepairDiff.Line] = []
-        var added: [RepairDiff.Line] = []
+        var removed: [RepositoryDiff.Line] = []
+        var added: [RepositoryDiff.Line] = []
         func flush() {
             for (old, new) in zip(removed, added) {
                 let a = Array(old.text), b = Array(new.text)
@@ -267,7 +242,7 @@ private struct RepairFileDiffView: View {
                 Image(systemName: file.reviewSymbol).foregroundStyle(file.reviewColor)
                 Text(file.path).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle).help(file.path)
                 Spacer(minLength: 4)
-                RepairDiffCounts(additions: file.additions, deletions: file.deletions).font(.system(size: 12))
+                RepositoryDiffCounts(additions: file.additions, deletions: file.deletions).font(.system(size: 12))
             }.padding(.horizontal, 14).frame(height: 42).background(Theme.panel)
             Rectangle().fill(Theme.border).frame(height: 1)
             if file.status == "Renamed", let old = file.oldPath {
@@ -281,7 +256,7 @@ private struct RepairFileDiffView: View {
                             Text("\(file.status) · No text changes").foregroundStyle(Theme.secondary).padding(16)
                         }
                         ForEach(file.lines) { line in
-                            RepairDiffLineView(line: line, emphasis: emphasis[line.id], path: file.path)
+                            RepositoryDiffLineView(line: line, emphasis: emphasis[line.id], path: file.path)
                         }
                     }.frame(minWidth: geometry.size.width, alignment: .leading).textSelection(.enabled)
                 }
@@ -290,8 +265,8 @@ private struct RepairFileDiffView: View {
     }
 }
 
-private struct RepairDiffLineView: View {
-    let line: RepairDiff.Line
+private struct RepositoryDiffLineView: View {
+    let line: RepositoryDiff.Line
     let emphasis: Range<Int>?
     let path: String
     private var text: AttributedString {
@@ -361,7 +336,7 @@ private struct RepairDiffLineView: View {
     }
 }
 
-private extension RepairDiff.File {
+private extension RepositoryDiff.File {
     var reviewSymbol: String {
         let ext = (path as NSString).pathExtension.lowercased()
         if ["png", "jpg", "jpeg", "gif", "webp", "svg", "icns"].contains(ext) { return "photo.fill" }

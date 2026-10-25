@@ -26,21 +26,21 @@ enum RepositoryCIChecks {
                     }
                 }
                 // A pending run must not resolve an earlier failure. Keep known failures visible.
-                if evidence.isEmpty, !unknown.isEmpty { throw RepairError.blocked(unknown.joined(separator: " ")) }
+                if evidence.isEmpty, !unknown.isEmpty { throw InspectionError.blocked(unknown.joined(separator: " ")) }
                 guard !evidence.isEmpty else { return [] }
                 return [RepositoryFinding(repositoryID: context.snapshot.id, checkID: "ci.failing",
                     subject: repository.owner + "/" + repository.name, title: "CI failing",
                     evidence: (evidence + unknown).joined(separator: "\n"), category: .ci, severity: .blocked,
-                    symbol: "xmark.seal", recipeIDs: ["ci.failing"], detailsURL: detailsURL)]
+                    symbol: "xmark.seal", detailsURL: detailsURL)]
             }),
             RepositoryCheck(id: "ci.coverage", title: "Missing CI coverage", category: .ci, symbol: "checkmark.shield", inspect: { context in
                 guard let files = context.snapshot.rootFiles else {
-                    throw RepairError.blocked("Repository files could not be inspected.")
+                    throw InspectionError.blocked("Repository files could not be inspected.")
                 }
                 guard hasCode(files) else { return [] }
                 if try files.contains(where: { [".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".travis.yml"].contains($0) }) ||
                     !(try context.filenames(in: ".circleci")).isEmpty || !(try context.filenames(in: ".buildkite")).isEmpty {
-                    throw RepairError.blocked("External CI configuration is present; coverage inspection currently supports GitHub Actions.")
+                    throw InspectionError.blocked("External CI configuration is present; coverage inspection currently supports GitHub Actions.")
                 }
                 let names = try context.filenames(in: ".github/workflows").filter { ["yml", "yaml"].contains(($0 as NSString).pathExtension) }
                 var uncertain = false
@@ -51,12 +51,12 @@ enum RepositoryCIChecks {
                     case .missing: break
                     }
                 }
-                if uncertain { throw RepairError.blocked("Workflow coverage could not be determined. Custom scripts, reusable workflows, and unsupported YAML need review.") }
+                if uncertain { throw InspectionError.blocked("Workflow coverage could not be determined. Custom scripts, reusable workflows, and unsupported YAML need review.") }
                 return [RepositoryFinding(repositoryID: context.snapshot.id, checkID: "ci.coverage",
                     title: "Missing CI coverage",
                     evidence: names.isEmpty ? "No GitHub Actions workflows were found for this code project." :
                         "No build, test, lint, or type-check validation triggered by branch pushes or pull requests was recognized in \(names.joined(separator: ", ")). Tag-only releases and dependency review do not provide routine code validation.",
-                    category: .ci, symbol: "checkmark.shield", recipeIDs: ["ci.coverage"])]
+                    category: .ci, symbol: "checkmark.shield")]
             })
         ]
     }
