@@ -105,6 +105,8 @@ The diagram shows discovery and refresh. The [checks and issue-details guide](do
 
 ## Shared CLI
 
+Use `$repo-maintenance` from the global `private-skills` collection in Codex for an iterative maintenance pass over selected repositories. The shared skill validates findings, proposes fixes and reruns checks after authorized repairs. Suspected RepoMan errors are brought to the user for approval before changing the checker. This workflow is maintained in `private-skills`.
+
 Every Xcode app build includes `Contents/Helpers/repoman`. For an app installed in `/Applications`:
 
 ```sh

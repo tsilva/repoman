@@ -2,6 +2,7 @@
 
 ## Project skills
 
+- Use `$repo-maintenance` from `/Users/tsilva/.codex/skills/private-skills/repo-maintenance/SKILL.md` for iterative CLI-driven repository maintenance. The shared skill validates findings, proposes fixes and reruns checks after authorized repairs; suspected RepoMan errors require user approval before checker changes. Maintain the workflow in `private-skills`.
 - Use `.codex/skills/build-release/SKILL.md` for `/build-release` and for RepoMan release builds, packaging, or GitHub publication. A bare invocation builds, verifies, and publishes entirely in GitHub Actions; explicitly local builds use the helper without publishing. Validation and dry runs also build in Actions. Pushing a version tag is the publication trigger.
 
 ## Project layout
