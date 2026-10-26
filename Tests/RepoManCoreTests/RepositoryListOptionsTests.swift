@@ -16,7 +16,7 @@ final class RepositoryListOptionsTests: XCTestCase {
         ]
         let expected: [RepositoryFilter: Set<String>] = [
             .all: Set(repositories.map(\.name)),
-            .needsAttention: ["push", "pull", "changed", "stale", "worktree", "fetch-error"],
+            .needsAttention: ["push", "pull", "fetch-error"],
             .toPush: ["push"], .toPull: ["pull"], .changedFiles: ["changed"],
             .staleBranches: ["stale"], .worktrees: ["worktree"]
         ]

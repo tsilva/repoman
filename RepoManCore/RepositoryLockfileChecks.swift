@@ -27,7 +27,7 @@ enum RepositoryLockfileChecks {
                         reasons = try bun(expected, source: context.readText(lock), directory: relative)
                     default: throw InspectionError.blocked("Static lockfile drift inspection supports npm v2/v3, pnpm v9, Bun text lockfiles and simple uv v1 projects; this manager needs manual review.")
                     }
-                } else { reasons = try uv(project: context.readText(manifest), lock: context.readText(lock), directory: relative) }
+                } else { reasons = try uv(project: context.readText(manifest), lock: context.readText(lock), directory: relative, manifest: manifest) }
                 if !reasons.isEmpty {
                     findings.append(CheckSupport.finding(context, "dependencies.lockfileDrift", manifest, "Manifest and lockfile disagree",
                         "\(manifest) differs from \(lock): " + reasons.joined(separator: "; ") + ". No resolver or installer was run.", .setup, "lock.trianglebadge.exclamationmark"))
@@ -119,11 +119,18 @@ enum RepositoryLockfileChecks {
         }
         return result
     }
-    private static func uv(project: String, lock: String, directory: String) throws -> [String] {
+    private static func uv(project: String, lock: String, directory: String, manifest: String) throws -> [String] {
         let projectValues = try InspectionConfig.toml(project, allSections: true).values
-        guard projectValues["project.dynamic"] == nil,
-              !projectValues.keys.contains(where: { $0 == "dependency-groups" || $0.hasPrefix("dependency-groups.") || $0 == "tool.uv.sources" || $0.hasPrefix("tool.uv.sources.") || $0 == "tool.uv.dev-dependencies" }) else {
-            throw InspectionError.blocked("Dynamic Python metadata, dependency groups and custom sources need resolver review.")
+        var unsupported: [String] = []
+        if projectValues["project.dynamic"] != nil { unsupported.append("project.dynamic") }
+        for section in ["dependency-groups", "tool.uv.sources", "tool.uv.dev-dependencies"] {
+            if projectValues.keys.contains(where: { $0 == section || $0.hasPrefix(section + ".") }) {
+                unsupported.append(section)
+            }
+        }
+        if !unsupported.isEmpty {
+            throw InspectionError.blocked(manifest + ": static lockfile verification does not support "
+                + unsupported.joined(separator: ", ") + ". Verify separately with uv lock --check using the repository's resolver settings; no resolver was run.")
         }
         var expected = ["": try pythonRequirements(projectValues["project.dependencies"] ?? "[]")]
         let optionalPrefix = "project.optional-dependencies."

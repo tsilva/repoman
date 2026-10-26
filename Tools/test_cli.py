@@ -46,6 +46,21 @@ class CLITests(unittest.TestCase):
         (self.repo / 'README.md').write_text('Repaired\n')
         self.assertEqual(self.check('--check', 'files.readme').returncode, 0)
 
+    def test_information_is_visible_without_failing_a_scan(self):
+        linked = Path(self.temp.name) / 'linked'
+        self.git('worktree', 'add', '--detach', str(linked), 'HEAD')
+        (self.repo / 'README.md').write_text('Local work\n')
+        result = self.check('--check', 'git.changes', '--check', 'git.worktrees')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report['schemaVersion'], 2)
+        self.assertTrue(all(c['status'] == 'information' for c in report['checks']))
+        self.assertTrue(all(c['findings'][0]['severity'] == 'information' for c in report['checks']))
+        # Adding a genuine missing README still fails, even with information present.
+        (self.repo / 'README.md').unlink()
+        result = self.check('--check', 'git.worktrees', '--check', 'files.readme')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
     def test_errors_have_no_partial_json(self):
         for args in [(), ('check',), ('check', '--repo', str(self.repo), '--check', 'unknown'),
                      ('check', '--repo', str(self.repo), '--check', 'github.description'),
@@ -84,7 +99,7 @@ class CLITests(unittest.TestCase):
         paths = [self.repo / '.git' / name for name in ['HEAD', 'index', 'config', 'logs/HEAD']]
         before = [p.read_bytes() for p in paths]
         report = self.check()
-        self.assertEqual(report.returncode, 1, report.stderr)
+        self.assertEqual(report.returncode, 3, report.stderr)
         remote = [c for c in json.loads(report.stdout)['checks'] if c['id'] == 'github.description']
         self.assertEqual(remote[0]['status'], 'skipped')
         self.assertEqual([p.read_bytes() for p in paths], before)
@@ -94,7 +109,7 @@ class CLITests(unittest.TestCase):
     def test_incomplete_policy_and_unborn_checkout(self):
         (self.repo / '.repoman.json').write_text('invalid')
         result = self.check('--check', 'dependencies.safeguards')
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 3)
         self.assertEqual(json.loads(result.stdout)['checks'][0]['status'], 'incomplete')
         unborn = Path(self.temp.name) / 'unborn'
         unborn.mkdir()
@@ -110,7 +125,7 @@ class CLITests(unittest.TestCase):
         self.git('config', 'branch.main.remote', 'origin')
         self.git('config', 'branch.main.merge', 'refs/heads/main')
         aligned = self.check('--check', 'git.push')
-        self.assertEqual(aligned.returncode, 1)
+        self.assertEqual(aligned.returncode, 3)
         self.assertEqual(json.loads(aligned.stdout)['checks'][0]['status'], 'incomplete')
         self.git('commit', '--allow-empty', '-m', 'Local work')
         ahead = self.check('--check', 'git.push')
@@ -146,7 +161,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual([p.read_bytes() for p in paths], before)
         self.assertFalse(marker.exists())
         # A later invocation must not infer freshness from FETCH_HEAD's mtime.
-        self.assertEqual(self.check(*checks).returncode, 1)
+        self.assertEqual(self.check(*checks).returncode, 3)
 
 
     def test_failed_fetch_keeps_local_findings_and_redacts_provider_errors(self):
@@ -160,7 +175,7 @@ class CLITests(unittest.TestCase):
         self.git('config', 'branch.main.merge', 'refs/heads/main')
         self.git('commit', '--allow-empty', '-m', 'Unpublished work')
         result = self.check('--fetch', '--check', 'git.push', '--check', 'files.readme')
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         report = json.loads(result.stdout)
         check = next(c for c in report['checks'] if c['id'] == 'git.push')
         self.assertEqual(check['status'], 'incomplete')

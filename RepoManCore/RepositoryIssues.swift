@@ -44,7 +44,9 @@ public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
     public let finding: RepositoryFinding
     public let incompleteReason: String?
     public var isIncomplete: Bool { incompleteReason != nil }
-    public var status: RepositoryIssueStatus { isIncomplete ? .incomplete : .finding }
+    public var status: RepositoryIssueStatus {
+        isIncomplete ? .incomplete : (finding.severity == .information ? .information : .finding)
+    }
     public var id: String { isIncomplete ? "incomplete::" + finding.id : finding.id }
 
     public init(finding: RepositoryFinding) {
@@ -82,7 +84,7 @@ public struct RepositoryIssueListItem: Identifiable, Equatable, Sendable {
 }
 
 public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
-    case finding, incomplete
+    case finding, incomplete, information
     public static func counts(in items: [RepositoryIssueListItem]) -> [Self: Int] {
         items.reduce(into: [:]) { $0[$1.status, default: 0] += 1 }
     }

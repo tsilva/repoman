@@ -11,7 +11,9 @@ struct RepoManCLI {
 
     Fresh repository checks using RepoManCore. Fetch refs only with --fetch; no install, commit, merge or push.
     Remote checks are skipped unless --remote permits read-only GitHub requests through gh.
-    Exit: 0 = selected checks complete and clean, 1 = findings or incomplete checks, 2 = error.
+    Exit: 0 = no actionable findings or incomplete checks (information is allowed),
+          1 = actionable findings (coverage may also be incomplete), 2 = error,
+          3 = incomplete verification without actionable findings.
     """
     static func main() async {
         do {

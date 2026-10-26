@@ -294,7 +294,7 @@ struct ContentView: View {
             ascending: sortAscending
         ).filter {
             repositoryFilter != .needsAttention || store.loadingRepositoryIDs.contains($0.id)
-                || !store.issues(in: $0).isEmpty
+                || store.issues(in: $0).contains { $0.status != .information }
         }
     }
 

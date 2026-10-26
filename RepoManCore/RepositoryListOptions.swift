@@ -13,7 +13,7 @@ public enum RepositoryFilter: String, CaseIterable, Sendable {
         switch self {
         case .all: return true
         case .needsAttention:
-            return !RepositoryIssueCatalog().findings(in: repository).isEmpty
+            return RepositoryIssueCatalog().findings(in: repository).contains { $0.severity != .information }
         case .toPush: return (repository.ahead ?? 0) > 0
         case .toPull: return (repository.behind ?? 0) > 0
         case .changedFiles: return repository.changedFileCount > 0

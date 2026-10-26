@@ -91,7 +91,7 @@ struct RepositoryIssuesView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Panel {
-                Text("Issues").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
+                Text("Inspection results").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } content: {
                 DashboardScrollView {
@@ -105,9 +105,16 @@ struct RepositoryIssuesView: View {
                                 }
                             }.padding(24).frame(maxWidth: .infinity)
                         }
-                        ForEach(issues) { issue in
-                            issueRow(issue).overlay(alignment: .bottom) {
-                                if issue.id != issues.last?.id { issueSeparator() }
+                        ForEach(RepositoryIssueStatus.allCases, id: \.self) { status in
+                            let items = issues.filter { $0.status == status }
+                            if !items.isEmpty {
+                                Text(status.title).font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(status.color).padding(12)
+                                ForEach(items) { issue in
+                                    issueRow(issue).overlay(alignment: .bottom) {
+                                        if issue.id != items.last?.id { issueSeparator() }
+                                    }
+                                }
                             }
                         }
                         checkSections
@@ -118,10 +125,10 @@ struct RepositoryIssuesView: View {
                 RepositoryFindingDetail(issue: selected)
             } else {
                 Panel {
-                    Text("Issue details").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
+                    Text("Result details").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } content: {
-                    Text("No issue selected").foregroundStyle(Theme.secondary).padding(24)
+                    Text("No result selected").foregroundStyle(Theme.secondary).padding(24)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -158,23 +165,38 @@ struct RepositoryFindingRow: View {
                 Text(finding.evidence).font(.system(size: 11)).foregroundStyle(Theme.secondary).lineLimit(2).help(finding.evidence)
             }.frame(maxWidth: .infinity, alignment: .leading)
             if isIncomplete { IncompleteCheckBadge() }
+            else if finding.severity == .information {
+                Text("Information").font(.system(size: 10)).foregroundStyle(Theme.secondary)
+            }
             Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(Theme.secondary)
         }.accessibilityElement(children: .combine)
-            .accessibilityValue(isIncomplete ? "Check incomplete; result unknown" : "Finding")
+            .accessibilityValue(isIncomplete ? "Coverage limit; result unknown" : (finding.severity == .information ? "Information" : "Actionable issue"))
     }
 }
 
 private struct IncompleteCheckBadge: View {
     var body: some View {
-        Text("Check incomplete").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.secondary)
+        Text("Coverage limit").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.secondary)
             .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.secondary.opacity(0.1), in: Capsule())
             .fixedSize().help("This check could not complete. Its result is unknown.")
     }
 }
 
 extension RepositoryIssueStatus {
-    var title: String { self == .finding ? "Issues" : "Incomplete checks" }
-    var symbol: String { self == .finding ? "exclamationmark.circle" : "questionmark.circle" }
+    var title: String {
+        switch self {
+        case .finding: return "Actionable issues"
+        case .incomplete: return "Coverage limits"
+        case .information: return "Information"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .finding: return "exclamationmark.circle"
+        case .incomplete: return "questionmark.circle"
+        case .information: return "info.circle"
+        }
+    }
     var color: Color { self == .finding ? Theme.amber : Theme.secondary }
 }
 
@@ -204,7 +226,7 @@ struct RepositoryFindingDetail: View {
     var body: some View {
         Panel {
             HStack {
-                Text("Issue details").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
+                Text("Result details").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
                 Spacer()
                 ToolbarActionButton(symbol: "doc.on.clipboard", title: "Copy maintenance task") {
                     let observed = store.checkObservation(for: finding)

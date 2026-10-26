@@ -32,7 +32,7 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertNotNil(report.head)
         XCTAssertEqual(try paths.map { try Data(contentsOf: root.appendingPathComponent($0)) }, before)
         let decoded = try JSONSerialization.jsonObject(with: report.json()) as! [String: Any]
-        XCTAssertEqual(decoded["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(decoded["schemaVersion"] as? Int, 2)
         XCTAssertNotNil(decoded["observedAt"])
     }
 
@@ -58,7 +58,7 @@ final class RepositoryCheckReportTests: XCTestCase {
         try write(".repoman.json", "invalid")
         let invalid = try await RepositoryChecker.run(at: root, checkIDs: ["dependencies.safeguards"])
         XCTAssertEqual(invalid.checks.first?.status, "incomplete")
-        XCTAssertEqual(invalid.exitCode, 1)
+        XCTAssertEqual(invalid.exitCode, 3)
     }
 
     func testPartialResultsRetainFindingsAndCannotReportClean() throws {
@@ -70,6 +70,58 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertEqual(report.exitCode, 1)
         XCTAssertEqual(report.checks.first?.status, "incomplete")
         XCTAssertEqual(report.checks.first?.findings.first?.id, finding.id)
+    }
+
+    func testInformationalResultsDoNotFailAndKeepTheirEvidence() throws {
+        let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        let info = RepositoryFinding(repositoryID: snapshot.id, checkID: "git.worktrees", title: "Linked worktrees",
+            evidence: "A linked checkout exists.", category: .git, severity: .information, symbol: "square.on.square")
+        let results: [String: RepositoryCheckResult] = ["git.worktrees": .findings([info])]
+        let report = RepositoryCheckReport(RepositoryInspectionReport(snapshot: snapshot, results: results,
+            checkOrder: ["git.worktrees"]), head: nil, checkerVersion: "fixture")
+        XCTAssertEqual(report.exitCode, 0)
+        XCTAssertEqual(report.checks.first?.status, "information")
+        XCTAssertEqual(report.checks.first?.findings.first?.evidence, info.evidence)
+        XCTAssertEqual(RepositoryIssueListItem(finding: info).status, .information)
+        XCTAssertEqual(RepositoryIssueStatus.counts(in: [.init(finding: info)]), [.information: 1])
+        let unknown = RepositoryCheckReport(RepositoryInspectionReport(snapshot: snapshot,
+            results: ["git.worktrees": .partial([info], "Other worktrees unavailable")],
+            checkOrder: ["git.worktrees"]), head: nil, checkerVersion: "fixture")
+        XCTAssertEqual(unknown.exitCode, 3)
+        XCTAssertEqual(unknown.checks.first?.status, "incomplete")
+        let violation = RepositoryFinding(repositoryID: snapshot.id, checkID: "fixture", title: "Actual problem",
+            evidence: "Violation", category: .setup, symbol: "circle")
+        let mixed = RepositoryCheckReport(RepositoryInspectionReport(snapshot: snapshot,
+            results: ["fixture": .partial([info, violation], "Other inputs unavailable")],
+            checkOrder: ["fixture"]), head: nil, checkerVersion: "fixture")
+        XCTAssertEqual(mixed.exitCode, 1)
+        XCTAssertEqual(mixed.checks.first?.findings.count, 2)
+    }
+
+    func testPythonCoverageDiagnosticIdentifiesOnlyUnsupportedDeclarations() async throws {
+        _ = try GitRunner.run(["rm", "package.json"], at: root)
+        for (declaration, expected) in [
+            ("[dependency-groups]\ndev = ['pytest']", "dependency-groups"),
+            ("[project]\nname = 'fixture'\ndynamic = ['dependencies']", "project.dynamic"),
+            ("[tool.uv.sources]\nexample = { path = '../private-path' }", "tool.uv.sources"),
+            ("[tool.uv]\ndev-dependencies = ['pytest']", "tool.uv.dev-dependencies")
+        ] {
+            try write("pyproject.toml", declaration)
+            try write("uv.lock", "version = 1")
+            _ = try GitRunner.run(["add", "pyproject.toml", "uv.lock"], at: root)
+            let report = try await RepositoryChecker.run(at: root, checkIDs: ["dependencies.lockfileDrift"])
+            let check = try XCTUnwrap(report.checks.first)
+            XCTAssertEqual(check.status, "incomplete")
+            XCTAssertEqual(report.exitCode, 3)
+            let reason = try XCTUnwrap(check.reason)
+            XCTAssertTrue(reason.hasPrefix("pyproject.toml:"), reason)
+            XCTAssertTrue(reason.contains(expected), reason)
+            XCTAssertTrue(reason.contains("uv lock --check"), reason)
+            XCTAssertFalse(reason.contains("private-path"))
+            for absent in ["project.dynamic", "dependency-groups", "tool.uv.sources", "tool.uv.dev-dependencies"] where absent != expected {
+                XCTAssertFalse(reason.contains(absent), reason)
+            }
+        }
     }
 
     func testInvalidSelectionAndUnapprovedRemoteCheckAreRejected() async throws {
@@ -94,7 +146,7 @@ final class RepositoryCheckReportTests: XCTestCase {
         _ = try GitRunner.run(["config", "branch.main.remote", "origin"], at: root)
         _ = try GitRunner.run(["config", "branch.main.merge", "refs/heads/main"], at: root)
         let noDifference = try await RepositoryChecker.run(at: root, checkIDs: ["git.push", "git.pull", "git.diverged"])
-        XCTAssertEqual(noDifference.exitCode, 1)
+        XCTAssertEqual(noDifference.exitCode, 3)
         XCTAssertTrue(noDifference.checks.allSatisfy { $0.status == "incomplete" })
         _ = try GitRunner.run(["commit", "--allow-empty", "-m", "Local work"], at: root)
         let report = try await RepositoryChecker.run(at: root, checkIDs: ["git.push"])

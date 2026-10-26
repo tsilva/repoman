@@ -58,7 +58,7 @@ final class RepositoryStore: ObservableObject {
     }
 
     func findings(in repository: RepositorySnapshot) -> [RepositoryFinding] {
-        issues(in: repository).filter { !$0.isIncomplete }.map(\.finding)
+        issues(in: repository).filter { $0.status == .finding }.map(\.finding)
     }
 
     func issues(in repository: RepositorySnapshot) -> [RepositoryIssueListItem] {

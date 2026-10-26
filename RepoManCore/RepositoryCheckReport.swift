@@ -42,12 +42,13 @@ public struct RepositoryCheckReport: Codable, Sendable {
         try values.encode(checks, forKey: .checks)
     }
     public var exitCode: Int32 {
-        checks.contains { !$0.findings.isEmpty || $0.status == "incomplete" } ? 1 : 0
+        if checks.contains(where: { $0.findings.contains { $0.severity != .information } }) { return 1 }
+        return checks.contains { $0.status == "incomplete" } ? 3 : 0
     }
 
     public init(_ report: RepositoryInspectionReport, head: String?, checkerVersion: String,
                 skipped: [String] = []) {
-        schemaVersion = 1
+        schemaVersion = 2
         self.checkerVersion = checkerVersion
         repository = report.snapshot.url.path
         self.head = head
@@ -66,7 +67,9 @@ public struct RepositoryCheckReport: Codable, Sendable {
             let reason: String?
             let status: String
             switch result {
-            case .findings(let findings): reason = nil; status = findings.isEmpty ? "passed" : "findings"
+            case .findings(let findings):
+                reason = nil
+                status = findings.isEmpty ? "passed" : (findings.allSatisfy { $0.severity == .information } ? "information" : "findings")
             case .partial(_, let detail), .unavailable(let detail): reason = detail; status = "incomplete"
             case nil: reason = "Check did not complete."; status = "incomplete"
             }
