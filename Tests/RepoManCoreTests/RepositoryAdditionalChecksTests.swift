@@ -161,6 +161,20 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
             XCTAssertNotNil(report.unavailableChecks["dependencies.safeguards"])
         }
     }
+    func testAgeExceptionsAreIndependentOfOtherDependencySources() async throws {
+        try write("pyproject.toml", """
+        [project]
+        dependencies = ["direct @ https://example.com/package.whl"]
+        [tool.uv.exclude-newer-package]
+        approved = false
+        unexpected = false
+        """)
+        try write(".repoman.json", #"{"exceptions":{"dependencies.sources":{"pyproject.toml#tool.uv.exclude-newer-package.approved":"Existing approved forward-runtime policy"}}}"#)
+        let report = try await inspect("dependencies.sources")
+        XCTAssertEqual(Set(report.findings().map(\.subject)), ["pyproject.toml", "pyproject.toml#tool.uv.exclude-newer-package.unexpected"])
+        XCTAssertEqual(report.appliedExceptions["dependencies.sources"]?["pyproject.toml#tool.uv.exclude-newer-package.approved"], "Existing approved forward-runtime policy")
+    }
+
     func testSourcesReviewDirectDependenciesButAllowWorkspaceReferences() async throws {
         try write("package.json", #"{"dependencies":{"local":"workspace:*","remote":"git+https://example.com/repo.git"}}"#)
         let report = try await inspect("dependencies.sources")
@@ -402,9 +416,9 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         try write("pyproject.toml", "[project]\nname = 'example'")
         try write("uv.toml", "exclude-newer = '7 days'\n[sources]\ncustom = { index = 'gpu' }\n[[index]]\nname = 'gpu'\nurl = 'https://example.com/wheels'\n[exclude-newer-package]\ncustom = false")
         let report = try await inspect("dependencies.sources")
-        let finding = try XCTUnwrap(report.findings().first)
-        XCTAssertTrue(finding.evidence.contains("alternate package index"))
-        XCTAssertTrue(finding.evidence.contains("global dependency age policy"))
+        let evidence = report.findings().map(\.evidence).joined(separator: "\n")
+        XCTAssertTrue(evidence.contains("alternate package index"))
+        XCTAssertTrue(evidence.contains("global dependency age policy"))
     }
     private func header(_ tagline: String) -> String {
         "<p align=\"center\">\n<img src=\"logo.png\" />\n<!-- repo-tagline:start -->\n<strong>" + tagline + "</strong>\n<!-- repo-tagline:end -->\n</p>"

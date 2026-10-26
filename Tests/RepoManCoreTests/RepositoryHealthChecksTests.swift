@@ -535,6 +535,47 @@ final class RepositoryHealthChecksTests: XCTestCase {
         XCTAssertTrue(healthy.findings().isEmpty)
         XCTAssertTrue(healthy.unavailableChecks.isEmpty)
     }
+    func testLiteralWorkflowRuntimeEnvironmentResolvesButOverridesStayUnknown() async throws {
+        try write("pyproject.toml", "[project]\nrequires-python = '==3.14.*'")
+        try write(".python-version", "3.14")
+        let source = """
+        on: push
+        env:
+          PYTHON_VERSION: '3.14'
+        jobs:
+          test:
+            steps:
+              - uses: actions/setup-python@v6
+                with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+        """
+        try workflow(source)
+        let healthy = try await inspect("dependencies.runtime")
+        XCTAssertTrue(healthy.findings().isEmpty)
+        XCTAssertTrue(healthy.unavailableChecks.isEmpty)
+        try workflow(source.replacingOccurrences(of: "PYTHON_VERSION: '3.14'", with: "PYTHON_VERSION: '3.13'"))
+        let mismatch = try await inspect("dependencies.runtime")
+        XCTAssertEqual(mismatch.findings().count, 1)
+        try workflow(source.replacingOccurrences(of: "    steps:", with: "    env:\n      PYTHON_VERSION: '3.13'\n    steps:"))
+        let override = try await inspect("dependencies.runtime")
+        XCTAssertNotNil(override.unavailableChecks["dependencies.runtime"])
+    }
+
+    func testUnresolvedWorkflowRuntimeDiagnosticIdentifiesDeclaration() async throws {
+        try write("pyproject.toml", "[project]\nrequires-python = '>=3.14'")
+        try workflow("""
+        on: push
+        jobs:
+          test:
+            steps:
+              - uses: actions/setup-python@v6
+                with:
+                  python-version: ${{ matrix.python }}
+        """)
+        let report = try await inspect("dependencies.runtime")
+        XCTAssertTrue(report.unavailableChecks["dependencies.runtime"]?.contains("ci.yml python-version") == true)
+    }
+
     func testPythonRangesAndDynamicRuntimeStayUnknown() async throws {
         try write("pyproject.toml", "[project]\nrequires-python = '>=3.10,<3.13'")
         try write(".python-version", "3.12")

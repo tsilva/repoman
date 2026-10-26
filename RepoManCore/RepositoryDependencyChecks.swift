@@ -318,7 +318,10 @@ enum RepositoryDependencyChecks {
                         reasons.append("\(key) overrides the package source; review path, Git, URL, or index access.")
                     } else if key.hasPrefix("tool.uv.index."), key.hasSuffix(".url"), InspectionConfig.scalar(value) != "https://pypi.org/simple" {
                         reasons.append("\(key) configures an alternate package index.")
-                    } else if key.contains("exclude-newer-package"), value != "{}" { reasons.append("\(key) changes the global dependency age policy.") }
+                    } else if key.contains("exclude-newer-package"), value != "{}" {
+                        findings.append(CheckSupport.finding(context, "dependencies.sources", path + "#" + key,
+                            "Dependency exceptions need review", "\(key) changes the global dependency age policy."))
+                    }
                     else if ["tool.uv.index-url", "tool.uv.extra-index-url", "tool.uv.find-links"].contains(key) { reasons.append("\(key) configures a custom dependency source.") }
                 }
             } else {

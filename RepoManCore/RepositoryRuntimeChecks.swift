@@ -16,7 +16,8 @@ enum RepositoryRuntimeChecks {
                 var declarations: [Declaration] = []
                 func add(_ path: String, _ value: String?, ci: Bool = false) throws {
                     guard let value, !value.isEmpty else { return }
-                    declarations.append(Declaration(path: path, value: value, range: try VersionRange.parse(value), ci: ci))
+                    do { declarations.append(Declaration(path: path, value: value, range: try VersionRange.parse(value), ci: ci)) }
+                    catch { throw InspectionError.blocked(path + ": " + error.localizedDescription) }
                 }
                 if node {
                     let json = try RepositoryLockfileChecks.json(context, manifest)
@@ -66,7 +67,7 @@ enum RepositoryRuntimeChecks {
                                     try add(path, InspectionConfig.scalar(values["project.requires-python"]), ci: true)
                                 } else { try add(path, contents, ci: true) }
                             }
-                            try add(path, step.inputs[key], ci: true)
+                            try add(path + " " + key, literalWorkflowRuntime(step.inputs[key], source: source), ci: true)
                         }
                     }
                 }
@@ -91,6 +92,19 @@ enum RepositoryRuntimeChecks {
             }
             return findings
         })]
+    }
+    /// Resolve only an unambiguous literal workflow-level env value. Overrides,
+    /// chained expressions, matrices and aliases remain outside static coverage.
+    private static func literalWorkflowRuntime(_ value: String?, source: String) throws -> String? {
+        guard let value, let match = CheckSupport.captures(value,
+            #"^\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$"#).first else { return value }
+        let lines = try WorkflowInspection.lines(source), name = match[1]
+        guard let env = lines.firstIndex(where: { $0.indent == 0 && $0.field == "env" }),
+              lines[env].value.isEmpty,
+              lines.filter({ $0.field == name }).count == 1,
+              let field = WorkflowInspection.block(lines, env).first(where: { $0.indent == 2 && $0.field == name }),
+              let literal = InspectionConfig.scalar(field.value), !literal.contains("${{") else { return value }
+        return literal
     }
     private static func runtimeValue(_ json: [String: Any], field: String) throws -> String? {
         guard let raw = json[field] else { return nil }
