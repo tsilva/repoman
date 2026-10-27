@@ -23,6 +23,7 @@ struct RepoManCLI {
                 for check in RepositoryIssueCatalog.standardChecks {
                     print("\(check.id)\(check.requiresRemoteAccess ? " [remote]" : "")\t\(check.title)")
                 }
+                for check in RepositoryIssueCatalog.coverageCompatibilityChecks { print("\(check.id) [coverage alias]\t\(check.title)") }
                 return
             }
             guard arguments.first == "check" else { throw CLIError.argument("Expected check command.") }

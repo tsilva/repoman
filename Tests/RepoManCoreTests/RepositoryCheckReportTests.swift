@@ -32,7 +32,7 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertNotNil(report.head)
         XCTAssertEqual(try paths.map { try Data(contentsOf: root.appendingPathComponent($0)) }, before)
         let decoded = try JSONSerialization.jsonObject(with: report.json()) as! [String: Any]
-        XCTAssertEqual(decoded["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(decoded["schemaVersion"] as? Int, 3)
         XCTAssertNotNil(decoded["observedAt"])
     }
 
@@ -388,6 +388,25 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertEqual(report.status(for: check.id), .skipped)
         let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: check.id, title: "Old", evidence: "Old", category: .setup, symbol: "circle")
         guard case .unknown = catalog.verify(finding, in: report) else { return XCTFail("Disabled verification must remain unknown") }
+    }
+
+    func testPrerequisitesAreCoverageMetadataWithCompatibleSelectors() async throws {
+        XCTAssertFalse(RepositoryIssueCatalog.standardChecks.contains { $0.id.hasPrefix("inspection.") })
+        let alias = try await RepositoryChecker.run(at: root, checkIDs: ["inspection.files"])
+        XCTAssertEqual(alias.checks.first?.status, "passed")
+        XCTAssertEqual(alias.coverage.first { $0.id == "files" }?.status, "passed")
+        _ = try GitRunner.run(["remote", "add", "origin", root.appendingPathComponent("missing-remote").path], at: root)
+        _ = try GitRunner.run(["update-ref", "refs/remotes/origin/main", "HEAD"], at: root)
+        _ = try GitRunner.run(["branch", "--set-upstream-to=origin/main"], at: root)
+        let ids: Set<String> = ["git.push", "git.pull", "git.diverged"]
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ids)
+        XCTAssertEqual(report.exitCode, 3)
+        XCTAssertEqual(report.checks.count, 3)
+        XCTAssertTrue(report.checks.allSatisfy { $0.status == "incomplete" })
+        XCTAssertEqual(Set(report.coverage.first { $0.id == "remote" }!.affectedCheckIDs), ids)
+        let catalog = RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter { ids.contains($0.id) })
+        let observed = await catalog.inspect(try GitRepositoryScanner.scan(root, includeDetails: false))
+        XCTAssertEqual(catalog.incompleteItems(in: observed).map { $0.finding.checkID }, ["inspection.remote"])
     }
 
 }

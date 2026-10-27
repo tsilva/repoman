@@ -21,6 +21,13 @@ public struct RepositoryCheckReport: Codable, Sendable {
         public let findings: [Finding]
         public let exceptions: [String: String]
     }
+    public struct Coverage: Codable, Sendable {
+        public let id: String
+        public let status: String
+        public let reason: String
+        public let affectedCheckIDs: [String]
+    }
+    public let coverage: [Coverage]
     public let schemaVersion: Int
     public let checkerVersion: String
     public let repository: String
@@ -29,7 +36,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
     public let remoteRefs: String
     public let checks: [Check]
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, checkerVersion, repository, head, observedAt, remoteRefs, checks
+        case schemaVersion, checkerVersion, repository, head, observedAt, remoteRefs, checks, coverage
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -40,15 +47,17 @@ public struct RepositoryCheckReport: Codable, Sendable {
         try values.encode(observedAt, forKey: .observedAt)
         try values.encode(remoteRefs, forKey: .remoteRefs)
         try values.encode(checks, forKey: .checks)
+        try values.encode(coverage, forKey: .coverage)
     }
     public var exitCode: Int32 {
         if checks.contains(where: { $0.findings.contains { $0.severity != .information } }) { return 1 }
-        return checks.contains { $0.status == "incomplete" } ? 3 : 0
+        return (checks.contains { $0.status == "incomplete" } || coverage.contains { $0.status == "incomplete" }) ? 3 : 0
     }
 
     public init(_ report: RepositoryInspectionReport, head: String?, checkerVersion: String,
                 skipped: [String] = []) {
-        schemaVersion = 2
+        schemaVersion = 3
+        coverage = report.coverage
         self.checkerVersion = checkerVersion
         repository = report.snapshot.url.path
         self.head = head
@@ -88,6 +97,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
     }
     public var text: String {
         var lines = ["Repository: \(repository)", "HEAD: \(head ?? "unborn")", remoteRefs]
+        for item in coverage { lines.append("Verification \(item.id): \(item.status) — \(item.reason)") }
         for check in checks {
             lines.append("\(check.id): \(check.status)" + (check.reason.map { " — " + $0 } ?? ""))
             lines += check.findings.map { "  \($0.subject): \($0.evidence)" }
@@ -100,10 +110,10 @@ public struct RepositoryCheckReport: Codable, Sendable {
 public enum RepositoryChecker {
     public static func run(at url: URL, checkIDs: Set<String> = [], remote: Bool = false, fetch: Bool = false,
                            checkerVersion: String = "development") async throws -> RepositoryCheckReport {
-        let standard = RepositoryIssueCatalog.standardChecks
+        let standard = RepositoryIssueCatalog.standardChecks + RepositoryIssueCatalog.coverageCompatibilityChecks
         let unknown = checkIDs.subtracting(standard.map(\.id))
         guard unknown.isEmpty else { throw InspectionError.blocked("Unknown check IDs: " + unknown.sorted().joined(separator: ", ")) }
-        let requested = standard.filter { checkIDs.isEmpty || checkIDs.contains($0.id) }
+        let requested = checkIDs.isEmpty ? RepositoryIssueCatalog.standardChecks : standard.filter { checkIDs.contains($0.id) }
         if !remote, !checkIDs.isEmpty, requested.contains(where: \.requiresRemoteAccess) {
             throw InspectionError.blocked("Selected remote checks require --remote.")
         }

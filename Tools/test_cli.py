@@ -53,7 +53,7 @@ class CLITests(unittest.TestCase):
         result = self.check('--check', 'git.changes', '--check', 'git.worktrees')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         report = json.loads(result.stdout)
-        self.assertEqual(report['schemaVersion'], 2)
+        self.assertEqual(report['schemaVersion'], 3)
         self.assertTrue(all(c['status'] == 'information' for c in report['checks']))
         self.assertTrue(all(c['findings'][0]['severity'] == 'information' for c in report['checks']))
         # Adding a genuine missing README still fails, even with information present.

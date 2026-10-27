@@ -296,6 +296,28 @@ public struct RepositoryInspectionReport: Sendable {
         return Self(snapshot: snapshot, results: updated, checkOrder: checkOrder, cachedChecks: cachedChecks,
                     completedAt: completedAt, runningCheckIDs: runningCheckIDs, appliedExceptions: appliedExceptions)
     }
+    /// Prerequisites explain verification failures once without counting them as maintenance checks.
+    public var coverage: [RepositoryCheckReport.Coverage] {
+        let comparisonIDs: Set<String> = ["git.push", "git.pull", "git.diverged", "git.unpublishedBranches", "git.upstream", "inspection.remote"]
+        let selected = checkOrder.filter { comparisonIDs.contains($0) }
+        let hasRemote = snapshot.remoteURL != nil || snapshot.upstream != nil
+        let remoteStatus = selected.isEmpty || !hasRemote ? "not_applicable" : snapshot.hasFreshRemoteComparison ? "passed" : "incomplete"
+        let remote = RepositoryCheckReport.Coverage(id: "remote", status: remoteStatus,
+            reason: !hasRemote ? "No Git remotes require refreshing." : selected.isEmpty ? "No remote-tracking comparison selected." : remoteStatus == "passed" ? "Remote-tracking refs were freshly fetched." : "Remote refs are not verified fresh; affected comparisons remain provisional.",
+            affectedCheckIDs: remoteStatus == "incomplete" ? selected : [])
+        let syncIDs: Set<String> = ["git.push", "git.pull", "git.diverged", "inspection.comparison"]
+        let sync = checkOrder.filter { syncIDs.contains($0) }
+        let compareStatus = sync.isEmpty || snapshot.upstream == nil ? "not_applicable" : snapshot.ahead != nil && snapshot.behind != nil ? "passed" : "incomplete"
+        let comparison = RepositoryCheckReport.Coverage(id: "comparison", status: compareStatus,
+            reason: compareStatus == "not_applicable" ? "No selected upstream comparison applies." : compareStatus == "passed" ? "Local upstream counts are available; freshness is reported separately." : "Upstream refs could not be compared.", affectedCheckIDs: compareStatus == "incomplete" ? sync : [])
+        let fileChecks = checkOrder.filter { id in
+            if ["files.readme", "files.gitignore", "files.license", "inspection.files"].contains(id) { return true }
+            return unavailableChecks[id]?.localizedCaseInsensitiveContains("repository root files") == true || unavailableChecks[id]?.localizedCaseInsensitiveContains("repository files") == true
+        }
+        let files = RepositoryCheckReport.Coverage(id: "files", status: snapshot.rootFiles != nil ? "passed" : fileChecks.isEmpty ? "not_applicable" : "incomplete",
+            reason: snapshot.rootFiles != nil ? "Repository root listing is available." : "Repository root listing could not be inspected.", affectedCheckIDs: snapshot.rootFiles == nil ? fileChecks : [])
+        return [remote, comparison, files]
+    }
     public func findings(disabledChecks: Set<String> = []) -> [RepositoryFinding] {
         checkOrder.filter { !disabledChecks.contains($0) }.flatMap { key -> [RepositoryFinding] in
             results[key]?.detectedFindings ?? []

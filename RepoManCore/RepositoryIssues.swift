@@ -213,8 +213,16 @@ public struct RepositoryIssueCatalog: Sendable {
     /// Keep incomplete checks separate from confirmed detector findings.
     public func incompleteItems(in report: RepositoryInspectionReport, disabledChecks: Set<String> = []) -> [RepositoryIssueListItem] {
         let unavailable = report.unavailableChecks
-        return checks.compactMap { check in
-            guard !disabledChecks.contains(check.id), let reason = unavailable[check.id] else { return nil }
+        var covered = Set<String>(), prerequisites: [RepositoryIssueListItem] = []
+        for item in report.coverage where item.status == "incomplete" {
+            let affected = item.affectedCheckIDs.filter { !disabledChecks.contains($0) && unavailable[$0] != nil && !covered.contains($0) }
+            guard !affected.isEmpty, let alias = Self.coverageCompatibilityChecks.first(where: { $0.id == "inspection." + item.id }) else { continue }
+            covered.formUnion(affected)
+            prerequisites.append(RepositoryIssueListItem(incompleteCheck: alias, repositoryID: report.snapshot.id,
+                reason: item.reason + " Affected checks: " + affected.joined(separator: ", ") + "."))
+        }
+        return prerequisites + checks.compactMap { check in
+            guard !disabledChecks.contains(check.id), !covered.contains(check.id), let reason = unavailable[check.id] else { return nil }
             return RepositoryIssueListItem(incompleteCheck: check, repositoryID: report.snapshot.id, reason: reason)
         }
     }
@@ -235,6 +243,22 @@ public struct RepositoryIssueCatalog: Sendable {
         }
         return .absent("Fresh inspection confirms this finding is absent.")
     }
+
+    /// Compatibility selectors; prerequisites are reported as coverage in the default catalog.
+    public static let coverageCompatibilityChecks: [RepositoryCheck] = [
+        check("inspection.remote", "Remote check failed", .inspection, "exclamationmark.circle") { s in
+            guard let error = s.fetchError else { return nil }
+            return ("Local status is available; remote counts may be out of date. \(error)", .blocked)
+        },
+        check("inspection.comparison", "Upstream comparison unavailable", .inspection, "questionmark.circle") { s in
+            guard s.upstream != nil, s.ahead == nil || s.behind == nil else { return nil }
+            return ("The configured upstream could not be compared with the current branch. Counts are unknown; retry checks to refresh them.", .blocked)
+        },
+        check("inspection.files", "File checks unavailable", .inspection, "questionmark.circle") { s in
+            guard s.rootFiles == nil else { return nil }
+            return ("Repository root files could not be inspected. Missing-file checks are unknown.", .blocked)
+        }
+    ]
 
     public static let standardChecks: [RepositoryCheck] = [
         check("git.changes", "Uncommitted changes", .git, "circle.fill") { s in
@@ -273,18 +297,7 @@ public struct RepositoryIssueCatalog: Sendable {
             guard let files = s.rootFiles, !files.contains(where: isLicense) else { return nil }
             return ("No LICENSE, LICENCE, or COPYING file was found. Choose a license only if you intend to license this project.", .information)
         },
-        check("inspection.remote", "Remote check failed", .inspection, "exclamationmark.circle") { s in
-            guard let error = s.fetchError else { return nil }
-            return ("Local status is available; remote counts may be out of date. \(error)", .blocked)
-        },
-        check("inspection.comparison", "Upstream comparison unavailable", .inspection, "questionmark.circle") { s in
-            guard s.upstream != nil, s.ahead == nil || s.behind == nil else { return nil }
-            return ("The configured upstream could not be compared with the current branch. Counts are unknown; retry checks to refresh them.", .blocked)
-        },
-        check("inspection.files", "File checks unavailable", .inspection, "questionmark.circle") { s in
-            guard s.rootFiles == nil else { return nil }
-            return ("Repository root files could not be inspected. Missing-file checks are unknown.", .blocked)
-        }
+
     ] + RepositoryCIChecks.checks() + RepositoryDependencyChecks.checks() + RepositoryWorkflowChecks.checks()
         + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()

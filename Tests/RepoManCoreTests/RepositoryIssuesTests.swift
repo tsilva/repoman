@@ -90,7 +90,8 @@ final class RepositoryIssuesTests: XCTestCase {
         XCTAssertFalse(issues.findings(in: snapshot).contains { $0.checkID.hasPrefix("files.") })
         let unknown = RepositorySnapshot(url: repo, name: "files", branch: "main", upstream: nil, remoteURL: nil,
                                          ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [])
-        XCTAssertEqual(issues.findings(in: unknown).map(\.checkID), ["inspection.files"])
+        XCTAssertTrue(issues.findings(in: unknown).isEmpty)
+        XCTAssertFalse(issues.checks.contains { $0.id.hasPrefix("inspection.") })
     }
 
     func testDivergenceProducesOneFindingAndWorktreesAreInformational() {
@@ -118,7 +119,9 @@ final class RepositoryIssuesTests: XCTestCase {
         let snapshot = RepositorySnapshot(url: root, name: "unknown", branch: "main", upstream: "origin/main", remoteURL: nil,
                                           ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [],
                                           rootFiles: ["README.md", ".gitignore", "LICENSE"])
-        XCTAssertEqual(issues.findings(in: snapshot).map(\.checkID), ["inspection.comparison"])
+        XCTAssertTrue(issues.findings(in: snapshot).isEmpty)
+        let legacy = RepositoryIssueCatalog(checks: RepositoryIssueCatalog.coverageCompatibilityChecks)
+        XCTAssertEqual(legacy.findings(in: snapshot).map(\.checkID), ["inspection.comparison"])
     }
 
     func testCustomDetectorUsesStableIdentityAndCanReturnMultipleSubjects() throws {
