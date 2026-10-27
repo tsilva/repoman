@@ -409,4 +409,34 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertEqual(catalog.incompleteItems(in: observed).map { $0.finding.checkID }, ["inspection.remote"])
     }
 
+    func testParsingIsSharedAcrossConcurrentDetectorsAndOptionsStaySeparate() async throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".github/workflows"), withIntermediateDirectories: true)
+        try write(".github/workflows/check.yml", "on: [push]\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: swift test\n")
+        let context = RepositoryInspectionContext(snapshot: try GitRepositoryScanner.scan(root, includeDetails: false))
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<12 { group.addTask {
+                XCTAssertEqual(try context.workflowReferences(".github/workflows/check.yml"), ["actions/checkout@v4"])
+                XCTAssertEqual(try context.workflowSteps(".github/workflows/check.yml").count, 2)
+            } }
+            try await group.waitForAll()
+        }
+        XCTAssertEqual(context.parsingComputationCount, 3)
+        try write("config.toml", "[custom]\nvalue = 1\n")
+        XCTAssertTrue(try context.toml("config.toml").values.isEmpty)
+        XCTAssertEqual(try context.toml("config.toml", allSections: true).values["custom.value"], "1")
+        XCTAssertEqual(context.parsingComputationCount, 5)
+    }
+
+    func testParsingFailuresAndBoundsStayExplicit() throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".github/workflows"), withIntermediateDirectories: true)
+        try write(".github/workflows/bad.yml", "on: push\njobs: &dynamic\n")
+        let context = RepositoryInspectionContext(snapshot: try GitRepositoryScanner.scan(root, includeDetails: false))
+        for _ in 0..<2 { XCTAssertThrowsError(try context.workflowLines(".github/workflows/bad.yml")) }
+        XCTAssertEqual(context.parsingComputationCount, 1)
+        let cache = InspectionParsingCache(maximumEntries: 1, maximumBytes: 16)
+        let value: String = try cache.value("one", bytes: 1) { "valid" }
+        XCTAssertEqual(value, "valid")
+        XCTAssertThrowsError(try cache.value("two", bytes: 1) { "overflow" })
+    }
+
 }

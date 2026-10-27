@@ -37,10 +37,7 @@ enum RepositoryLockfileChecks {
         })]
     }
     static func json(_ context: RepositoryInspectionContext, _ path: String) throws -> [String: Any] {
-        guard let result = try JSONSerialization.jsonObject(with: Data(context.readText(path).utf8)) as? [String: Any] else {
-            throw InspectionError.blocked("Expected a JSON object in " + path)
-        }
-        return result
+        try context.jsonObject(path)
     }
     private static let dependencyTypes = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
     private static func dependencies(_ object: [String: Any], _ type: String) throws -> [String: String] {

@@ -5,9 +5,9 @@ enum RepositoryWorkflowSecurityChecks {
         [CheckSupport.check("ci.security", "Risky Actions workflow", .ci, "exclamationmark.shield", inspect: { context, _ in
             var findings: [RepositoryFinding] = []
             for (path, source) in try CheckSupport.applicableWorkflows(context) {
-                _ = try WorkflowInspection.references(source)
-                let lines = try WorkflowInspection.lines(source)
-                let steps = try WorkflowInspection.steps(source, includeInputs: true, inputKeys: ["ref", "repository"])
+                _ = try context.workflowReferences(path)
+                let lines = try context.workflowLines(path)
+                let steps = try context.workflowSteps(path, includeInputs: true, inputKeys: ["ref", "repository"])
                 var evidence: [String] = []
                 let jobsIndex = lines.firstIndex(where: { $0.indent == 0 && $0.field == "jobs" })!
                 let jobFieldIndent = WorkflowInspection.block(lines, jobsIndex).first.map { $0.indent + 2 }

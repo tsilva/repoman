@@ -7,9 +7,43 @@ public struct RepositoryInspectionContext: Sendable {
     let allowCachedRemoteMetadata: Bool
     private let files = InspectionFileCache()
     private let git = InspectionGitCache()
+    private let parsing = InspectionParsingCache()
     private let freshness = InspectionFreshness()
     public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false) {
         self.snapshot = snapshot; self.allowCachedRemoteMetadata = allowCachedRemoteMetadata
+    }
+    var parsingComputationCount: Int { parsing.count }
+    func toml(_ path: String, standaloneUV: Bool = false, allSections: Bool = false) throws -> InspectionConfig {
+        let source = try readText(path)
+        return try parsing.value("toml:\(standaloneUV):\(allSections):" + path, bytes: source.utf8.count) { try InspectionConfig.toml(source, standaloneUV: standaloneUV, allSections: allSections) }
+    }
+    func yaml(_ path: String) throws -> InspectionConfig {
+        let source = try readText(path)
+        return try parsing.value("yaml:" + path, bytes: source.utf8.count) { try InspectionConfig.yaml(source) }
+    }
+    func ini(_ path: String) throws -> InspectionConfig {
+        let source = try readText(path)
+        return try parsing.value("ini:" + path, bytes: source.utf8.count) { try InspectionConfig.ini(source) }
+    }
+    func jsonObject(_ path: String) throws -> [String: Any] {
+        let source = try readText(path)
+        return try parsing.value("json:" + path, bytes: source.utf8.count) {
+            guard let object = try JSONSerialization.jsonObject(with: Data(source.utf8)) as? [String: Any] else { throw InspectionError.blocked("Expected a JSON object in " + path) }
+            return object
+        }
+    }
+    func workflowLines(_ path: String) throws -> [WorkflowInspection.Line] {
+        let source = try readText(path)
+        return try parsing.value("workflow-lines:" + path, bytes: source.utf8.count) { try WorkflowInspection.lines(source) }
+    }
+    func workflowReferences(_ path: String) throws -> [String] {
+        let lines = try workflowLines(path)
+        return try parsing.value("workflow-references:" + path, bytes: 0) { try WorkflowInspection.references(lines) }
+    }
+    func workflowSteps(_ path: String, includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [WorkflowInspection.Step] {
+        let lines = try workflowLines(path)
+        let key = "workflow-steps:\(includeInputs):" + (inputKeys?.sorted().joined(separator: ",") ?? "*") + ":" + path
+        return try parsing.value(key, bytes: 0) { try WorkflowInspection.steps(lines, includeInputs: includeInputs, inputKeys: inputKeys) }
     }
     func markCached(_ checkID: String) { freshness.insert(checkID) }
     var cachedChecks: Set<String> { freshness.values }
@@ -488,4 +522,28 @@ public enum InspectionError: Error, LocalizedError {
     case notApplicable(String)
     case skipped(String)
     public var errorDescription: String? { switch self { case .blocked(let message), .notApplicable(let message), .skipped(let message): return message } }
+}
+
+/// Per-inspection immutable parse results and failures; never a cross-repository or persistent cache.
+final class InspectionParsingCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Result<Any, Error>] = [:]
+    private var bytes = 0
+    private let maximumEntries: Int
+    private let maximumBytes: Int
+    init(maximumEntries: Int = 256, maximumBytes: Int = 67_108_864) {
+        self.maximumEntries = maximumEntries; self.maximumBytes = maximumBytes
+    }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return values.count }
+    func value<T>(_ key: String, bytes cost: Int, load: () throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        if let value = values[key] {
+            guard let typed = try value.get() as? T else { throw InspectionError.blocked("Inspection parse-cache type mismatch.") }; return typed
+        }
+        guard values.count < maximumEntries, bytes + cost <= maximumBytes else { throw InspectionError.blocked("Shared parsing exceeds inspection limits.") }
+        bytes += cost
+        let result = Result<Any, Error> { try load() }
+        values[key] = result
+        guard let typed = try result.get() as? T else { throw InspectionError.blocked("Inspection parse-cache type mismatch.") }; return typed
+    }
 }

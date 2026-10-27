@@ -24,7 +24,7 @@ enum RepositoryRuntimeChecks {
                     try add(manifest + " engines.node", runtimeValue(json, field: "engines"))
                     try add(manifest + " volta.node", runtimeValue(json, field: "volta"))
                 } else {
-                    let values = try InspectionConfig.toml(context.readText(manifest), allSections: true).values
+                    let values = try context.toml(manifest, allSections: true).values
                     try add(manifest + " requires-python", InspectionConfig.scalar(values["project.requires-python"]))
                 }
                 let versionNames = node ? [".nvmrc", ".node-version"] : [".python-version"]
@@ -51,8 +51,8 @@ enum RepositoryRuntimeChecks {
                 }
                 if directory.isEmpty {
                     for (path, source) in try CheckSupport.workflows(context) {
-                        _ = try WorkflowInspection.references(source)
-                        for step in try WorkflowInspection.steps(source, includeInputs: true,
+                        _ = try context.workflowReferences(path)
+                        for step in try context.workflowSteps(path, includeInputs: true,
                             inputKeys: ["node-version", "python-version", "node-version-file", "python-version-file"]) where
                             step.uses?.hasPrefix(node ? "actions/setup-node@" : "actions/setup-python@") == true &&
                             (step.workingDirectory == nil || step.workingDirectory == ".") {

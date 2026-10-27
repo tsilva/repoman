@@ -18,10 +18,7 @@ enum RepositoryDependencyChecks {
         ]
     }
     private static func json(_ context: RepositoryInspectionContext, _ path: String) throws -> [String: Any] {
-        guard let result = try JSONSerialization.jsonObject(with: Data(context.readText(path).utf8)) as? [String: Any] else {
-            throw InspectionError.blocked("Expected a JSON object in " + path)
-        }
-        return result
+        try context.jsonObject(path)
     }
     private static func beside(_ manifest: String, _ file: String) -> String {
         let directory = (manifest as NSString).deletingLastPathComponent
@@ -63,14 +60,14 @@ enum RepositoryDependencyChecks {
             var patterns: [String] = []
             if manifest.hasSuffix("package.json") {
                 if try context.exists(prefix + "pnpm-workspace.yaml") {
-                    let config = try InspectionConfig.yaml(context.readText(prefix + "pnpm-workspace.yaml"))
+                    let config = try context.yaml(prefix + "pnpm-workspace.yaml")
                     patterns = workspacePatterns(config.values["packages"] ?? "")
                 } else if try context.exists(prefix + "package.json") {
                     let workspace = (try json(context, prefix + "package.json"))["workspaces"]
                     patterns = workspace as? [String] ?? (workspace as? [String: Any])?["packages"] as? [String] ?? []
                 }
             } else if try context.exists(prefix + "pyproject.toml") {
-                let config = try InspectionConfig.toml(context.readText(prefix + "pyproject.toml"))
+                let config = try context.toml(prefix + "pyproject.toml")
                 patterns = workspacePatterns(config.values["tool.uv.workspace.members"] ?? "")
                 let excludes = workspacePatterns(config.values["tool.uv.workspace.exclude"] ?? "")
                 if excludes.contains(where: { glob($0, matches: relative) }) { continue }
@@ -114,7 +111,7 @@ enum RepositoryDependencyChecks {
             } else if path == "package.json" { reasons.append("No packageManager version is declared; \(name) was inferred from local files.") }
             if path == "package.json" {
                 for (workflow, source) in try CheckSupport.workflows(context) {
-                    for step in try WorkflowInspection.steps(source) where step.workingDirectory == nil || step.workingDirectory == "." {
+                    for step in try context.workflowSteps(workflow) where step.workingDirectory == nil || step.workingDirectory == "." {
                         for command in step.commands {
                             for installed in ["npm", "pnpm", "yarn", "bun"] where installed != name {
                                 if CheckSupport.matches(command, "^" + installed + #"\s+(?:ci|install)(?:\s|$)"#),
@@ -149,11 +146,11 @@ enum RepositoryDependencyChecks {
         // uv.toml supersedes [tool.uv] at the same level; nested projects inherit workspace policy.
         for prefix in ancestors(path) {
             if try context.exists(prefix + "uv.toml") {
-                let config = try InspectionConfig.toml(context.readText(prefix + "uv.toml"), standaloneUV: true)
+                let config = try context.toml(prefix + "uv.toml", standaloneUV: true)
                 return InspectionConfig(values: Dictionary(uniqueKeysWithValues: config.values.map { ("tool.uv." + $0.key, $0.value) }))
             }
             if try context.exists(prefix + "pyproject.toml") {
-                let config = try InspectionConfig.toml(context.readText(prefix + "pyproject.toml"))
+                let config = try context.toml(prefix + "pyproject.toml")
                 if prefix == "" || config.values.keys.contains(where: { $0.hasPrefix("tool.uv.") }) { return config }
             }
         }
@@ -184,8 +181,8 @@ enum RepositoryDependencyChecks {
                     var rc: [String: String] = [:], workspace: [String: String] = [:]
                     // Ancestor settings are overridden by nearer project settings.
                     for prefix in ancestors(path).reversed() {
-                        if try context.exists(prefix + ".npmrc") { rc.merge(try InspectionConfig.ini(context.readText(prefix + ".npmrc")).values) { _, new in new } }
-                        if try context.exists(prefix + "pnpm-workspace.yaml") { workspace.merge(try InspectionConfig.yaml(context.readText(prefix + "pnpm-workspace.yaml")).values) { _, new in new } }
+                        if try context.exists(prefix + ".npmrc") { rc.merge(try context.ini(prefix + ".npmrc").values) { _, new in new } }
+                        if try context.exists(prefix + "pnpm-workspace.yaml") { workspace.merge(try context.yaml(prefix + "pnpm-workspace.yaml").values) { _, new in new } }
                     }
                     if name == "pnpm" {
                         if (Int(InspectionConfig.scalar(workspace["minimumReleaseAge"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm-workspace.yaml lacks minimumReleaseAge >= 10080.") }
@@ -225,7 +222,7 @@ enum RepositoryDependencyChecks {
             }
             if (path as NSString).deletingLastPathComponent.isEmpty {
                 for (workflow, source) in try CheckSupport.workflows(context) {
-                    for step in try WorkflowInspection.steps(source) {
+                    for step in try context.workflowSteps(workflow) {
                         for command in step.commands {
                             if CheckSupport.matches(command, #"\b(?:npm|pnpm)\s+(?:ci|install)\b"#) {
                                 for age in CheckSupport.captures(command, #"--min(?:imum)?-release-age(?:=|\s+)(\d+)"#) where (Int(age[1]) ?? 0) < 10080 {
@@ -271,9 +268,9 @@ enum RepositoryDependencyChecks {
             }
         }
         let configPath = installPrefix + "bunfig.toml"
-        let config = try context.exists(configPath) ? InspectionConfig.toml(context.readText(configPath), allSections: true).values : [:]
+        let config = try context.exists(configPath) ? context.toml(configPath, allSections: true).values : [:]
         let rcPath = installPrefix + ".npmrc"
-        let rc = try context.exists(rcPath) ? InspectionConfig.ini(context.readText(rcPath)).values : [:]
+        let rc = try context.exists(rcPath) ? context.ini(rcPath).values : [:]
         var reasons: [String] = []
         // Bun uses seconds, whereas npm and pnpm use minutes. TOML permits digit separators.
         let rawAge = config["install.minimumReleaseAge"] ?? "0"
@@ -308,7 +305,7 @@ enum RepositoryDependencyChecks {
                     }
                 }
             } else if path.hasSuffix("pyproject.toml") {
-                let manifest = try InspectionConfig.toml(context.readText(path))
+                let manifest = try context.toml(path)
                 let config = try uvConfig(context, path)
                 for (key, value) in manifest.values.sorted(by: { $0.key < $1.key }) where key.hasPrefix("project.") && key.contains("dependencies") {
                     if CheckSupport.matches(value, #"(?:\s@\s*(?:https?://|git\+|file:)|git\+|https?://)"#) { reasons.append("\(key) contains direct URL or Git dependencies.") }

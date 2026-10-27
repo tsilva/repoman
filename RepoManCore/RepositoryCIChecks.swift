@@ -45,7 +45,7 @@ enum RepositoryCIChecks {
                 let names = try context.filenames(in: ".github/workflows").filter { ["yml", "yaml"].contains(($0 as NSString).pathExtension) }
                 var uncertain = false
                 for name in names {
-                    switch WorkflowCoverage.analyze(try context.readText(".github/workflows/" + name)) {
+                    switch WorkflowCoverage.analyze(try context.workflowLines(".github/workflows/" + name)) {
                     case .covered: return []
                     case .unknown: uncertain = true
                     case .missing: break
@@ -77,12 +77,12 @@ enum WorkflowCoverage {
         let text: String
     }
     static func analyze(_ source: String) -> Result {
-        let lines = source.components(separatedBy: .newlines).compactMap { raw -> Line? in
-            let text = raw.trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty, !text.hasPrefix("#") else { return nil }
-            return Line(indent: raw.prefix(while: { $0 == " " }).count, text: text)
-        }
-        guard !source.contains("\t"), let onIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "on" }),
+        guard let parsed = try? WorkflowInspection.lines(source) else { return .unknown }
+        return analyze(parsed)
+    }
+    static func analyze(_ parsed: [WorkflowInspection.Line]) -> Result {
+        let lines = parsed.map { Line(indent: $0.indent, text: $0.text) }
+        guard let onIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "on" }),
               let jobsIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "jobs" }) else { return .unknown }
         let on = block(lines, at: onIndex)
         let trigger = value(lines[onIndex].text)

@@ -6,7 +6,7 @@ enum RepositoryWorkflowChecks {
             CheckSupport.check("ci.mutableActions", "Actions references are mutable", .ci, "lock.shield", inspect: { context, _ in
                 var findings: [RepositoryFinding] = []
                 for (path, source) in try CheckSupport.applicableWorkflows(context) {
-                    let references = try WorkflowInspection.references(source)
+                    let references = try context.workflowReferences(path)
                     let mutable = references.filter { reference in
                         if reference.hasPrefix("./") { return false }
                         if reference.hasPrefix("docker://") { return !CheckSupport.matches(reference, #"@sha256:[0-9a-fA-F]{64}$"#) }
@@ -21,7 +21,7 @@ enum RepositoryWorkflowChecks {
                 var findings: [RepositoryFinding] = []
                 for (path, source) in try CheckSupport.applicableWorkflows(context) {
                     var evidence: [String] = []
-                    for step in try WorkflowInspection.steps(source) {
+                    for step in try context.workflowSteps(path) {
                         let command = step.commands.joined(separator: "\n")
                         guard WorkflowCoverage.validationCommand(command) else { continue }
                         if step.toleratesFailure || CheckSupport.matches(command, #"(?:\|\|\s*(?:true\b|exit\s+0\b)|set\s+\+e\b|(?:^|[;\n])\s*exit\s+0\b)"#) {
@@ -94,7 +94,9 @@ enum WorkflowInspection {
         return InspectionConfig.scalar(raw)
     }
     static func references(_ source: String) throws -> [String] {
-        let lines = try lines(source)
+        return try references(lines(source))
+    }
+    static func references(_ lines: [Line]) throws -> [String] {
         var references: [String] = [], scalarIndent: Int?
         for line in lines {
             if let indent = scalarIndent {
@@ -116,7 +118,9 @@ enum WorkflowInspection {
         return references
     }
     static func steps(_ source: String, includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [Step] {
-        let all = try lines(source)
+        return try steps(lines(source), includeInputs: includeInputs, inputKeys: inputKeys)
+    }
+    static func steps(_ all: [Line], includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [Step] {
         guard let jobsIndex = all.firstIndex(where: { $0.indent == 0 && $0.field == "jobs" }) else { return [] }
         let jobs = block(all, jobsIndex)
         guard let jobIndent = jobs.first?.indent else { return [] }

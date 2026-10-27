@@ -33,7 +33,7 @@ enum RepositoryProjectReferenceChecks {
                     }
                     let pnpm = beside("pnpm-workspace.yaml")
                     if try context.exists(pnpm) {
-                        let raw = try InspectionConfig.yaml(context.readText(pnpm)).values["packages"]
+                        let raw = try context.yaml(pnpm).values["packages"]
                         if let raw { patterns += try stringArray(raw, yaml: true) }
                     }
                     try workspace(patterns, excludes: [], manifest: manifest, directory: directory, filename: "package.json", context: context, evidence: &evidence)
@@ -47,20 +47,20 @@ enum RepositoryProjectReferenceChecks {
                         for command in scripts.values { for path in try scriptPaths(command) { try missing(manifest, beside(path)) } }
                     }
                 } else {
-                    let values = try InspectionConfig.toml(context.readText(manifest), allSections: true).values
+                    let values = try context.toml(manifest, allSections: true).values
                     let members = try stringArray(values["tool.uv.workspace.members"] ?? "[]")
                     let excluded = try stringArray(values["tool.uv.workspace.exclude"] ?? "[]")
                     try workspace(members, excludes: excluded, manifest: manifest, directory: directory, filename: "pyproject.toml", context: context, evidence: &evidence)
                 }
             }
             for (path, source) in try CheckSupport.workflows(context) {
-                for reference in try WorkflowInspection.references(source) where reference.hasPrefix("./") {
+                for reference in try context.workflowReferences(path) where reference.hasPrefix("./") {
                     if reference.hasSuffix(".yml") || reference.hasSuffix(".yaml") { try missing(path, reference) }
                     else if try !context.exists(reference + "/action.yml") && !context.exists(reference + "/action.yaml") {
                         evidence[path, default: []].insert("Local action \(reference) has no action.yml or action.yaml.")
                     }
                 }
-                for step in try WorkflowInspection.steps(source, includeInputs: true, inputKeys: ["node-version-file", "python-version-file"]) {
+                for step in try context.workflowSteps(path, includeInputs: true, inputKeys: ["node-version-file", "python-version-file"]) {
                     let directory = step.workingDirectory ?? "."
                     if directory != "." { try missing(path, directory) }
                     for command in step.commands { for target in try scriptPaths(command) {
