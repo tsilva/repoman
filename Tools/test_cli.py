@@ -1,5 +1,10 @@
 """Exercise the built CLI against isolated local fixtures; no network or installs."""
+import ast
+import contextlib
+import io
 import json
+import re
+import textwrap
 import os
 from pathlib import Path
 import subprocess
@@ -11,6 +16,24 @@ BINARY = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else Path('.build/
 
 
 class CLITests(unittest.TestCase):
+    def test_secret_annotation_protocol_escapes_properties_and_omits_source(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/secret-scanning.yml').read_text()
+        script = textwrap.dedent(workflow.split("python3 - <<'PY'\n", 1)[1].rsplit('          PY', 1)[0])
+        parsed = ast.parse(script)  # Also validate the complete embedded script syntax.
+        functions = [node for node in parsed.body if isinstance(node, ast.FunctionDef)
+                     and node.name in {'property_value', 'annotation'}]
+        self.assertEqual(len(functions), 2)
+        namespace = {'re': re}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), '<annotation-protocol>', 'exec'), namespace)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            namespace['annotation']('src/100%,config.py', 12, 'api-key')
+            for path in ('../private', '/private', 'src/\nconfig.py', 'src/./config.py'):
+                namespace['annotation'](path, 1, 'api-key')
+            namespace['annotation']('src/config.py', 0, 'api-key')
+            namespace['annotation']('src/config.py', 1, 'untrusted title\n::error::injected')
+        self.assertEqual(output.getvalue(), '::error file=src/100%25%2Cconfig.py,line=12,title=RepoMan secret scan%3A api-key::Potential credential pattern; matched content withheld.\n')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

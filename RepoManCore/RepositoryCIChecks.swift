@@ -19,6 +19,10 @@ enum RepositoryCIChecks {
                     if !failures.isEmpty {
                         let failuresText = failures.map { "\($0.name): \($0.result.lowercased())" }.joined(separator: "; ")
                         evidence.append("Published commit \(branch.sha.prefix(8)) on \(branch.name): \(failuresText).")
+                        for failure in failures {
+                            evidence += failure.locations.map { "\(failure.name): \($0.path):\($0.line) [\($0.rule)]. Matched content withheld." }
+                            if failure.locationsTruncated { evidence.append("Additional annotation locations may exist; open the job for details.") }
+                        }
                         detailsURL = detailsURL ?? failures.first?.url
                     } else if branch.checks.isEmpty {
                         unknown.append("No CI results are available for \(branch.name) at \(branch.sha.prefix(8)).")

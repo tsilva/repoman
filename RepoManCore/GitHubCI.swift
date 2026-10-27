@@ -6,6 +6,11 @@ struct CIBranchStatus: Sendable {
     let sha: String
     let checks: [CICheckStatus]
 }
+struct CILocation: Sendable, Equatable {
+    let path: String
+    let line: Int
+    let rule: String
+}
 struct CICheckStatus: Sendable {
     let name: String
     let result: String
@@ -13,6 +18,8 @@ struct CICheckStatus: Sendable {
     var workflow: String? = nil
     var event: String? = nil
     var app: String? = nil
+    var locations: [CILocation] = []
+    var locationsTruncated: Bool = false
     var failed: Bool { ["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].contains(result) }
     var finished: Bool { failed || ["SUCCESS", "NEUTRAL", "SKIPPED"].contains(result) }
 }
@@ -55,6 +62,7 @@ enum GitHubCI {
                 __typename
                 ... on CheckRun {
                   name status conclusion detailsUrl startedAt
+                  annotations(first: 20) { pageInfo { hasNextPage } nodes { path title location { start { line } } } }
                   checkSuite { createdAt app { slug } workflowRun { runNumber event workflow { name } } }
                 }
                 ... on StatusContext { context state targetUrl createdAt }
@@ -121,12 +129,33 @@ enum GitHubCI {
                 } else if context.__typename == "StatusContext", let state = context.state { result = state }
                 else { throw InspectionError.blocked("GitHub returned an unsupported CI result.") }
                 let url = (context.detailsUrl ?? context.targetUrl).flatMap(URL.init(string:))
-                return CICheckStatus(name: name, result: result, url: url, workflow: context.checkSuite?.workflowRun?.workflow.name, event: context.checkSuite?.workflowRun?.event, app: context.checkSuite?.app?.slug)
+                let trustedPublisher = context.checkSuite?.app?.slug == "github-actions"
+                let locations = trustedPublisher ? (context.annotations?.nodes ?? []).compactMap(safeLocation) : []
+                return CICheckStatus(name: name, result: result, url: url, workflow: context.checkSuite?.workflowRun?.workflow.name, event: context.checkSuite?.workflowRun?.event, app: context.checkSuite?.app?.slug, locations: locations, locationsTruncated: trustedPublisher && context.annotations?.pageInfo.hasNextPage == true)
             }
             return CIBranchStatus(name: branch.name, sha: target.oid, checks: checks)
         }
     }
 
+    // Read only our fixed metadata protocol; annotation messages and rawDetails are
+    // never requested, decoded, cached, or used as finding evidence.
+    private static func safeLocation(_ annotation: Annotation) -> CILocation? {
+        let prefix = "RepoMan secret scan: "
+        guard let title = annotation.title, title.hasPrefix(prefix) else { return nil }
+        let rule = String(title.dropFirst(prefix.count))
+        guard rule.range(of: #"\A[A-Za-z0-9_-]{1,100}\z"#, options: .regularExpression) != nil,
+              let path = annotation.path, !path.isEmpty, path.utf8.count <= 240,
+              !path.hasPrefix("/"), !path.contains("\\"), !path.contains(":"),
+              !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              let line = annotation.location?.start.line, (1...10_000_000).contains(line) else { return nil }
+        return CILocation(path: path, line: line, rule: rule)
+    }
+
+    private struct Annotations: Decodable { let pageInfo: PageInfo; let nodes: [Annotation] }
+    private struct Annotation: Decodable { let path: String?; let title: String?; let location: AnnotationLocation? }
+    private struct AnnotationLocation: Decodable { let start: AnnotationPosition }
+    private struct AnnotationPosition: Decodable { let line: Int }
     private struct Response: Decodable { let data: Payload?; let errors: [APIError]? }
     private struct APIError: Decodable { let message: String }
     private struct Payload: Decodable { let repository: RemoteRepository? }
@@ -142,6 +171,7 @@ enum GitHubCI {
         let status: String?; let conclusion: String?; let state: String?
         let detailsUrl: String?; let targetUrl: String?
         let startedAt: String?; let createdAt: String?
+        let annotations: Annotations?
         let checkSuite: Suite?
         var date: String { startedAt ?? createdAt ?? checkSuite?.createdAt ?? "" }
         var runNumber: Int { checkSuite?.workflowRun?.runNumber ?? 0 }

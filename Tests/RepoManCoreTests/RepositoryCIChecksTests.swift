@@ -286,6 +286,37 @@ final class RepositoryCIChecksTests: XCTestCase {
         XCTAssertNotNil(report.unavailableChecks["ci.coverage"])
     }
 
+    func testSafeAnnotationLocationsExcludeMessagesAndUnownedMetadata() async throws {
+        var node = checkNode("FAILURE", started: "2026-10-27T01:00:00Z")
+        func annotation(_ path: String, _ title: String, _ line: Int) -> [String: Any] {
+            ["path": path, "title": title, "location": ["start": ["line": line]],
+             "message": "PRIVATE_MATCH_SENTINEL", "rawDetails": "PRIVATE_DETAIL_SENTINEL"]
+        }
+        node["annotations"] = ["pageInfo": ["hasNextPage": true], "nodes": [
+            annotation("src/config.py", "RepoMan secret scan: api-key", 12),
+            annotation("src/config.py", "arbitrary secret-like title", 12),
+            annotation("../private", "RepoMan secret scan: api-key", 1),
+            annotation("/private", "RepoMan secret scan: api-key", 1),
+            annotation("src/config.py", "RepoMan secret scan: bad rule", 1),
+            annotation("src/config.py", "RepoMan secret scan: api-key\n", 1),
+            annotation("src/config.py", "RepoMan secret scan: api-key", 0),
+            annotation("src/\nconfig.py", "RepoMan secret scan: api-key", 1)
+        ]]
+        let decoded = try GitHubCI.decode(response(nodes: [node]))
+        XCTAssertEqual(decoded[0].checks[0].locations, [CILocation(path: "src/config.py", line: 12, rule: "api-key")])
+        XCTAssertTrue(decoded[0].checks[0].locationsTruncated)
+        let statuses = decoded
+        let catalog = RepositoryIssueCatalog(checks: [RepositoryCIChecks.checks(loadStatus: { _ in statuses }).first { $0.id == "ci.failing" }!])
+        let report = await catalog.inspect(snapshot(remote: "https://github.com/example/project.git"))
+        let evidence = try XCTUnwrap(report.findings().first).evidence
+        XCTAssertTrue(evidence.contains("src/config.py:12 [api-key]"))
+        XCTAssertFalse(evidence.contains("SENTINEL"))
+        XCTAssertFalse(GitHubCI.query.contains("rawDetails"))
+        XCTAssertFalse(GitHubCI.query.contains("message"))
+        node["checkSuite"] = ["app": ["slug": "third-party"]]
+        XCTAssertTrue(try GitHubCI.decode(response(nodes: [node]))[0].checks[0].locations.isEmpty)
+    }
+
     private func coverageCatalog() -> RepositoryIssueCatalog { RepositoryIssueCatalog(checks: [RepositoryCIChecks.checks().first { $0.id == "ci.coverage" }!]) }
     private func snapshot(files: [String]? = ["pyproject.toml"], remote: String? = nil) -> RepositorySnapshot {
         RepositorySnapshot(url: root, name: "project", branch: "main", upstream: nil, remoteURL: remote,

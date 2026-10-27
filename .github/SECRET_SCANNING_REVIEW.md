@@ -24,3 +24,15 @@ and filters them in a temporary directory, publishes only location metadata, and
 deletes the report without uploading it. Run **Actions → Secret scanning → Run
 workflow** with `full_history` enabled to verify reviewed history. There is no cron
 or automatic retry. An unconfigured local CLI scan can still report these fixtures.
+
+The workflow emits at most 100 error annotations using the fixed title
+`RepoMan secret scan: <rule-id>`, a repository-relative file and a positive line
+number. The message is constant; no match or source excerpt is published. Paths
+with control characters, traversal, absolute locations or unsupported separators
+are omitted, and workflow-command property values are escaped.
+
+RepoMan requests at most 20 annotations per check run, reads only path, title and
+start line, and accepts this protocol only from the `github-actions` publisher.
+Other annotations are ignored; a truncated list is disclosed. CI failure detection
+still works when safe annotations are absent. The prefix identifies this
+metadata format; it is not an independent attestation that a finding is valid.

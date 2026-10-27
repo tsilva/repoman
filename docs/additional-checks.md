@@ -123,3 +123,11 @@ All-tracked-file checks share the 20000-path bound. Binary/text detection reads 
 Refresh fetches every configured remote, even without a current-branch upstream, and prunes deleted remote-tracking branches. Explicit refspecs and an empty configured refmap restrict writes to `refs/remotes/<remote>/`; local branches and tags are preserved, including repositories with mirror-style fetch configuration. Submodule recursion is disabled. At most sixteen remotes are fetched sequentially within the existing shared 45-second deadline per repository. Any failure keeps remote-dependent findings unavailable.
 
 Bun text lockfiles are read as JSONC, including comments and trailing commas. Bun safeguards use configuration beside the selected lockfile, or the workspace install root when no lockfile exists; standalone nested projects do not borrow unrelated ancestor policy. Bun’s built-in trusted-package list still permits some dependency lifecycle scripts, so the check requires explicit script suppression or a documented exception. Global workstation configuration is not inspected. These are static declaration checks; they do not resolve packages or validate the entire transitive graph. See [Bun configuration](https://bun.sh/docs/runtime/bunfig), [lifecycle scripts](https://bun.sh/docs/pm/lifecycle), and [text lockfiles](https://bun.sh/blog/bun-lock-text-lockfile).
+
+### Safe CI failure locations
+
+`ci.failing` includes bounded file/line/rule metadata from the owned secret-scan
+annotation protocol documented in `.github/SECRET_SCANNING_REVIEW.md`. It never
+requests annotation messages, raw details, source snippets or job logs. Unknown
+annotation formats are ignored and truncated location lists are disclosed. A
+failed job remains a finding even when it has no supported annotations.
