@@ -52,8 +52,9 @@ enum RepositoryHygieneChecks {
                 try documentationFindings(context, path: path)
             }),
             CheckSupport.check("notebooks.hygiene", "Notebook hygiene", .documentation, "book.closed", inspect: { context, policy in
-                guard policy.notebooks.enabled else { return [] }
+                guard policy.notebooks.enabled else { throw InspectionError.skipped("Notebook hygiene is disabled by repository policy (notebooks.enabled).") }
                 let paths = try context.trackedPaths(matching: [":(glob)**/*.ipynb"])
+                guard !paths.isEmpty else { throw InspectionError.notApplicable("No tracked notebooks were found.") }
                 guard paths.count <= 250 else { throw InspectionError.blocked("More than 250 notebooks need inspection.") }
                 var findings: [RepositoryFinding] = [], totalBytes = 0
                 for path in paths {

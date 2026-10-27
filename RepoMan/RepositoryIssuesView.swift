@@ -29,6 +29,11 @@ struct RepositoryIssuesView: View {
 
     @ViewBuilder
     private var checkSections: some View {
+        let skipped = checks.filter { $0.status == .skipped }
+        if !skipped.isEmpty {
+            Text("\(skipped.count) checks skipped by policy").font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+        }
         let notApplicable = checks.filter { $0.status == .notApplicable }
         if !notApplicable.isEmpty {
             Text("\(notApplicable.count) checks not applicable")

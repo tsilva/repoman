@@ -364,4 +364,30 @@ final class RepositoryCheckReportTests: XCTestCase {
             XCTAssertFalse(error.localizedDescription.contains("Private fixture"))
         }
     }
+    func testAbsentOptionalInputsAndDisabledNotebookChecksAreExplicit() async throws {
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ["access.configuration", "access.localPrivacy", "notebooks.hygiene", "ci.security"])
+        XCTAssertEqual(report.exitCode, 0)
+        XCTAssertEqual(report.checks.first { $0.id == "notebooks.hygiene" }?.status, "skipped")
+        XCTAssertTrue(report.checks.filter { $0.id != "notebooks.hygiene" }.allSatisfy { $0.status == "not_applicable" && $0.reason != nil })
+        try write(".repoman.json", #"{"notebooks":{"enabled":true}}"#)
+        let enabled = try await RepositoryChecker.run(at: root, checkIDs: ["notebooks.hygiene"])
+        XCTAssertEqual(enabled.checks.first?.status, "not_applicable")
+        try write(".access.local.toml", "version = 1")
+        let invalid = try await RepositoryChecker.run(at: root, checkIDs: ["access.configuration", "access.localPrivacy"])
+        XCTAssertEqual(invalid.exitCode, 1)
+        XCTAssertFalse(invalid.checks.contains { $0.status == "not_applicable" })
+    }
+
+    func testSkippedCheckDoesNotConfirmAnOldFindingAbsent() async throws {
+        let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        let check = RepositoryCheck(id: "disabled", title: "Disabled", category: .setup, symbol: "circle", inspect: { _ in
+            throw InspectionError.skipped("Explicit policy.")
+        })
+        let catalog = RepositoryIssueCatalog(checks: [check])
+        let report = await catalog.inspect(snapshot)
+        XCTAssertEqual(report.status(for: check.id), .skipped)
+        let finding = RepositoryFinding(repositoryID: snapshot.id, checkID: check.id, title: "Old", evidence: "Old", category: .setup, symbol: "circle")
+        guard case .unknown = catalog.verify(finding, in: report) else { return XCTFail("Disabled verification must remain unknown") }
+    }
+
 }

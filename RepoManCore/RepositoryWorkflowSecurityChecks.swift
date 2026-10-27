@@ -4,7 +4,7 @@ enum RepositoryWorkflowSecurityChecks {
     static func checks() -> [RepositoryCheck] {
         [CheckSupport.check("ci.security", "Risky Actions workflow", .ci, "exclamationmark.shield", inspect: { context, _ in
             var findings: [RepositoryFinding] = []
-            for (path, source) in try CheckSupport.workflows(context) {
+            for (path, source) in try CheckSupport.applicableWorkflows(context) {
                 _ = try WorkflowInspection.references(source)
                 let lines = try WorkflowInspection.lines(source)
                 let steps = try WorkflowInspection.steps(source, includeInputs: true, inputKeys: ["ref", "repository"])

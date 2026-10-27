@@ -79,7 +79,7 @@ enum CheckSupport {
                     findings += result.detectedFindings
                     switch result {
                     case .findings: break
-                    case .partial(_, let reason), .unavailable(let reason), .notApplicable(let reason):
+                    case .partial(_, let reason), .unavailable(let reason), .notApplicable(let reason), .skipped(let reason):
                         failedPaths += 1
                         if reasons.count < 5 { reasons.append(reason) }
                     }
@@ -122,6 +122,11 @@ enum CheckSupport {
             throw InspectionError.notApplicable("No supported manifests found (" + names.sorted().joined(separator: ", ") + "). Other ecosystems are outside this check's scope.")
         }
         return paths
+    }
+    static func applicableWorkflows(_ context: RepositoryInspectionContext) throws -> [(String, String)] {
+        let files = try workflows(context)
+        guard !files.isEmpty else { throw InspectionError.notApplicable("No GitHub Actions workflows are present.") }
+        return files
     }
     static func workflows(_ context: RepositoryInspectionContext) throws -> [(String, String)] {
         try context.filenames(in: ".github/workflows").filter { ["yaml", "yml"].contains(($0 as NSString).pathExtension) }

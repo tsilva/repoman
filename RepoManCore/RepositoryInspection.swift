@@ -251,14 +251,15 @@ private final class InspectionFileCache: @unchecked Sendable {
 public enum RepositoryCheckResult: Codable, Sendable {
     case findings([RepositoryFinding])
     case notApplicable(String)
+    case skipped(String)
     case partial([RepositoryFinding], String)
     case unavailable(String)
     var detectedFindings: [RepositoryFinding] {
-        switch self { case .findings(let findings), .partial(let findings, _): return findings; case .unavailable, .notApplicable: return [] }
+        switch self { case .findings(let findings), .partial(let findings, _): return findings; case .unavailable, .notApplicable, .skipped: return [] }
     }
 }
 public enum RepositoryCheckStatus: Sendable {
-    case queued, running, passed, findings, incomplete, notApplicable
+    case queued, running, passed, findings, incomplete, notApplicable, skipped
 }
 
 public struct RepositoryInspectionReport: Sendable {
@@ -275,13 +276,14 @@ public struct RepositoryInspectionReport: Sendable {
         switch results[checkID] {
         case .findings(let findings): return findings.isEmpty ? .passed : .findings
         case .notApplicable: return .notApplicable
+        case .skipped: return .skipped
         case .partial, .unavailable: return .incomplete
         case nil: return runningCheckIDs.contains(checkID) ? .running : .queued
         }
     }
     public var unavailableChecks: [String: String] {
         results.compactMapValues { result in
-            switch result { case .unavailable(let reason), .partial(_, let reason): return reason; case .findings, .notApplicable: return nil }
+            switch result { case .unavailable(let reason), .partial(_, let reason): return reason; case .findings, .notApplicable, .skipped: return nil }
         }
     }
     /// Local refresh keeps prior fetch errors. Reevaluate cheap checks against that final snapshot.
@@ -334,6 +336,7 @@ public extension RepositoryIssueCatalog {
                         }
                         return (check.id, result)
                     } catch InspectionError.notApplicable(let reason) { return (check.id, .notApplicable(reason)) }
+                    catch InspectionError.skipped(let reason) { return (check.id, .skipped(reason)) }
                     catch { return (check.id, .unavailable(error.localizedDescription)) }
                 }
             }
@@ -361,6 +364,7 @@ public extension RepositoryIssueCatalog {
         guard let result = report.results[finding.checkID] else { return .unknown("The original detector is no longer registered.") }
         switch result {
         case .notApplicable(let reason): return .unknown("Check is not applicable: " + reason)
+        case .skipped(let reason): return .unknown("Check was skipped: " + reason)
         case .unavailable(let reason): return .unknown(reason)
         case .partial(let findings, let reason):
             if let current = findings.first(where: { $0.id == finding.id }) { return .present(current.evidence) }
@@ -384,7 +388,7 @@ public actor RepositoryInspectionCache {
         var checks: [String: Entry]
     }
     private struct Storage: Codable {
-        var version = 2
+        var version = 3
         var repositories: [String: RepositoryEntry] = [:]
     }
     private var storage: Storage
@@ -394,7 +398,7 @@ public actor RepositoryInspectionCache {
     public init(url: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("RepoMan/inspection-cache.json")) {
         self.url = url
-        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode(Storage.self, from: data), saved.version == 2 {
+        if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode(Storage.self, from: data), saved.version == 3 {
             storage = saved
         } else { storage = Storage() }
     }
@@ -460,5 +464,6 @@ public enum InspectionVerification: Codable, Equatable, Sendable {
 public enum InspectionError: Error, LocalizedError {
     case blocked(String)
     case notApplicable(String)
-    public var errorDescription: String? { switch self { case .blocked(let message), .notApplicable(let message): return message } }
+    case skipped(String)
+    public var errorDescription: String? { switch self { case .blocked(let message), .notApplicable(let message), .skipped(let message): return message } }
 }

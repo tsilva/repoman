@@ -5,7 +5,7 @@ enum RepositoryWorkflowChecks {
         [
             CheckSupport.check("ci.mutableActions", "Actions references are mutable", .ci, "lock.shield", inspect: { context, _ in
                 var findings: [RepositoryFinding] = []
-                for (path, source) in try CheckSupport.workflows(context) {
+                for (path, source) in try CheckSupport.applicableWorkflows(context) {
                     let references = try WorkflowInspection.references(source)
                     let mutable = references.filter { reference in
                         if reference.hasPrefix("./") { return false }
@@ -19,7 +19,7 @@ enum RepositoryWorkflowChecks {
             }),
             CheckSupport.check("ci.suppressedFailures", "Validation failures are suppressed", .ci, "exclamationmark.shield", inspect: { context, _ in
                 var findings: [RepositoryFinding] = []
-                for (path, source) in try CheckSupport.workflows(context) {
+                for (path, source) in try CheckSupport.applicableWorkflows(context) {
                     var evidence: [String] = []
                     for step in try WorkflowInspection.steps(source) {
                         let command = step.commands.joined(separator: "\n")

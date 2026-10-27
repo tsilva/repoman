@@ -5,7 +5,7 @@ enum RepositoryGitHealthChecks {
         [
             CheckSupport.check("git.unpublishedBranches", "Unpublished branch work", .git, "arrow.up.doc", inspect: { context, _ in
                 try requireRemoteState(context)
-                guard try hasRemote(context) else { return [] }
+                guard try hasRemote(context) else { throw InspectionError.notApplicable("No Git remotes are configured.") }
                 let remotes = try context.gitRead(["for-each-ref", "--format=%(refname)", "refs/remotes"])
                 guard !remotes.isEmpty else { throw InspectionError.blocked("No fetched remote branches are available for comparison.") }
                 let occupied = Set(try text(context, ["worktree", "list", "--porcelain"]).components(separatedBy: .newlines)
@@ -23,7 +23,7 @@ enum RepositoryGitHealthChecks {
             }),
             CheckSupport.check("git.upstream", "Missing or deleted upstream", .git, "arrow.triangle.branch", inspect: { context, _ in
                 try requireRemoteState(context)
-                guard try hasRemote(context) else { return [] }
+                guard try hasRemote(context) else { throw InspectionError.notApplicable("No Git remotes are configured.") }
                 let current = try text(context, ["symbolic-ref", "--quiet", "HEAD"], codes: [0, 1])
                 var findings: [RepositoryFinding] = []
                 for branch in try branches(context) {

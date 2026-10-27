@@ -16,6 +16,7 @@ enum RepositoryAccessChecks {
                         }
                     } catch { reasons.append(path + ": Access metadata could not be fully read or parsed. Supported TOML uses bare table/key names, scalar strings and string arrays; inspect syntax and regular-file containment. Values are withheld.") }
                 }
+                guard !presentFiles.isEmpty || !reasons.isEmpty else { throw InspectionError.notApplicable("No repository access metadata files are present.") }
                 var findings: [RepositoryFinding] = []
                 if !presentFiles.contains(".access.toml"), presentFiles.contains(".access.local.toml"), reasons.isEmpty {
                     findings.append(finding(context, ".access.local.toml", "A local access file requires a shared .access.toml inventory."))
@@ -38,7 +39,8 @@ enum RepositoryAccessChecks {
                 let attributes: [FileAttributeKey: Any]
                 do { attributes = try FileManager.default.attributesOfItem(atPath: context.snapshot.url.appendingPathComponent(path).path) }
                 catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-                    return problems.isEmpty ? [] : [privacyFinding(context, problems.joined(separator: "\n"))]
+                    if problems.isEmpty { throw InspectionError.notApplicable("No local access metadata file is present.") }
+                    return [privacyFinding(context, problems.joined(separator: "\n"))]
                 }
                 guard attributes[.type] as? FileAttributeType == .typeRegular else {
                     problems.append("Local access metadata must be a regular owner-only file, not a directory or symbolic link.")

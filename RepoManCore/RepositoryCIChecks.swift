@@ -8,7 +8,7 @@ enum RepositoryCIChecks {
     }) -> [RepositoryCheck] {
         [
             RepositoryCheck(id: "ci.failing", title: "CI failing", category: .ci, symbol: "xmark.seal", inspect: { context in
-                guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { return [] }
+                guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { throw InspectionError.notApplicable("No supported GitHub remote.") }
                 let branches = try await loadStatus(context.snapshot)
                 var evidence: [String] = []
                 var detailsURL: URL?
@@ -37,7 +37,7 @@ enum RepositoryCIChecks {
                 guard let files = context.snapshot.rootFiles else {
                     throw InspectionError.blocked("Repository files could not be inspected.")
                 }
-                guard hasCode(files) else { return [] }
+                guard hasCode(files) else { throw InspectionError.notApplicable("No recognized code project at the repository root.") }
                 if try files.contains(where: { [".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".travis.yml"].contains($0) }) ||
                     !(try context.filenames(in: ".circleci")).isEmpty || !(try context.filenames(in: ".buildkite")).isEmpty {
                     throw InspectionError.blocked("External CI configuration is present; coverage inspection currently supports GitHub Actions.")

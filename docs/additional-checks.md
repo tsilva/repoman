@@ -2,6 +2,8 @@
 
 RepoMan registers deterministic checks in Issues and Settings. The dashboard may fetch remote-tracking refs and read GitHub metadata; the shared CLI fetches remote-tracking refs only with `--fetch` and reads GitHub metadata only with `--remote`. Neither installs packages, runs project scripts, changes working files or publishes anything. Checks and repository-owned exceptions are shared through RepoManCore; see [the CLI contract](issues.md#shared-cli).
 
+Optional access files, naming policies and absent Actions workflows report **not applicable** when out of scope. Notebook hygiene reports **skipped** until enabled, then **not applicable** if no notebooks exist. Required missing inputs remain findings or incomplete.
+
 Dependency checks return **not applicable** when no supported manifests are present; they do not validate Swift or other unsupported ecosystems. Missing or unreadable tracked inputs remain **incomplete**, with the repository-relative path in their diagnostics.
 
 Routine CI coverage excludes literal false job/step conditions and jobs depending on disabled jobs. Unevaluated conditions, missing dependencies and dependency cycles stay incomplete when no independent unconditional validation is recognized. Trigger filters and shell control flow are not fully interpreted.

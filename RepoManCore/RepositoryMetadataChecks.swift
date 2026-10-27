@@ -12,7 +12,7 @@ enum RepositoryMetadataChecks {
     typealias VisibilityLoader = @Sendable (RepositorySnapshot) async throws -> GitHubRepositoryVisibility
     static func checks(load: Loader? = nil, loadVisibility: VisibilityLoader? = nil) -> [RepositoryCheck] {
         [CheckSupport.check("github.description", "GitHub description drift", .documentation, "text.bubble", inspect: { context, _ in
-            guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { return [] }
+            guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { throw InspectionError.notApplicable("No supported GitHub remote.") }
             let metadata: PublishedRepositoryMetadata
             if let load { metadata = try await load(context.snapshot) }
             else {
@@ -20,13 +20,13 @@ enum RepositoryMetadataChecks {
                 metadata = result.metadata
                 if result.cached { context.markCached("github.description") }
             }
-            guard let readme = metadata.readme, let tagline = try GitHubTagline.tagline(readme) else { return [] }
+            guard let readme = metadata.readme, let tagline = try GitHubTagline.tagline(readme) else { throw InspectionError.notApplicable("The published README has no description-sync tagline contract.") }
             guard (metadata.description ?? "") != tagline else { return [] }
             return [CheckSupport.finding(context, "github.description", repository.owner + "/" + repository.name,
                 "GitHub description drift", "Published README on \(metadata.branch) at \(metadata.sha.prefix(8)) declares: \(tagline)\nGitHub description: \(metadata.description ?? "(empty)"). Local and feature-branch README changes are not used.", .documentation, "text.bubble")]
         }), CheckSupport.check("github.privateVisibility", "Private repository visibility", .setup, "lock.shield", inspect: { context, _ in
             guard let repository = GitHubCI.repository(context.snapshot.remoteURL),
-                  repository.name.lowercased().hasPrefix("private-") else { return [] }
+                  repository.name.lowercased().hasPrefix("private-") else { throw InspectionError.notApplicable("The private-name visibility policy does not apply to this remote.") }
             let visibility: GitHubRepositoryVisibility
             if let loadVisibility { visibility = try await loadVisibility(context.snapshot) }
             else {
