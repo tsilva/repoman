@@ -79,7 +79,8 @@ final class ResizeVerifier: NSObject, NSApplicationDelegate {
             print("width=\(window.frame.width) toolbarWidth=\(view.bounds.width) controls=\(regions.map { $0.minX })")
             initialLeading = initialLeading ?? regions.first?.minX
             initialTrailing = initialTrailing ?? regions.last.map { window.frame.width - $0.maxX }
-            guard regions.count == 7, abs(regions.first!.minX - initialLeading!) < 1,
+            // Demo repositories have GitHub remotes, so their toolbar includes the GitHub link.
+            guard regions.count == 8, abs(regions.first!.minX - initialLeading!) < 1,
                   abs(regions.last!.maxX - (window.frame.width - initialTrailing!)) < 1 else {
                 fail("Toolbar controls moved away from their window-edge anchors")
             }

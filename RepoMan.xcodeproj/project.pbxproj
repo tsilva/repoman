@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA0000000000000000000001 /* RepositoryCheckReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* RepositoryCheckReport.swift */; };
+		A90000000000000000000001 /* GitHub-Octicons-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* GitHub-Octicons-LICENSE.txt */; };
 		A20000000000000000000002 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* AboutView.swift */; };
 		A10000000000000000000001 /* RepoManApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* RepoManApp.swift */; };
 		A10000000000000000000002 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* Theme.swift */; };
@@ -47,6 +48,7 @@
 
 /* Begin PBXFileReference section */
 		BB0000000000000000000001 /* RepositoryCheckReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryCheckReport.swift; sourceTree = "<group>"; };
+		B90000000000000000000001 /* GitHub-Octicons-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Resources/GitHub-Octicons-LICENSE.txt"; sourceTree = "<group>"; };
 		B20000000000000000000002 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		B10000000000000000000001 /* RepoManApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepoManApp.swift; sourceTree = "<group>"; };
 		B10000000000000000000002 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -107,6 +109,7 @@
 				B10000000000000000000004 /* RepositoryStore.swift */,
 				B20000000000000000000001 /* SettingsView.swift */,
 				B10000000000000000000013 /* RepositoryIssuesView.swift */,
+				B90000000000000000000001 /* GitHub-Octicons-LICENSE.txt */,
 				B10000000000000000000009 /* Assets.xcassets */,
 				B60000000000000000000001 /* AppIcon.icon */,
 			);
@@ -221,6 +224,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A90000000000000000000001 /* GitHub-Octicons-LICENSE.txt in Resources */,
 				A10000000000000000000008 /* Assets.xcassets in Resources */,
 				A60000000000000000000001 /* AppIcon.icon in Resources */,
 			);

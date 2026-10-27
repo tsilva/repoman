@@ -156,7 +156,13 @@ struct ContentView: View {
                         isRotating: isChecking) { store.refreshSelected() }
                         .disabled(store.isScanning || store.isFetching || isChecking)
                         .accessibilityIdentifier("refresh-repository-issues-button")
-
+                    if let github = GitHubCI.repository(repository.remoteURL),
+                       let url = URL(string: "https://github.com/\(github.owner)/\(github.name)") {
+                        ToolbarActionButton(asset: "GitHub", title: "Open on GitHub") {
+                            NSWorkspace.shared.open(url)
+                        }
+                        .accessibilityIdentifier("open-on-github-button")
+                    }
                 }
                 ToolbarActionButton(symbol: "folder", title: "Open in Finder") {
                     if let repository = store.selectedRepository {
@@ -1194,6 +1200,7 @@ enum RepositoryToolbarIcon: Shape {
 struct ToolbarActionButton: View {
     var symbol: String = ""
     var icon: RepositoryToolbarIcon? = nil
+    var asset: String? = nil
     let title: String
     var isRotating = false
     var isLoading = false
@@ -1206,6 +1213,9 @@ struct ToolbarActionButton: View {
             Group {
                 if isLoading {
                     ProgressView().controlSize(.mini)
+                } else if let asset {
+                    Image(asset).renderingMode(.template).resizable().scaledToFit()
+                        .frame(width: 20, height: 20)
                 } else if let icon {
                     icon.stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
                         .frame(width: 20, height: 20)
