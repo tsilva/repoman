@@ -84,7 +84,10 @@ final class AppUpdateTests: XCTestCase {
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
         try Data("old".utf8).write(to: target.appendingPathComponent("marker"))
         let dmg = root.appendingPathComponent("fixture.dmg")
-        _ = try UpdateCommand.run("/usr/bin/hdiutil", ["create", "-srcfolder", volume.path, "-format", "UDZO", dmg.path], timeout: 60)
+        // Match Tools/package-dmg.sh. The implicit filesystem is APFS on macOS 27,
+        // whose image creation fails in CI; shipped updates use HFS+/UDZO.
+        _ = try UpdateCommand.run("/usr/bin/hdiutil", ["create", "-volname", "RepoMan", "-fs", "HFS+",
+            "-srcfolder", volume.path, "-format", "UDZO", dmg.path], timeout: 60)
         let work = try AppUpdateInstaller.workspace()
         defer { try? FileManager.default.removeItem(at: work) }
         let errorFile = root.appendingPathComponent("error")
