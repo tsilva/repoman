@@ -11,6 +11,10 @@ Reviewed on 2026-10-07:
 
 - `Tests/RepoManCoreTests/RepositoryHealthChecksTests.swift` (`private-key`): Deliberately invalid private-key fixture tests secret detection and redaction.
 
+Reviewed on 2026-10-27:
+
+- `Tests/RepoManCoreTests/RepositoryCheckReportTests.swift` (`private-key`): Deliberately invalid private-key header fixture tests that an exception cannot hide incomplete coverage. The pinned scanner reproduced the exact finding; changing the fixture in the same file remains detected.
+
 Do not add an exposed credential to this list. Revoke or rotate it and remove it
 from source first. Inspect candidate exceptions privately and test that a changed
 credential in the same file is detected before accepting an exception.
