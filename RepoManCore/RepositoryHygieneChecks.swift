@@ -96,7 +96,7 @@ enum RepositoryHygieneChecks {
         targets += CheckSupport.captures(links, #"(?i)(?:src|href)\s*=\s*["']([^"']+)["']"#).map { $0[1] }
         if (path as NSString).lastPathComponent == "AGENTS.md" {
             targets += CheckSupport.captures(text, #"`((?:\./)?(?:\.agents|\.codex)/[^`\n]+/SKILL\.md)`"#)
-                .map { $0[1] }
+                .map { $0[1] }.filter { !$0.contains("*") }
         }
         var missing: [String] = [], reasons: [String] = []
         var failedTargets = 0

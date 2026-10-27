@@ -309,6 +309,28 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         let observed18 = try await inspect("docs.brokenLinks").unavailableChecks["docs.brokenLinks"]
         XCTAssertNotNil(observed18)
     }
+    func testSkillDiscoveryGlobsDoNotHideMissingLiteralReferences() async throws {
+        try write("AGENTS.md", """
+        Discover `.agents/skills/private-cybersec_audit-security-*/SKILL.md`.
+        Also discover `.codex/skills/**/SKILL.md`.
+        Use `.agents/skills/missing/SKILL.md`.
+        [Explicit missing link](.agents/skills/linked-*/SKILL.md)
+        """)
+        let report = try await inspect("docs.brokenLinks")
+        let finding = try XCTUnwrap(report.findings().first)
+        XCTAssertEqual(report.findings().count, 1)
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+        XCTAssertTrue(finding.evidence.contains(".agents/skills/missing/SKILL.md"))
+        XCTAssertTrue(finding.evidence.contains(".agents/skills/linked-*/SKILL.md"))
+        XCTAssertFalse(finding.evidence.contains("private-cybersec_audit-security-*"))
+        XCTAssertFalse(finding.evidence.contains(".codex/skills/**"))
+
+        try write(".agents/skills/missing/SKILL.md", "Literal target")
+        try write(".agents/skills/linked-*/SKILL.md", "Explicit link target")
+        let repaired = try await inspect("docs.brokenLinks")
+        XCTAssertTrue(repaired.findings().isEmpty)
+        XCTAssertTrue(repaired.unavailableChecks.isEmpty)
+    }
     func testNotebookOptInErrorsSizeAndMalformedFormat() async throws {
         let notebook: [String: Any] = ["nbformat":4, "cells":[["cell_type":"code", "outputs":[["output_type":"error", "ename":"ExpectedError", "evalue":"example", "traceback":[]]]]]]
         try write("example.ipynb", String(decoding: JSONSerialization.data(withJSONObject: notebook), as: UTF8.self))
