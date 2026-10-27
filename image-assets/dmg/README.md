@@ -36,3 +36,7 @@ For a packaging preview, use an existing development app bundle with
 Applications symlink, hidden background, window size, and icon locations in the
 mounted image. A design preview does not constitute a release build or
 publication; use the project's release skill for release work.
+
+## License
+
+[MIT License](../../LICENSE).

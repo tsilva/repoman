@@ -1,0 +1,38 @@
+name: Repository checks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Test shared checks
+        run: swift test
+
+      - name: Verify the command-line interface
+        run: python3 Tools/test_cli.py .build/debug/repoman
+
+      - name: Build the app and bundled CLI
+        run: >-
+          xcodebuild -project RepoMan.xcodeproj -scheme RepoMan
+          -configuration Debug -derivedDataPath DerivedData
+          CODE_SIGNING_ALLOWED=NO build
+
+      - name: Verify the bundled command-line interface
+        run: python3 Tools/test_cli.py DerivedData/Build/Products/Debug/RepoMan.app/Contents/Helpers/repoman

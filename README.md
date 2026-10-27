@@ -97,7 +97,7 @@ bash .codex/skills/repoman_build-release/scripts/build-release.sh
 - External Git tools can change a checkout during inspection. Findings are observations, not writer clearance or authorization to publish changes.
 - The screenshots and `--demo` mode use illustrative data. Demo mode uses illustrative data and does not inspect real repositories.
 - Local packaging writes a DMG and checksum under `dist/`. Pushing a `vX.Y.Z` tag publishes them through the [release workflow](.github/workflows/release.yml). Packaging preserves the signed app's metadata and verifies its signature before creating the DMG and again after mounting it. Packaged builds are signed ad hoc and are not notarized; Gatekeeper may require manual approval.
-- No license is declared in this repository.
+- RepoMan is distributed under the MIT license.
 
 ## Architecture
 
@@ -109,6 +109,8 @@ The diagram shows discovery and refresh. The [checks and issue-details guide](do
 
 Use `$repo-maintenance` from the global `private-skills` collection in Codex for an iterative maintenance pass over selected repositories. The shared skill validates findings, proposes fixes and reruns checks after authorized repairs. The skill assesses checker quality first, repairs confirmed checker problems within the authorized scope, and reruns before recommending repository repairs. Ambiguous policy changes or expanded scope require a user decision. This workflow is maintained in `private-skills`.
 
+The [repository checks workflow](.github/workflows/ci.yml) runs Swift tests, CLI integration tests and an app build on pushes to `main`. It does not publish releases.
+
 Every Xcode app build includes `Contents/Helpers/repoman`. For an app installed in `/Applications`:
 
 ```sh
@@ -117,3 +119,7 @@ Every Xcode app build includes `Contents/Helpers/repoman`. For an app installed 
 ```
 
 The CLI uses the same detectors and repository exceptions as the dashboard. Dependency-age exceptions can target individual package settings. It runs fresh checks without reading desktop preferences or writing inspection caches. By default it does not fetch or change Git state. Add `--fetch` to refresh only remote-tracking refs before checking; branches, tags, index and working files remain unchanged. Add `--remote` to permit read-only GitHub checks through your existing `gh` login; otherwise those checks are explicitly skipped. JSON schema version 2 distinguishes `information` from actionable `findings`. Exit codes are 0 when selected checks complete with no actionable findings (informational observations are allowed), 1 when actionable findings exist even with incomplete coverage, 2 for invocation/startup errors, and 3 for incomplete verification without actionable findings. Python lockfile drift checks cover dependency groups, bounded nested includes and platform-marker declarations without running a resolver. Unfetched Git comparisons stay incomplete, with local-ref findings marked provisional. Fetch failures preserve local results. A local pass does not establish remote health. Documentation links into direct sibling Git repositories are checked for existence without opening their contents; other escapes remain incomplete without discarding known broken links. See [the report contract and skill integration](docs/issues.md#shared-cli).
+
+## License
+
+[MIT License](LICENSE).
