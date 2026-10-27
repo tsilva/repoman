@@ -7,3 +7,5 @@ dist/
 *.xcuserstate
 xcuserdata/
 .openrouter-test-key*
+/INBOX.md
+/.local/repo-inbox/
