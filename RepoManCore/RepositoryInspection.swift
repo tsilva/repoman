@@ -289,7 +289,7 @@ public struct RepositoryInspectionReport: Sendable {
         var updated = results
         for check in catalog.checks where !check.requiresExtendedInspection && !cachedChecks.contains(check.id) && results[check.id] != nil {
             if let reason = check.availability(snapshot) { updated[check.id] = .unavailable(reason) }
-            else { updated[check.id] = .findings(check.detect(snapshot)) }
+            else { updated[check.id] = RepositoryCheck.result(check.detect(snapshot), for: check.id, snapshot: snapshot) }
         }
         return Self(snapshot: snapshot, results: updated, checkOrder: checkOrder, cachedChecks: cachedChecks,
                     completedAt: completedAt, runningCheckIDs: runningCheckIDs, appliedExceptions: appliedExceptions)

@@ -6,19 +6,19 @@ struct RepositoryGitStatus: View {
     let repository: RepositorySnapshot
     var body: some View {
         HStack(spacing: 8) {
-            if let count = repository.behind, count > 0 { countLabel("↓", count, color: Theme.blue, title: "commits to pull") }
-            if let count = repository.ahead, count > 0 { countLabel("↑", count, color: Theme.blue, title: "commits to push") }
+            if let count = repository.behind, count > 0 { countLabel("↓", count, color: Theme.blue, title: "commits behind local upstream ref", provisional: !repository.hasFreshRemoteComparison) }
+            if let count = repository.ahead, count > 0 { countLabel("↑", count, color: Theme.blue, title: "commits ahead of local upstream ref", provisional: !repository.hasFreshRemoteComparison) }
             if repository.changedFileCount > 0 { countLabel("●", repository.changedFileCount, color: Theme.amber, title: "changed files") }
         }.font(.system(size: 11)).monospacedDigit().fixedSize()
     }
-    private func countLabel(_ symbol: String, _ count: Int, color: Color, title: String) -> some View {
+    private func countLabel(_ symbol: String, _ count: Int, color: Color, title: String, provisional: Bool = false) -> some View {
         HStack(spacing: 3) {
             Text(symbol).foregroundStyle(color)
-            Text(count.formatted()).foregroundStyle(Theme.secondary)
+            Text(count.formatted() + (provisional ? "?" : "")).foregroundStyle(Theme.secondary)
         }
-        .help("\(count) \(title)")
+        .help("\(count) \(title)" + (provisional ? "; remote freshness unknown" : ""))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(count) \(title)")
+        .accessibilityLabel("\(count) \(title)" + (provisional ? "; provisional, remote freshness unknown" : ""))
     }
 }
 
