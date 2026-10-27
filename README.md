@@ -58,7 +58,7 @@ See [the checker and issue-details architecture](docs/issues.md) for extending t
 
 ## Commands
 
-In Codex, `$build-release` or `/build-release` builds, verifies, and publishes a
+In Codex, `$repoman_build-release` or `/repoman_build-release` builds, verifies, and publishes a
 GitHub Release. Request a local build explicitly to keep the artifacts local.
 The shell helper below builds local artifacts without publishing.
 
@@ -83,7 +83,7 @@ swiftc -parse-as-library RepoManCore/AppUpdate.swift \
 .build/verify-app-update DerivedData/Build/Products/Debug/RepoMan.app
 
 # Test and package an Apple Silicon DMG with a SHA-256 checksum
-bash .codex/skills/build-release/scripts/build-release.sh
+bash .codex/skills/repoman_build-release/scripts/build-release.sh
 ```
 
 ## Notes

@@ -12,7 +12,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = Path('.codex/skills/build-release/scripts')
+SCRIPTS = Path('.codex/skills/repoman_build-release/scripts')
 spec = importlib.util.spec_from_file_location('release_version', ROOT / SCRIPTS / 'release-version.py')
 metadata = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(metadata)

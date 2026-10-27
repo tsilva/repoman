@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Release"
+  short_description: "Build and publish RepoMan through GitHub Actions"
+  default_prompt: "Use $repoman_build-release to prepare a RepoMan release tag, let GitHub Actions build and publish the DMG and checksum, and verify the workflow and published assets."

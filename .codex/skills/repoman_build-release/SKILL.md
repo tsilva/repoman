@@ -1,6 +1,6 @@
 ---
-name: build-release
-description: Prepare, monitor, and verify RepoMan macOS releases built and published in GitHub Actions. Use for /build-release, release packaging, publication, and validation; ordinary Debug runs do not need it.
+name: repoman_build-release
+description: Prepare, monitor, and verify RepoMan macOS releases built and published in GitHub Actions. Use for /repoman_build-release, release packaging, publication, and validation; ordinary Debug runs do not need it.
 ---
 
 # Build Release
@@ -10,7 +10,7 @@ Read and apply the shared `$release-workflow` skill at
 publication safeguards, `$push` integration, monitoring, and verification. This
 adapter owns RepoMan's commands, version policy, and artifact requirements.
 
-A bare `$build-release` or `/build-release` requests publication. All release
+A bare `$repoman_build-release` or `/repoman_build-release` requests publication. All release
 tests, compilation, signing, packaging, and artifact validation run in GitHub
 Actions. Do not build a local candidate before tagging. The operator machine
 needs only Python 3 for metadata reading, Git, and authenticated `gh`.
@@ -28,7 +28,7 @@ releases before selecting a version.
 Read the two committed `MARKETING_VERSION` values without running Xcode:
 
 ```bash
-python3 .codex/skills/build-release/scripts/release-version.py
+python3 .codex/skills/repoman_build-release/scripts/release-version.py
 ```
 
 Both build configurations must have the same `X.Y.Z` version. Honor an explicit
@@ -79,7 +79,7 @@ For a dry run, release candidate validation, or a build-only request using the
 committed source, dispatch the latest upstream `main` commit:
 
 ```bash
-bash .codex/skills/build-release/scripts/validate-release.sh
+bash .codex/skills/repoman_build-release/scripts/validate-release.sh
 ```
 
 This launcher performs only Git/GitHub operations locally. It may run while the
@@ -98,7 +98,7 @@ reporting the successful run, artifact names, and that nothing was published.
 Only when the user explicitly requests a local build, run:
 
 ```bash
-bash .codex/skills/build-release/scripts/build-release.sh
+bash .codex/skills/repoman_build-release/scripts/build-release.sh
 ```
 
 It requires macOS and Xcode 27 and performs the same build and artifact checks

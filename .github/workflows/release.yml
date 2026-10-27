@@ -55,7 +55,7 @@ jobs:
             git merge-base --is-ancestor "$release_sha" "$main_sha"
             version_tag="$RELEASE_TAG"
           fi
-          python3 .codex/skills/build-release/scripts/release-version.py \
+          python3 .codex/skills/repoman_build-release/scripts/release-version.py \
             --tag "$version_tag" >> "$GITHUB_OUTPUT"
           echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
           xcodebuild -version
@@ -71,7 +71,7 @@ jobs:
           VERSION_NUMBER: ${{ steps.version.outputs.number }}
         run: |
           set -euo pipefail
-          bash .codex/skills/build-release/scripts/build-release.sh \
+          bash .codex/skills/repoman_build-release/scripts/build-release.sh \
             --version "$VERSION_NUMBER" \
             --output-dir dist
 
