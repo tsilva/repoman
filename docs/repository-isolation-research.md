@@ -1,5 +1,7 @@
 # Repository isolation research
 
+Historical note: issue-repair agents and conversations were removed from RepoMan on 2026-10-25. This document records the former implementation. See [current checker architecture](issues.md).
+
 Investigated on 2026-10-01 for RepoMan on macOS 27. The objective is to give each launched Codex process unrestricted execution and editing inside one existing repository, while preventing access to other host repositories and personal files. Required system tools, authentication, and disposable runtime storage need a separately defined policy. This report records research and disposable experiments; it does not enable a new product sandbox.
 
 ## Current conclusion

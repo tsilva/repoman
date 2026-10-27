@@ -1,5 +1,7 @@
 # Repair changes badge and diff sidebar
 
+Historical note: issue-repair agents and conversations were removed from RepoMan on 2026-10-25. This document records the former implementation. See [current checker architecture](docs/issues.md).
+
 Source visuals:
 - `/var/folders/wz/x29jb7_x5rdc_5dcjr4qnhg00000gn/T/codex-clipboard-8d028f59-d2b5-4e18-87d5-7102e2ada01e.png`
 - `/var/folders/wz/x29jb7_x5rdc_5dcjr4qnhg00000gn/T/codex-clipboard-dbc9edb4-2b66-4df4-83fb-b95a9d7a5fb1.png`

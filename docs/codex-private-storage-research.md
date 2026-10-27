@@ -1,5 +1,7 @@
 # Private Codex storage investigation
 
+Historical note: issue-repair agents and conversations were removed from RepoMan on 2026-10-25. This document records the former implementation. See [current checker architecture](issues.md).
+
 Investigated on 2026-10-01 with the installed macOS Codex CLI 0.159.2. The first experiment used a disposable prototype. The implementation described below now applies private storage to RepoMan's execution adapter.
 
 ## Conclusion
@@ -30,7 +32,7 @@ The fixture set `CODEX_HOME` only in the environment passed to its child process
 
 Desktop's `read_thread` lookup was inconclusive: it reported an unavailable durable host. The visibility evidence is the local SQLite/transcript/lock checks and sidebar listing, rather than that lookup. A visual UI check was not performed.
 
-Evidence: [probe source](../.build/codex-home-investigation/probe.py), [sanitized results](../.build/codex-home-investigation/run-d328a9067865425aaf9f348617b1121f/report.json). All fixture backends were stopped. The disposable home and harmless conversation remain under ignored build output for inspection. No credentials were copied, symlinked, logged, or written into the fixture; only the existing access token and account identifier were passed in memory. The shared refresh token was not supplied to the backend.
+Historical evidence paths: `.build/codex-home-investigation/probe.py` (probe source) and `.build/codex-home-investigation/run-d328a9067865425aaf9f348617b1121f/report.json` (sanitized results), relative to the repository root. These disposable, ignored artifacts are absent from this checkout; the paths are retained for provenance. All fixture backends were stopped. No credentials were copied, symlinked, logged, or written into the fixture; only the existing access token and account identifier were passed in memory. The shared refresh token was not supplied to the backend.
 
 ## Authentication decision before implementation
 
