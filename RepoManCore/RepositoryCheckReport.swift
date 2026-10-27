@@ -70,6 +70,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
             case .findings(let findings):
                 reason = nil
                 status = findings.isEmpty ? "passed" : (findings.allSatisfy { $0.severity == .information } ? "information" : "findings")
+            case .notApplicable(let detail): reason = detail; status = "not_applicable"
             case .partial(_, let detail), .unavailable(let detail): reason = detail; status = "incomplete"
             case nil: reason = "Check did not complete."; status = "incomplete"
             }

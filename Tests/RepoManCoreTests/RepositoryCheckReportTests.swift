@@ -139,6 +139,29 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertTrue(task.contains("does not authorize"))
     }
 
+    func testUnsupportedEcosystemIsNotApplicableRatherThanPassed() async throws {
+        try FileManager.default.removeItem(at: root.appendingPathComponent("package.json"))
+        _ = try GitRunner.run(["rm", "--cached", "package.json"], at: root)
+        try write("Package.swift", "// Swift project")
+        let ids: Set<String> = ["dependencies.safeguards", "dependencies.lockfile", "dependencies.lockfileDrift"]
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ids)
+        XCTAssertEqual(report.exitCode, 0)
+        XCTAssertTrue(report.checks.allSatisfy { $0.status == "not_applicable" && $0.reason?.contains("Other ecosystems") == true })
+        let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        let catalog = RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter { ids.contains($0.id) })
+        let dashboard = await catalog.inspect(snapshot)
+        XCTAssertTrue(ids.allSatisfy { dashboard.status(for: $0) == .notApplicable })
+        XCTAssertTrue(dashboard.unavailableChecks.isEmpty)
+        XCTAssertTrue(dashboard.findings().isEmpty)
+    }
+
+    func testOnlyPipRequirementsDoNotSatisfyLockfileApplicability() async throws {
+        _ = try GitRunner.run(["rm", "package.json"], at: root)
+        try write("requirements.txt", "example==1.0")
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ["dependencies.lockfile", "dependencies.lockfileDrift"])
+        XCTAssertTrue(report.checks.allSatisfy { $0.status == "not_applicable" })
+    }
+
     func testUnfetchedComparisonsRetainLocalCountsWithoutClaimingRemoteHealth() async throws {
         _ = try GitRunner.run(["remote", "add", "origin", root.appendingPathComponent("unreachable-remote").path], at: root)
         _ = try GitRunner.run(["update-ref", "refs/remotes/origin/main", "HEAD"], at: root)
@@ -167,6 +190,29 @@ final class RepositoryCheckReportTests: XCTestCase {
         snapshot.fetchedAt = Date(); snapshot.fetchError = "Fetch failed"
         XCTAssertFalse(snapshot.hasFreshRemoteComparison)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".git/FETCH_HEAD").path))
+    }
+
+    func testNotApplicableSurvivesCacheAndCannotConfirmAnOldFindingAbsent() async throws {
+        let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        let check = RepositoryCheck(id: "example", title: "Example", category: .setup, symbol: "circle", inspect: { _ in
+            throw InspectionError.notApplicable("No supported inputs.")
+        })
+        let catalog = RepositoryIssueCatalog(checks: [check])
+        let cacheURL = root.appendingPathComponent("cache.json")
+        let cache = RepositoryInspectionCache(url: cacheURL)
+        let report = await catalog.inspect(snapshot, cache: cache)
+        let restored = RepositoryInspectionCache(url: cacheURL)
+        let reused = await restored.reusableResults(for: snapshot, checks: [check])
+        guard case .notApplicable = reused["example"]?.result else { return XCTFail("Not-applicable result was not retained") }
+        let original = RepositoryFinding(repositoryID: snapshot.id, checkID: "example", title: "Old finding",
+                                         evidence: "Old evidence", category: .setup, symbol: "circle")
+        guard case .unknown = catalog.verify(original, in: report) else { return XCTFail("Not applicable cannot establish absence") }
+        var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: cacheURL)) as! [String: Any]
+        legacy["version"] = 1
+        try JSONSerialization.data(withJSONObject: legacy).write(to: cacheURL)
+        let outdated = RepositoryInspectionCache(url: cacheURL)
+        let invalidated = await outdated.reusableResults(for: snapshot, checks: [check])
+        XCTAssertTrue(invalidated.isEmpty, "Legacy passes must be reevaluated under the new reporting rules")
     }
 
     func testSiblingTargetsSupportGitFilesWithoutOpeningContentsOrFollowingEscapes() throws {
@@ -218,4 +264,5 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertTrue(reason.contains("failed"))
         XCTAssertFalse(reason.contains("private-provider-error"))
     }
+
 }

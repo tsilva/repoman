@@ -166,6 +166,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
         inspect = { context in
             switch try await evaluate(context) {
             case .findings(let findings): return findings
+            case .notApplicable(let reason): throw InspectionError.notApplicable(reason)
             case .partial(_, let reason), .unavailable(let reason): throw InspectionError.blocked(reason)
             }
         }
@@ -187,7 +188,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
         let period: TimeInterval
         switch result {
         case .unavailable, .partial: period = min(validityPeriod, 300)
-        case .findings: period = validityPeriod
+        case .findings, .notApplicable: period = validityPeriod
         }
         return age < 0 || age >= period
     }

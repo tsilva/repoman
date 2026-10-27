@@ -4,7 +4,7 @@ enum RepositoryLockfileChecks {
     static func checks() -> [RepositoryCheck] {
         [CheckSupport.check("dependencies.lockfileDrift", "Manifest and lockfile disagree", .setup, "lock.trianglebadge.exclamationmark", inspect: { context, _ in
             var findings: [RepositoryFinding] = []
-            for manifest in try CheckSupport.manifests(context) where !manifest.hasSuffix("requirements.txt") {
+            for manifest in try CheckSupport.applicableManifests(context, names: ["package.json", "pyproject.toml"]) {
                 let prefixes = try RepositoryDependencyChecks.lockPrefixes(context, manifest)
                 let js = manifest.hasSuffix("package.json")
                 let manager = js ? try RepositoryDependencyChecks.manager(context, manifest) : "uv"

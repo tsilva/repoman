@@ -29,6 +29,13 @@ struct RepositoryIssuesView: View {
 
     @ViewBuilder
     private var checkSections: some View {
+        let notApplicable = checks.filter { $0.status == .notApplicable }
+        if !notApplicable.isEmpty {
+            Text("\(notApplicable.count) checks not applicable")
+                .font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                .help(notApplicable.map { $0.check.title }.joined(separator: "\n"))
+        }
         if !activeChecks.isEmpty {
             issueSeparator()
             HStack(spacing: 8) {

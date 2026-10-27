@@ -150,6 +150,14 @@ empty = []
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIsNone(json.loads(result.stdout)['head'])
 
+    def test_no_supported_manifests_is_explicitly_not_applicable(self):
+        result = self.check('--check', 'dependencies.safeguards', '--check', 'dependencies.lockfile',
+                            '--check', 'dependencies.lockfileDrift')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = json.loads(result.stdout)['checks']
+        self.assertTrue(all(c['status'] == 'not_applicable' and c['reason'] for c in checks))
+        text = self.cli('check', '--repo', str(self.repo), '--check', 'dependencies.safeguards')
+        self.assertIn('not_applicable', text.stdout)
 
     def test_unfetched_local_counts_are_provisional_even_when_aligned(self):
         self.git('remote', 'add', 'origin', str(Path(self.temp.name) / 'unreachable'))
@@ -166,7 +174,6 @@ empty = []
         self.assertIn('provisional', check['findings'][0]['title'])
         self.assertEqual(check['findings'][0]['severity'], 'information')
         self.assertFalse((self.repo / '.git/FETCH_HEAD').exists())
-
 
     def test_explicit_fetch_refreshes_comparisons_without_changing_work_or_running_hooks(self):
         remote = Path(self.temp.name) / 'remote.git'
@@ -195,7 +202,6 @@ empty = []
         # A later invocation must not infer freshness from FETCH_HEAD's mtime.
         self.assertEqual(self.check(*checks).returncode, 3)
 
-
     def test_failed_fetch_keeps_local_findings_and_redacts_provider_errors(self):
         good = Path(self.temp.name) / 'good.git'
         subprocess.check_call(['git', 'init', '--bare', '-q', str(good)], env=self.env)
@@ -217,7 +223,6 @@ empty = []
         self.assertNotIn('secret-remote-token', result.stdout + result.stderr)
         self.assertEqual(next(c for c in report['checks'] if c['id'] == 'files.readme')['status'], 'passed')
 
-
     def test_sibling_links_check_existence_and_keep_real_missing_targets(self):
         sibling = Path(self.temp.name) / 'sibling repo'
         sibling.mkdir()
@@ -238,7 +243,6 @@ empty = []
         self.assertEqual(check['status'], 'incomplete')
         self.assertTrue(check['findings'])
         self.assertIn('missing.md', check['findings'][0]['evidence'])
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -10,7 +10,7 @@ enum RepositoryRuntimeChecks {
     static func checks() -> [RepositoryCheck] {
         [CheckSupport.check("dependencies.runtime", "Runtime version mismatch", .setup, "gearshape.2", inspect: { context, _ in
             var findings: [RepositoryFinding] = []
-            for manifest in try CheckSupport.manifests(context) where !manifest.hasSuffix("requirements.txt") {
+            for manifest in try CheckSupport.applicableManifests(context, names: ["package.json", "pyproject.toml"]) {
                 let node = manifest.hasSuffix("package.json"), language = node ? "Node" : "Python"
                 let directory = (manifest as NSString).deletingLastPathComponent
                 var declarations: [Declaration] = []

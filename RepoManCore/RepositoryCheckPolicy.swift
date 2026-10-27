@@ -79,7 +79,7 @@ enum CheckSupport {
                     findings += result.detectedFindings
                     switch result {
                     case .findings: break
-                    case .partial(_, let reason), .unavailable(let reason):
+                    case .partial(_, let reason), .unavailable(let reason), .notApplicable(let reason):
                         failedPaths += 1
                         if reasons.count < 5 { reasons.append(reason) }
                     }
@@ -113,6 +113,14 @@ enum CheckSupport {
         }
         let paths = Set(roots + nested).sorted()
         guard paths.count <= 64 else { throw InspectionError.blocked("More than 64 dependency manifests need inspection.") }
+        return paths
+    }
+    static func applicableManifests(_ context: RepositoryInspectionContext,
+                                    names: Set<String> = ["package.json", "pyproject.toml", "requirements.txt"]) throws -> [String] {
+        let paths = try manifests(context).filter { names.contains(($0 as NSString).lastPathComponent) }
+        guard !paths.isEmpty else {
+            throw InspectionError.notApplicable("No supported manifests found (" + names.sorted().joined(separator: ", ") + "). Other ecosystems are outside this check's scope.")
+        }
         return paths
     }
     static func workflows(_ context: RepositoryInspectionContext) throws -> [(String, String)] {

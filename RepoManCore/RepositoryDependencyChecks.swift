@@ -102,7 +102,7 @@ enum RepositoryDependencyChecks {
     }
     private static func managerFindings(_ context: RepositoryInspectionContext) throws -> [RepositoryFinding] {
         var findings: [RepositoryFinding] = []
-        for path in try CheckSupport.manifests(context) where path.hasSuffix("package.json") {
+        for path in try CheckSupport.applicableManifests(context, names: ["package.json"]) {
             let object = try json(context, path), name = try manager(context, path)
             var reasons: [String] = []
             if let declared = object["packageManager"] as? String {
@@ -132,7 +132,7 @@ enum RepositoryDependencyChecks {
     }
     private static func lockfileFindings(_ context: RepositoryInspectionContext) throws -> [RepositoryFinding] {
         var findings: [RepositoryFinding] = []
-        for path in try CheckSupport.manifests(context) where !path.hasSuffix("requirements.txt") {
+        for path in try CheckSupport.applicableManifests(context, names: ["package.json", "pyproject.toml"]) {
             let locks = path.hasSuffix("package.json") ? lockNames(try manager(context, path)) : ["uv.lock"]
             var candidates: [String] = []
             for prefix in try lockPrefixes(context, path) { for name in locks where try context.exists(prefix + name) { candidates.append(prefix + name) } }
@@ -173,7 +173,7 @@ enum RepositoryDependencyChecks {
     }
     private static func safeguardFindings(_ context: RepositoryInspectionContext) throws -> [RepositoryFinding] {
         var findings: [RepositoryFinding] = []
-        for path in try CheckSupport.manifests(context) {
+        for path in try CheckSupport.applicableManifests(context) {
             var reasons: [String] = []
             if path.hasSuffix("package.json") {
                 let name = try manager(context, path)
@@ -292,7 +292,7 @@ enum RepositoryDependencyChecks {
     }
     private static func sourceFindings(_ context: RepositoryInspectionContext) throws -> [RepositoryFinding] {
         var findings: [RepositoryFinding] = []
-        for path in try CheckSupport.manifests(context) {
+        for path in try CheckSupport.applicableManifests(context) {
             var reasons: [String] = []
             if path.hasSuffix("package.json") {
                 let object = try json(context, path)
