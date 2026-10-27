@@ -244,5 +244,44 @@ empty = []
         self.assertTrue(check['findings'])
         self.assertIn('missing.md', check['findings'][0]['evidence'])
 
+    def test_partial_scan_retains_findings_and_cannot_claim_clean(self):
+        missing = self.repo / 'a-missing.py'
+        missing.write_text('fixture')
+        conflict = self.repo / 'z-conflict.py'
+        conflict.write_text('<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>> topic\n')
+        self.git('add', missing.name, conflict.name)
+        missing.unlink()
+        paths = [self.repo / '.git' / name for name in ['HEAD', 'index', 'config']]
+        before = [p.read_bytes() for p in paths]
+        result = self.check('--check', 'files.mergeMarkers')
+        check = json.loads(result.stdout)['checks'][0]
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(check['status'], 'incomplete')
+        self.assertEqual([f['subject'] for f in check['findings']], [conflict.name])
+        self.assertIn(missing.name, check['reason'])
+        self.assertEqual([p.read_bytes() for p in paths], before)
+        conflict.write_text("print('repaired')\n")
+        result = self.check('--check', 'files.mergeMarkers')
+        check = json.loads(result.stdout)['checks'][0]
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(check['status'], 'incomplete')
+        self.assertEqual(check['findings'], [])
+        missing.write_text('restored')
+        self.assertEqual(self.check('--check', 'files.mergeMarkers').returncode, 0)
+
+    def test_deleted_file_diagnostic_is_repository_relative(self):
+        path = self.repo / 'docs' / 'nested' / 'SKILL.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('Fixture')
+        self.git('add', 'docs/nested/SKILL.md')
+        path.unlink()
+        result = self.check('--check', 'files.secrets', '--check', 'docs.brokenLinks')
+        self.assertEqual(result.returncode, 3)
+        for check in json.loads(result.stdout)['checks']:
+            self.assertEqual(check['status'], 'incomplete')
+            self.assertIn('docs/nested/SKILL.md', check['reason'])
+            self.assertNotIn(str(self.repo), check['reason'])
+
+
 if __name__ == '__main__':
     unittest.main()

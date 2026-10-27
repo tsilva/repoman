@@ -22,35 +22,41 @@ public struct RepositoryInspectionContext: Sendable {
         }
     }
     public func readText(_ relativePath: String) throws -> String {
-        try files.read(checkedURL(relativePath))
+        try atPath(relativePath) { try files.read(checkedURL(relativePath)) }
     }
     func readNotebook(_ relativePath: String) throws -> String {
-        try files.read(checkedURL(relativePath), maximumBytes: 8_388_608)
+        try atPath(relativePath) { try files.read(checkedURL(relativePath), maximumBytes: 8_388_608) }
     }
     /// Size checks never open large files. Directories (including submodules) are skipped.
     func regularFileSize(_ relativePath: String) throws -> Int? {
-        let info = try checkedURL(relativePath).resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
-        if info.isDirectory == true { return nil }
-        guard info.isRegularFile == true, let size = info.fileSize else {
-            throw InspectionError.blocked("Tracked path is not a regular file: " + relativePath)
+        return try atPath(relativePath) {
+            let info = try checkedURL(relativePath).resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
+            if info.isDirectory == true { return nil }
+            guard info.isRegularFile == true, let size = info.fileSize else {
+                throw InspectionError.blocked("Tracked path is not a regular file: " + relativePath)
+            }
+            return size
         }
-        return size
     }
     /// Binary files are outside text detectors' scope; oversized text stays unknown.
     func trackedText(_ relativePath: String) throws -> String? {
-        guard let size = try regularFileSize(relativePath) else { return nil }
-        let result = try files.readTracked(checkedURL(relativePath), size: size)
-        let name = (relativePath as NSString).lastPathComponent.lowercased()
-        let knownText = ["swift", "py", "js", "jsx", "ts", "tsx", "mjs", "cjs", "json", "toml", "yaml", "yml", "txt", "md", "markdown", "rst", "adoc", "ipynb", "pem", "key", "sh", "rb", "rs", "go", "c", "h", "cpp", "html", "css", "xml", "ini", "cfg"]
-        if result == nil, knownText.contains((name as NSString).pathExtension) || name.hasPrefix(".env") || name == "dockerfile" {
-            throw InspectionError.blocked("Tracked text is not supported UTF-8: " + relativePath)
+        return try atPath(relativePath) {
+            guard let size = try regularFileSize(relativePath) else { return nil }
+            let result = try files.readTracked(checkedURL(relativePath), size: size)
+            let name = (relativePath as NSString).lastPathComponent.lowercased()
+            let knownText = ["swift", "py", "js", "jsx", "ts", "tsx", "mjs", "cjs", "json", "toml", "yaml", "yml", "txt", "md", "markdown", "rst", "adoc", "ipynb", "pem", "key", "sh", "rb", "rs", "go", "c", "h", "cpp", "html", "css", "xml", "ini", "cfg"]
+            if result == nil, knownText.contains((name as NSString).pathExtension) || name.hasPrefix(".env") || name == "dockerfile" {
+                throw InspectionError.blocked("Tracked text is not supported UTF-8: " + relativePath)
+            }
+            return result
         }
-        return result
     }
     func exists(_ relativePath: String) throws -> Bool {
-        let url = try checkedURL(relativePath)
-        do { _ = try url.resourceValues(forKeys: [.isDirectoryKey]); return true }
-        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
+        return try atPath(relativePath) {
+            let url = try checkedURL(relativePath)
+            do { _ = try url.resourceValues(forKeys: [.isDirectoryKey]); return true }
+            catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
+        }
     }
     /// Only fixed read-only commands are exposed to detectors. Disable optional index writes and fsmonitor hooks.
     func gitRead(_ arguments: [String], successfulExitCodes: Set<Int32> = [0]) throws -> Data {
@@ -109,18 +115,23 @@ public struct RepositoryInspectionContext: Sendable {
         }
     }
     public func filenames(in relativeDirectory: String) throws -> [String] {
-        let directory = relativeDirectory == "." ? snapshot.url.standardizedFileURL.resolvingSymlinksInPath() : try checkedURL(relativeDirectory)
-        do {
-            let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-            guard names.count <= 200 else { throw InspectionError.blocked("Too many directory entries to inspect.") }
-            return names.sorted()
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        return try atPath(relativeDirectory) {
+            let directory = relativeDirectory == "." ? snapshot.url.standardizedFileURL.resolvingSymlinksInPath() : try checkedURL(relativeDirectory)
+            do {
+                let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                guard names.count <= 200 else { throw InspectionError.blocked("Too many directory entries to inspect.") }
+                return names.sorted()
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return [] }
+        }
     }
     func isDirectory(_ relativePath: String) throws -> Bool {
-        let url = relativePath == "." ? snapshot.url : try checkedURL(relativePath)
-        do { return try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true }
-        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
+        return try atPath(relativePath) {
+            let url = relativePath == "." ? snapshot.url : try checkedURL(relativePath)
+            do { return try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true }
+            catch let error as CocoaError where error.code == .fileReadNoSuchFile { return false }
+        }
     }
+    /// Keep diagnostics relative to the inspected repository, without exposing resolved symlink targets.
     private func atPath<T>(_ relativePath: String, _ operation: () throws -> T) throws -> T {
         let label = relativePath.hasPrefix("/") ? "Repository path" : relativePath
         do { return try operation() }

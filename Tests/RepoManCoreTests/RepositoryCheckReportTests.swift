@@ -192,6 +192,93 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".git/FETCH_HEAD").path))
     }
 
+    func testMissingTrackedFileDiagnosticsCarryRelativePathAcrossChecks() async throws {
+        let path = "docs/nested/SKILL.md"
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("docs/nested"), withIntermediateDirectories: true)
+        try write(path, "Fixture")
+        _ = try GitRunner.run(["add", path], at: root)
+        try FileManager.default.removeItem(at: root.appendingPathComponent(path))
+        // Merge-marker inspection intentionally excludes Markdown documentation.
+        let sourcePath = "docs/nested/openai.yaml"
+        try write(sourcePath, "fixture: true")
+        _ = try GitRunner.run(["add", sourcePath], at: root)
+        try FileManager.default.removeItem(at: root.appendingPathComponent(sourcePath))
+        let ids: Set<String> = ["docs.brokenLinks", "files.secrets", "files.oversized", "files.mergeMarkers"]
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ids)
+        for check in report.checks {
+            XCTAssertEqual(check.status, "incomplete")
+            XCTAssertTrue(check.reason?.contains(check.id == "files.mergeMarkers" ? sourcePath : path) == true)
+        }
+        XCTAssertTrue(report.checks.allSatisfy { $0.reason?.contains(root.path) == false })
+    }
+
+    func testFileChecksRetainRealViolationsWhenAnotherPathIsMissing() async throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        try write("a-missing.py", "fixture")
+        try write("docs/a-missing.md", "fixture")
+        let token = "ghp_" + String(repeating: "a", count: 36)
+        try write("z-issue.py", "token = '\(token)'\n<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>> topic\n" + String(repeating: "#", count: 2048))
+        try write("docs/z-issue.md", "[Missing](absent.md)")
+        try write(".repoman.json", #"{"maximumTrackedFileBytes":1024}"#)
+        _ = try GitRunner.run(["add", "."], at: root)
+        for path in ["a-missing.py", "docs/a-missing.md"] { try FileManager.default.removeItem(at: root.appendingPathComponent(path)) }
+        let ids: Set<String> = ["files.secrets", "files.oversized", "files.mergeMarkers", "docs.brokenLinks"]
+        let before = try await RepositoryChecker.run(at: root, checkIDs: ids)
+        XCTAssertEqual(before.exitCode, 1)
+        for check in before.checks {
+            XCTAssertEqual(check.status, "incomplete")
+            XCTAssertEqual(check.findings.map(\.subject), [check.id == "docs.brokenLinks" ? "docs/z-issue.md" : "z-issue.py"])
+            XCTAssertTrue(check.reason?.contains("missing") == true)
+        }
+        XCTAssertFalse(String(decoding: try before.json(), as: UTF8.self).contains(token))
+
+        let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
+        let catalog = RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter { ids.contains($0.id) })
+        let observed = await catalog.inspect(snapshot)
+        let oldSecret = try XCTUnwrap(observed.findings().first { $0.checkID == "files.secrets" })
+        guard case .present = catalog.verify(oldSecret, in: observed) else { return XCTFail("A readable finding must remain present despite partial coverage") }
+        try write("z-issue.py", "print('clean')")
+        try write("docs/z-issue.md", "No local links.")
+        let partial = await catalog.inspect(try GitRepositoryScanner.scan(root, includeDetails: false))
+        XCTAssertTrue(partial.findings().isEmpty)
+        guard case .unknown = catalog.verify(oldSecret, in: partial) else { return XCTFail("Missing files must prevent claiming a complete clean scan") }
+        for path in ["a-missing.py", "docs/a-missing.md"] { try write(path, "restored") }
+        let complete = try await RepositoryChecker.run(at: root, checkIDs: ids)
+        XCTAssertEqual(complete.exitCode, 0)
+        XCTAssertTrue(complete.checks.allSatisfy { $0.status == "passed" })
+    }
+
+    func testFileCheckExceptionsDoNotHideIncompleteCoverage() async throws {
+        try write("a-secret.pem", "-----BEGIN PRIVATE KEY-----\nfixture")
+        try write("z-missing.py", "fixture")
+        _ = try GitRunner.run(["add", "."], at: root)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("z-missing.py"))
+        try write(".repoman.json", #"{"exceptions":{"files.secrets":{"a-secret.pem":"Deliberately invalid teaching fixture"}}}"#)
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ["files.secrets"])
+        let check = try XCTUnwrap(report.checks.first)
+        XCTAssertEqual(check.status, "incomplete")
+        XCTAssertTrue(check.findings.isEmpty)
+        XCTAssertEqual(check.exceptions["a-secret.pem"], "Deliberately invalid teaching fixture")
+        XCTAssertTrue(check.reason?.contains("z-missing.py") == true)
+        XCTAssertEqual(report.exitCode, 3)
+    }
+
+    func testFileCheckBoundsDiagnosticsWithoutLosingLaterFindings() async throws {
+        for index in 0..<7 {
+            try write("missing-\(index).py", "fixture")
+            _ = try GitRunner.run(["add", "missing-\(index).py"], at: root)
+            try FileManager.default.removeItem(at: root.appendingPathComponent("missing-\(index).py"))
+        }
+        try write("z-key.pem", "-----BEGIN PRIVATE KEY-----\nfixture")
+        _ = try GitRunner.run(["add", "z-key.pem"], at: root)
+        let report = try await RepositoryChecker.run(at: root, checkIDs: ["files.secrets"])
+        let check = try XCTUnwrap(report.checks.first)
+        XCTAssertEqual(check.status, "incomplete")
+        XCTAssertEqual(check.findings.map(\.subject), ["z-key.pem"])
+        XCTAssertTrue(check.reason?.contains("2 additional paths") == true)
+        XCTAssertFalse(check.reason?.contains("missing-6.py") == true)
+    }
+
     func testNotApplicableSurvivesCacheAndCannotConfirmAnOldFindingAbsent() async throws {
         let snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
         let check = RepositoryCheck(id: "example", title: "Example", category: .setup, symbol: "circle", inspect: { _ in
@@ -265,4 +352,16 @@ final class RepositoryCheckReportTests: XCTestCase {
         XCTAssertFalse(reason.contains("private-provider-error"))
     }
 
+    func testPathErrorsDoNotExposeResolvedSymlinkTargets() throws {
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("private-" + UUID().uuidString)
+        try "Private fixture".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link.md"), withDestinationURL: outside)
+        let context = RepositoryInspectionContext(snapshot: try GitRepositoryScanner.scan(root, includeDetails: false))
+        XCTAssertThrowsError(try context.readText("link.md")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("link.md:"))
+            XCTAssertFalse(error.localizedDescription.contains(outside.path))
+            XCTAssertFalse(error.localizedDescription.contains("Private fixture"))
+        }
+    }
 }
