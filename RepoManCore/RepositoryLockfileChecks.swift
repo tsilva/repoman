@@ -123,7 +123,7 @@ enum RepositoryLockfileChecks {
         let projectValues = try InspectionConfig.toml(project, allSections: true).values
         var unsupported: [String] = []
         if projectValues["project.dynamic"] != nil { unsupported.append("project.dynamic") }
-        for section in ["dependency-groups", "tool.uv.sources", "tool.uv.dev-dependencies"] {
+        for section in ["tool.uv.sources", "tool.uv.dev-dependencies"] {
             if projectValues.keys.contains(where: { $0 == section || $0.hasPrefix(section + ".") }) {
                 unsupported.append(section)
             }
@@ -132,6 +132,7 @@ enum RepositoryLockfileChecks {
             throw InspectionError.blocked(manifest + ": static lockfile verification does not support "
                 + unsupported.joined(separator: ", ") + ". Verify separately with uv lock --check using the repository's resolver settings; no resolver was run.")
         }
+        let groups = try pythonDependencyGroups(projectValues, source: project)
         var expected = ["": try pythonRequirements(projectValues["project.dependencies"] ?? "[]")]
         let optionalPrefix = "project.optional-dependencies."
         guard projectValues["project.optional-dependencies"] == nil else {
@@ -146,7 +147,7 @@ enum RepositoryLockfileChecks {
         let header = try InspectionConfig.toml(sections[0], allSections: true).values
         guard InspectionConfig.scalar(header["version"]) == "1" else { throw InspectionError.blocked("Unsupported uv lockfile schema.") }
         let target = directory.isEmpty ? "." : directory
-        var metadata: [String: String]?
+        var metadata: [String: String]?, metadataSource = ""
         for section in sections.dropFirst() {
             let values = try InspectionConfig.toml(section, allSections: true).values
             let source = values["source"] ?? ""
@@ -154,34 +155,146 @@ enum RepositoryLockfileChecks {
             if locations == [target] {
                 guard metadata == nil else { throw InspectionError.blocked("Duplicate uv workspace metadata.") }
                 metadata = values
+                metadataSource = section
             }
         }
         guard let metadata else { return ["workspace package metadata is missing"] }
         let extras = try pythonExtras(metadata["package.metadata.provides-extras"] ?? "[]")
         let actual = try lockedPythonRequirements(metadata["package.metadata.requires-dist"] ?? "[]", extras: extras)
-        return Set(expected.keys).union(actual.keys).sorted().flatMap { group -> [String] in
+        try validatePythonGroupTableShape(metadataSource, header: "package.metadata.requires-dev")
+        let lockedGroups = try pythonGroupTable(metadata, prefix: "package.metadata.requires-dev")
+        var actualGroups: [String: PythonRequirements] = [:]
+        for (group, raw) in lockedGroups {
+            let requirements = try lockedPythonRequirements(raw, extras: [], allowDuplicates: true)
+            actualGroups[group] = requirements[""]
+        }
+        let dependencyReasons = Set(expected.keys).union(actual.keys).sorted().flatMap { group -> [String] in
             let label = group.isEmpty ? "dependencies" : "optional-dependencies." + group
             guard let wanted = expected[group], let locked = actual[group] else {
                 return [label + " is missing or extra"]
             }
-            return differences(wanted, locked, label: label)
+            return pythonDifferences(wanted, locked, label: label)
+        }
+        return dependencyReasons + Set(groups.keys).union(actualGroups.keys).sorted().flatMap { group -> [String] in
+            let label = "dependency-groups." + group
+            guard let wanted = groups[group], let locked = actualGroups[group] else {
+                return [label + " is missing or extra"]
+            }
+            return pythonDifferences(wanted, locked, label: label)
         }
     }
-    private static func pythonRequirements(_ raw: String) throws -> [String: String] {
-        var result: [String: String] = [:]
+    private typealias PythonRequirements = [String: Set<String>]
+    private static func pythonDifferences(_ wanted: PythonRequirements, _ locked: PythonRequirements, label: String) -> [String] {
+        // Marker expressions and dependency values never appear in evidence.
+        let names = Set(wanted.keys).union(locked.keys).filter { wanted[$0] != locked[$0] }
+            .map { $0.components(separatedBy: "\u{1F}")[0] }
+        return Set(names).sorted().map { label + "." + $0 + " has a missing, extra or changed declaration" }
+    }
+    private static func pythonRequirements(_ raw: String, allowDuplicates: Bool = false) throws -> PythonRequirements {
+        var result: PythonRequirements = [:]
         for item in try tomlElements(raw) {
             let requirement = try tomlString(item)
-            let matches = CheckSupport.captures(requirement, #"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\[\]]+)\])?\s*((?:(?:==|!=|>=|<=|>|<|~=)[0-9][0-9.*]*\s*,?\s*)*)$"#)
-            guard let match = matches.first else { throw InspectionError.blocked("Python markers, direct sources or unsupported version specifiers need resolver review.") }
+            let parts = requirement.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            let marker = parts.count == 2 ? try pythonMarker(String(parts[1])) : nil
+            guard marker?.extraGroups == nil else { throw InspectionError.blocked("Extra markers inside requirement declarations need resolver review.") }
+            let matches = CheckSupport.captures(String(parts[0]), #"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\[\]]+)\])?\s*(.*)$"#)
+            guard let match = matches.first else { throw InspectionError.blocked("Unsupported Python requirement declaration.") }
             let name = try pythonName(match[1])
             let extras = try Set(match[2].isEmpty ? [] : match[2].components(separatedBy: ",").map { try pythonName($0.trimmingCharacters(in: .whitespaces)) })
-            guard result[name] == nil else { throw InspectionError.blocked("Duplicate Python requirements need resolver review.") }
-            result[name] = pythonDeclaration(specifier: match[3], extras: extras)
+            let specifier = match[3].trimmingCharacters(in: .whitespaces)
+            try validatePythonSpecifier(specifier)
+            let key = name + (marker.map { "\u{1F}" + $0.canonical } ?? "")
+            guard allowDuplicates || result[key] == nil else { throw InspectionError.blocked("Duplicate Python requirements need resolver review.") }
+            result[key, default: []].insert(pythonDeclaration(specifier: specifier, extras: extras))
         }
         return result
     }
-    private static func lockedPythonRequirements(_ raw: String, extras: Set<String>) throws -> [String: [String: String]] {
-        var result: [String: [String: String]] = ["": [:]]
+    private static func validatePythonSpecifier(_ specifier: String) throws {
+        guard !specifier.isEmpty else { return }
+        for term in specifier.split(separator: ",", omittingEmptySubsequences: false) {
+            // PEP 440 numeric, prerelease, postrelease, dev and local versions; no direct sources.
+            let pattern = #"(?i)^\s*(==|!=|>=|<=|>|<|~=)\s*(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:[-_.]?(?:a|b|rc)[0-9]+)?(?:[-_.]?post[0-9]+)?(?:[-_.]?dev[0-9]+)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?(\.\*)?\s*$"#
+            guard let match = CheckSupport.captures(String(term), pattern).first,
+                  match[2].isEmpty || ["==", "!="].contains(match[1]) else {
+                throw InspectionError.blocked("Direct sources or unsupported Python version specifiers need resolver review.")
+            }
+        }
+    }
+    private static func pythonInlineTable(_ raw: String) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for entry in try tomlElements(raw, opening: "{", closing: "}") {
+            guard let equal = entry.firstIndex(of: "=") else { throw InspectionError.blocked("Unsupported Python inline table.") }
+            let rawKey = String(entry[..<equal]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = rawKey.hasPrefix("\"") || rawKey.hasPrefix("'") ? try tomlString(rawKey) : rawKey
+            guard !key.isEmpty, result[key] == nil else { throw InspectionError.blocked("Duplicate Python inline table fields.") }
+            result[key] = String(entry[entry.index(after: equal)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return result
+    }
+    private static func pythonGroupTable(_ values: [String: String], prefix: String) throws -> [String: String] {
+        var raw: [String: String] = [:]
+        if let inline = values[prefix] { raw = try pythonInlineTable(inline) }
+        for (key, value) in values where key.hasPrefix(prefix + ".") {
+            let name = String(key.dropFirst(prefix.count + 1))
+            guard raw[name] == nil else { throw InspectionError.blocked("Duplicate Python dependency group declarations.") }
+            raw[name] = value
+        }
+        var result: [String: String] = [:]
+        for (name, value) in raw {
+            let normalized = try pythonName(name)
+            guard result[normalized] == nil else { throw InspectionError.blocked("Duplicate normalized Python dependency group names.") }
+            result[normalized] = value
+        }
+        guard result.count <= 64 else { throw InspectionError.blocked("Python dependency-group count exceeds the inspection limit.") }
+        return result
+    }
+    private static func validatePythonGroupTableShape(_ source: String, header: String) throws {
+        var inside = false
+        for raw in source.components(separatedBy: .newlines) {
+            let line = InspectionConfig.withoutComment(raw)
+            if line.hasPrefix("[") {
+                if line.hasPrefix("[" + header + ".") {
+                    throw InspectionError.blocked("Nested Python dependency-group tables need manual review.")
+                }
+                inside = line == "[" + header + "]"
+            } else if inside, CheckSupport.matches(line, #"^[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\s*="#) {
+                throw InspectionError.blocked("Nested Python dependency-group keys need manual review.")
+            }
+        }
+    }
+    private static func pythonDependencyGroups(_ values: [String: String], source: String) throws -> [String: PythonRequirements] {
+        try validatePythonGroupTableShape(source, header: "dependency-groups")
+        let raw = try pythonGroupTable(values, prefix: "dependency-groups")
+        var memo: [String: PythonRequirements] = [:], budget = 4096
+        func resolve(_ group: String, path: Set<String>) throws -> PythonRequirements {
+            guard !path.contains(group), path.count < 32 else { throw InspectionError.blocked("Cyclic or excessively deep dependency-group includes.") }
+            if let cached = memo[group] { return cached }
+            guard let entries = raw[group] else { throw InspectionError.blocked("A dependency-group include references a missing group.") }
+            var result: PythonRequirements = [:]
+            for entry in try tomlElements(entries) {
+                budget -= 1
+                guard budget >= 0 else { throw InspectionError.blocked("Dependency-group expansion exceeds the inspection limit.") }
+                let requirements: PythonRequirements
+                if entry.hasPrefix("{") {
+                    let include = try pythonInlineTable(entry)
+                    guard Set(include.keys) == ["include-group"], let name = include["include-group"] else {
+                        throw InspectionError.blocked("Unsupported dependency-group include fields.")
+                    }
+                    requirements = try resolve(pythonName(tomlString(name)), path: path.union([group]))
+                } else { requirements = try pythonRequirements("[" + entry + "]", allowDuplicates: true) }
+                for (name, declarations) in requirements { result[name, default: []].formUnion(declarations) }
+                guard result.values.reduce(0, { $0 + $1.count }) <= 4096 else {
+                    throw InspectionError.blocked("Dependency-group expansion exceeds the inspection limit.")
+                }
+            }
+            memo[group] = result
+            return result
+        }
+        for group in raw.keys.sorted() { _ = try resolve(group, path: []) }
+        return memo
+    }
+    private static func lockedPythonRequirements(_ raw: String, extras: Set<String>, allowDuplicates: Bool = false) throws -> [String: PythonRequirements] {
+        var result: [String: PythonRequirements] = ["": [:]]
         for extra in extras { result[extra] = [:] }
         for record in try tomlElements(raw) {
             var fields: [String: String] = [:]
@@ -197,22 +310,136 @@ enum RepositoryLockfileChecks {
             let name = try pythonName(tomlString(rawName))
             let specifier = try fields["specifier"].map { try tomlString($0) } ?? ""
             let dependencyExtras = try pythonExtras(fields["extras"] ?? "[]")
-            let groups: Set<String>
-            if let marker = fields["marker"] {
-                // uv may combine a requirement shared by several extras into an OR marker.
-                let terms = try tomlString(marker).components(separatedBy: " or ")
-                groups = try Set(terms.map { term in
-                    let matches = CheckSupport.captures(term, #"^\s*extra\s*==\s*(?:'([^']+)'|"([^"]+)")\s*$"#)
-                    guard let match = matches.first else { throw InspectionError.blocked("Python environment markers need resolver review.") }
-                    let group = try pythonName(match[1].isEmpty ? match[2] : match[1])
-                    guard extras.contains(group) else { throw InspectionError.blocked("Python lock metadata references an undeclared extra.") }
-                    return group
-                })
-            } else { groups = [""] }
-            for group in groups {
-                guard result[group]?[name] == nil else { throw InspectionError.blocked("Duplicate locked Python requirements.") }
-                result[group, default: [:]][name] = pythonDeclaration(specifier: specifier, extras: dependencyExtras)
+            try validatePythonSpecifier(specifier)
+            let marker = try fields["marker"].map { try pythonMarker(tomlString($0)) }
+            let groups = marker?.extraGroups ?? [""]
+            guard marker?.extraGroups == nil || (!allowDuplicates && groups.isSubset(of: extras)) else {
+                throw InspectionError.blocked("Python lock metadata references an undeclared extra.")
             }
+            let environmentMarker = marker?.extraGroups == nil ? marker?.canonical : nil
+            let key = name + (environmentMarker.map { "\u{1F}" + $0 } ?? "")
+            for group in groups {
+                guard allowDuplicates || result[group]?[key] == nil else { throw InspectionError.blocked("Duplicate locked Python requirements.") }
+                result[group, default: [:]][key, default: []].insert(pythonDeclaration(specifier: specifier, extras: dependencyExtras))
+            }
+        }
+        return result
+    }
+    private indirect enum PythonMarker {
+        case comparison(String, String, String)
+        case all([PythonMarker])
+        case any([PythonMarker])
+        var canonical: String {
+            switch self {
+            case let .comparison(left, op, right): return "\(left.utf8.count):\(left)\(op)\(right.utf8.count):\(right)"
+            case .all(let nodes):
+                let flattened = nodes.flatMap { $0.terms(conjunction: true) }
+                return "and[" + Set(flattened.map(\.canonical)).sorted().map { "\($0.utf8.count):\($0)" }.joined() + "]"
+            case .any(let nodes):
+                let flattened = nodes.flatMap { $0.terms(conjunction: false) }
+                return "or[" + Set(flattened.map(\.canonical)).sorted().map { "\($0.utf8.count):\($0)" }.joined() + "]"
+            }
+        }
+        private func terms(conjunction: Bool) -> [PythonMarker] {
+            switch self {
+            case .all(let nodes) where conjunction: return nodes.flatMap { $0.terms(conjunction: true) }
+            case .any(let nodes) where !conjunction: return nodes.flatMap { $0.terms(conjunction: false) }
+            default: return [self]
+            }
+        }
+        var mentionsExtra: Bool {
+            switch self {
+            case let .comparison(left, _, right): return left == "v:extra" || right == "v:extra"
+            case .all(let nodes), .any(let nodes): return nodes.contains { $0.mentionsExtra }
+            }
+        }
+        var extraGroups: Set<String>? {
+            switch self {
+            case let .comparison(left, op, right):
+                guard op == "==" else { return nil }
+                if left == "v:extra", right.hasPrefix("s:") { return [normalizeName(String(right.dropFirst(2)))] }
+                if right == "v:extra", left.hasPrefix("s:") { return [normalizeName(String(left.dropFirst(2)))] }
+                return nil
+            case .any(let nodes):
+                var result: Set<String> = []
+                for node in nodes { guard let names = node.extraGroups else { return nil }; result.formUnion(names) }
+                return result
+            case .all: return nil
+            }
+        }
+    }
+    /// Parse marker declarations for comparison only; never evaluate the host environment.
+    private static func pythonMarker(_ source: String) throws -> PythonMarker {
+        let variables: Set<String> = ["python_version", "python_full_version", "os_name", "sys_platform", "platform_release",
+            "platform_system", "platform_version", "platform_machine", "platform_python_implementation",
+            "implementation_name", "implementation_version", "extra"]
+        let chars = Array(source), operators: Set<String> = ["==", "!=", "<=", ">=", "<", ">", "~=", "===", "in", "not in"]
+        guard chars.count <= 8192 else { throw InspectionError.blocked("Python marker exceeds the inspection limit.") }
+        var tokens: [String] = [], cursor = 0
+        while cursor < chars.count {
+            let c = chars[cursor]
+            if c.isWhitespace { cursor += 1; continue }
+            if c == "'" || c == "\"" {
+                let quote = c; cursor += 1; var value = ""
+                while cursor < chars.count, chars[cursor] != quote {
+                    guard chars[cursor] != "\\" else { throw InspectionError.blocked("Escaped Python markers need resolver review.") }
+                    value.append(chars[cursor]); cursor += 1
+                }
+                guard cursor < chars.count else { throw InspectionError.blocked("Unterminated Python marker string.") }
+                tokens.append("s:" + value); cursor += 1
+            } else if c == "(" || c == ")" { tokens.append(String(c)); cursor += 1 }
+            else if c.isLetter || c == "_" {
+                let start = cursor
+                while cursor < chars.count, chars[cursor].isLetter || chars[cursor].isNumber || chars[cursor] == "_" { cursor += 1 }
+                let word = String(chars[start..<cursor])
+                guard variables.contains(word) || ["and", "or", "in", "not"].contains(word) else {
+                    throw InspectionError.blocked("Unsupported Python marker variable or operator.")
+                }
+                tokens.append(variables.contains(word) ? "v:" + word : word)
+            } else {
+                let start = cursor
+                while cursor < chars.count, "=!<>~".contains(chars[cursor]) { cursor += 1 }
+                let op = String(chars[start..<cursor])
+                guard cursor > start, operators.contains(op) else { throw InspectionError.blocked("Unsupported Python marker syntax.") }
+                tokens.append(op)
+            }
+            guard tokens.count <= 256 else { throw InspectionError.blocked("Python marker token limit exceeded.") }
+        }
+        var index = 0
+        func operand() throws -> String {
+            guard index < tokens.count, tokens[index].hasPrefix("v:") || tokens[index].hasPrefix("s:") else {
+                throw InspectionError.blocked("Invalid Python marker operand.")
+            }
+            defer { index += 1 }; return tokens[index]
+        }
+        func atom(_ depth: Int) throws -> PythonMarker {
+            guard depth < 32, index < tokens.count else { throw InspectionError.blocked("Incomplete or excessively deep Python marker.") }
+            if tokens[index] == "(" {
+                index += 1; let node = try expression(depth + 1)
+                guard index < tokens.count, tokens[index] == ")" else { throw InspectionError.blocked("Unbalanced Python marker parentheses.") }
+                index += 1; return node
+            }
+            let left = try operand()
+            guard index < tokens.count else { throw InspectionError.blocked("Missing Python marker operator.") }
+            var op = tokens[index]; index += 1
+            if op == "not", index < tokens.count, tokens[index] == "in" { op = "not in"; index += 1 }
+            guard operators.contains(op) else { throw InspectionError.blocked("Invalid Python marker operator.") }
+            return .comparison(left, op, try operand())
+        }
+        func conjunction(_ depth: Int) throws -> PythonMarker {
+            var nodes = [try atom(depth)]
+            while index < tokens.count, tokens[index] == "and" { index += 1; nodes.append(try atom(depth)) }
+            return nodes.count == 1 ? nodes[0] : .all(nodes)
+        }
+        func expression(_ depth: Int) throws -> PythonMarker {
+            var nodes = [try conjunction(depth)]
+            while index < tokens.count, tokens[index] == "or" { index += 1; nodes.append(try conjunction(depth)) }
+            return nodes.count == 1 ? nodes[0] : .any(nodes)
+        }
+        let result = try expression(0)
+        guard index == tokens.count else { throw InspectionError.blocked("Trailing Python marker syntax.") }
+        guard !result.mentionsExtra || result.extraGroups != nil else {
+            throw InspectionError.blocked("Combined optional-extra and environment markers need resolver review.")
         }
         return result
     }

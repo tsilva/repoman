@@ -101,7 +101,6 @@ final class RepositoryCheckReportTests: XCTestCase {
     func testPythonCoverageDiagnosticIdentifiesOnlyUnsupportedDeclarations() async throws {
         _ = try GitRunner.run(["rm", "package.json"], at: root)
         for (declaration, expected) in [
-            ("[dependency-groups]\ndev = ['pytest']", "dependency-groups"),
             ("[project]\nname = 'fixture'\ndynamic = ['dependencies']", "project.dynamic"),
             ("[tool.uv.sources]\nexample = { path = '../private-path' }", "tool.uv.sources"),
             ("[tool.uv]\ndev-dependencies = ['pytest']", "tool.uv.dev-dependencies")

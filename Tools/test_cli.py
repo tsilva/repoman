@@ -61,6 +61,38 @@ class CLITests(unittest.TestCase):
         result = self.check('--check', 'git.worktrees', '--check', 'files.readme')
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
+    def test_uv_dependency_groups_compare_includes_and_other_platform_requirements(self):
+        project = """[project]
+name = 'fixture'
+[dependency-groups]
+Test_Group = ["pytest>=9; sys_platform == 'linux'"]
+dev = [{include-group = 'test-group'}, 'ruff>=0.15']
+empty = []
+"""
+        lock = """version = 1
+[[package]]
+name = 'fixture'
+source = {virtual = '.'}
+[package.metadata.requires-dev]
+test-group = [{name = 'pytest', specifier = '>=9', marker = "sys_platform=='linux'"}]
+dev = [{name = 'pytest', specifier = '>=9', marker = "sys_platform=='linux'"}, {name = 'ruff', specifier = '>=0.15'}]
+empty = []
+"""
+        (self.repo / 'pyproject.toml').write_text(project)
+        (self.repo / 'uv.lock').write_text(lock)
+        self.git('add', 'pyproject.toml', 'uv.lock')
+        result = self.check('--check', 'dependencies.lockfileDrift')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)['checks'][0]['status'], 'passed')
+        (self.repo / 'pyproject.toml').write_text(project.replace('pytest>=9', 'pytest>=10'))
+        result = self.check('--check', 'dependencies.lockfileDrift')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        finding = json.loads(result.stdout)['checks'][0]['findings'][0]
+        self.assertIn('dependency-groups.dev.pytest', finding['evidence'])
+        self.assertNotIn('linux', finding['evidence'])
+        (self.repo / 'pyproject.toml').write_text(project)
+        self.assertEqual(self.check('--check', 'dependencies.lockfileDrift').returncode, 0)
+
     def test_errors_have_no_partial_json(self):
         for args in [(), ('check',), ('check', '--repo', str(self.repo), '--check', 'unknown'),
                      ('check', '--repo', str(self.repo), '--check', 'github.description'),

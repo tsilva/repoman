@@ -370,8 +370,9 @@ final class RepositoryHealthChecksTests: XCTestCase {
         XCTAssertEqual(extraDrift.findings().count, 1)
         XCTAssertTrue(extraDrift.unavailableChecks.isEmpty)
         try write("pyproject.toml", "[project]\nname = 'app'\ndependencies = [\"some-package>=2; python_version < '3.13'\"]\n")
-        let unsupported = try await inspect("dependencies.lockfileDrift")
-        XCTAssertNotNil(unsupported.unavailableChecks["dependencies.lockfileDrift"])
+        let markerDrift = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(markerDrift.unavailableChecks.isEmpty)
+        XCTAssertEqual(markerDrift.findings().count, 1)
     }
     func testUVOptionalDependenciesAndRequestedExtras() async throws {
         let project = """
@@ -468,7 +469,6 @@ final class RepositoryHealthChecksTests: XCTestCase {
         provides-extras = ["test"]
         """
         for declaration in [
-            "\"pytest>=9; python_version < '3.13'\"",
             "'pytest @ https://example.com/package.whl'",
             "'pytest>=9', 'pytest>=10'",
             "'pytest[bad extra]>=9'",
@@ -484,6 +484,7 @@ final class RepositoryHealthChecksTests: XCTestCase {
         for (before, after) in [
             ("extra == 'test'", "extra == 'test' and python_version < '3.13'"),
             ("extra == 'test'", "extra == 'missing'"),
+            ("extra == 'test'", "extra == ''"),
             ("name = \"pytest\"", "name = \"pytest\", unknown = \"value\""),
             ("name = \"pytest\"", "name = \"pytest\", name = \"pytest\""),
             ("name = \"pytest\",", "name = \"pytest\""),
@@ -496,7 +497,6 @@ final class RepositoryHealthChecksTests: XCTestCase {
         }
         try write("uv.lock", lock)
         for unsupported in [
-            "\n[dependency-groups]\ndev = ['ruff']",
             "\n[tool.uv.sources]\npytest = { workspace = true }",
             "\n[tool.uv]\ndev-dependencies = ['ruff']"
         ] {
@@ -504,6 +504,152 @@ final class RepositoryHealthChecksTests: XCTestCase {
             let report = try await inspect("dependencies.lockfileDrift")
             XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"])
         }
+    }
+    private var groupedPythonProject: String {
+        """
+        [project]
+        name = 'app'
+        dependencies = ["engine==1.0.1.post48; sys_platform == 'linux' and platform_machine == 'x86_64'"]
+        [project.optional-dependencies]
+        dev = ['requests[socks]>=2']
+        [dependency-groups]
+        Lint_Group = ['ruff>=0.15']
+        shared = [{include-group = 'lint-group'}, 'pytest>=9']
+        dev = [{include-group = 'shared'}, 'pytest>=9', 'pytest<11', 'mlflow[auth]==3.16.1']
+        empty = []
+        """
+    }
+    private var groupedPythonLock: String {
+        """
+        version = 1
+        [[package]]
+        name = 'app'
+        source = { virtual = '.' }
+        [package.metadata]
+        requires-dist = [
+            {name = 'engine', specifier = '==1.0.1.post48', marker = "(platform_machine=='x86_64' and sys_platform=='linux')"},
+            {name = 'requests', extras = ['socks'], specifier = '>=2', marker = "extra == 'dev'"},
+        ]
+        provides-extras = ['dev']
+        [package.metadata.requires-dev]
+        lint-group = [{name = 'ruff', specifier = '>=0.15'}]
+        shared = [{name = 'ruff', specifier = '>=0.15'}, {name = 'pytest', specifier = '>=9'}]
+        dev = [{name = 'ruff', specifier = '>=0.15'}, {name = 'pytest', specifier = '>=9'}, {name = 'pytest', specifier = '<11'}, {name = 'mlflow', extras = ['auth'], specifier = '==3.16.1'}]
+        empty = []
+        """
+    }
+    func testUVDependencyGroupsIncludeNormalizationExtrasAndPlatformMarkers() async throws {
+        try write("pyproject.toml", groupedPythonProject)
+        try write("uv.lock", groupedPythonLock)
+        let report = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty, "\(report.unavailableChecks)")
+    }
+    func testUVEquivalentIncludeChangesDoNotProduceFalseDrift() async throws {
+        // pytest is also declared directly, so replacing shared with lint-group preserves the requirements.
+        try write("pyproject.toml", groupedPythonProject.replacingOccurrences(of: "include-group = 'shared'", with: "include-group = 'lint-group'"))
+        try write("uv.lock", groupedPythonLock)
+        let report = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+    }
+    func testUVDependencyGroupAndMarkerDriftRemainActionable() async throws {
+        for (file, before, after, evidence) in [
+            ("pyproject.toml", "pytest<11", "pytest<12", "dependency-groups.dev.pytest"),
+            ("pyproject.toml", "include-group = 'shared'", "include-group = 'empty'", "dependency-groups.dev.ruff"),
+            ("pyproject.toml", "empty = []", "renamed = []", "dependency-groups.empty"),
+            ("uv.lock", "extras = ['auth']", "extras = ['other']", "dependency-groups.dev.mlflow"),
+            ("uv.lock", "empty = []", "", "dependency-groups.empty"),
+            ("uv.lock", "sys_platform=='linux'", "sys_platform=='darwin'", "dependencies.engine"),
+            ("uv.lock", "==1.0.1.post48", "==1.0.1.post49", "dependencies.engine")
+        ] {
+            try write("pyproject.toml", groupedPythonProject)
+            try write("uv.lock", groupedPythonLock)
+            let original = file == "uv.lock" ? groupedPythonLock : groupedPythonProject
+            try write(file, original.replacingOccurrences(of: before, with: after))
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(report.unavailableChecks.isEmpty, "\(report.unavailableChecks)")
+            XCTAssertEqual(report.findings().count, 1, after)
+            let text = report.findings().first?.evidence ?? ""
+            XCTAssertTrue(text.contains(evidence), text)
+            XCTAssertFalse(text.contains("darwin"))
+            XCTAssertFalse(text.contains("post49"))
+        }
+    }
+    func testUVInvalidDependencyGroupsCannotEstablishSynchronization() async throws {
+        for groups in [
+            "dev = [{include-group = 'missing'}]",
+            "dev = [{include-group = 'other'}]\nother = [{include-group = 'dev'}]",
+            "dev = [{include-group = 'dev'}]",
+            "dev = [{include-group = 'other', unexpected = true}]\nother = []",
+            "dev = [{include-group = 1}]",
+            "dev = 1",
+            "dev.nested = ['ruff']",
+            "[dependency-groups.dev]\nnested = ['ruff']",
+            "Test_Group = []\ntest-group = []",
+            "dev = ['pytest>=9; unknown_variable == \'value\'']",
+            "dev = ['pytest @ https://example.invalid/secret.whl']"
+        ] {
+            try write("pyproject.toml", "[project]\nname = 'app'\n[dependency-groups]\n" + groups)
+            try write("uv.lock", groupedPythonLock)
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertTrue(report.findings().isEmpty)
+            XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"], groups)
+            XCTAssertFalse(report.unavailableChecks.values.joined().contains("secret.whl"))
+        }
+    }
+    func testUVInlineGroupsAndEmptyGroupIdentity() async throws {
+        let project = "dependency-groups = { Dev_Group = ['ruff>=0.15'], empty = [] }\n[project]\nname = 'app'"
+        let lock = """
+        version = 1
+        [[package]]
+        name = 'app'
+        source = { virtual = '.' }
+        [package.metadata]
+        requires-dev = { dev-group = [{ name = 'ruff', specifier = '>=0.15' }], empty = [] }
+        """
+        try write("pyproject.toml", project)
+        try write("uv.lock", lock)
+        let healthy = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(healthy.findings().isEmpty)
+        XCTAssertTrue(healthy.unavailableChecks.isEmpty, "\(healthy.unavailableChecks)")
+        try write("uv.lock", lock.replacingOccurrences(of: "empty = []", with: "extra = []"))
+        let drift = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(drift.unavailableChecks.isEmpty)
+        XCTAssertTrue(drift.findings().first?.evidence.contains("dependency-groups.empty") == true)
+        XCTAssertTrue(drift.findings().first?.evidence.contains("dependency-groups.extra") == true)
+    }
+    func testUVMarkerBooleanStructureIsPreservedAndMalformedMarkersStayUnknown() async throws {
+        for marker in ["", "sys_platform ==", "sys_platform 'linux'", "(sys_platform == 'linux'", "sys_platform == 'linux' trailing", "unknown == 'linux'"] {
+            try write("pyproject.toml", "[project]\nname = 'app'\ndependencies = [\"engine>=1; " + marker + "\"]")
+            try write("uv.lock", groupedPythonLock)
+            let report = try await inspect("dependencies.lockfileDrift")
+            XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"], marker)
+        }
+        // Replacing AND with OR is a real declaration change, regardless of the current host.
+        try write("pyproject.toml", groupedPythonProject)
+        try write("uv.lock", groupedPythonLock.replacingOccurrences(of: " and ", with: " or "))
+        let drift = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(drift.unavailableChecks.isEmpty)
+        XCTAssertTrue(drift.findings().first?.evidence.contains("dependencies.engine") == true)
+    }
+    func testUVNestedMarkerAssociativityMatchesFlatDeclarations() async throws {
+        let project = groupedPythonProject.replacingOccurrences(of: "platform_machine == 'x86_64'", with: "platform_machine == 'x86_64' and python_version >= '3.10' and os_name == 'posix'")
+        let lock = groupedPythonLock.replacingOccurrences(of: "(platform_machine=='x86_64' and sys_platform=='linux')", with: "(os_name=='posix' and (python_version>='3.10' and (sys_platform=='linux' and platform_machine=='x86_64')))")
+        try write("pyproject.toml", project)
+        try write("uv.lock", lock)
+        let report = try await inspect("dependencies.lockfileDrift")
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty, "\(report.unavailableChecks)")
+    }
+    func testUVGroupExpansionIsBounded() async throws {
+        let groups = (0..<34).map { index in
+            index == 33 ? "g33 = []" : "g\(index) = [{include-group = 'g\(index + 1)'}]"
+        }.joined(separator: "\n")
+        try write("pyproject.toml", "[project]\nname = 'app'\n[dependency-groups]\n" + groups)
+        try write("uv.lock", groupedPythonLock)
+        let report = try await inspect("dependencies.lockfileDrift")
+        XCTAssertNotNil(report.unavailableChecks["dependencies.lockfileDrift"])
     }
     func testUnsupportedLockfileCannotResolveEarlierDrift() async throws {
         try write("package.json", #"{"packageManager":"npm@10.0.0","dependencies":{"a":"^2"}}"#)
