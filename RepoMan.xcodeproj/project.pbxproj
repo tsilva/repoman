@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2F703CA2D4ABCDAF1DA7DDFB /* RepositorySwiftChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB81F6E6D2049239189D75F5 /* RepositorySwiftChecks.swift */; };
 		AA0000000000000000000001 /* RepositoryCheckReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* RepositoryCheckReport.swift */; };
 		A90000000000000000000001 /* GitHub-Octicons-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = B90000000000000000000001 /* GitHub-Octicons-LICENSE.txt */; };
 		A20000000000000000000002 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* AboutView.swift */; };
@@ -47,6 +48,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		AB81F6E6D2049239189D75F5 /* RepositorySwiftChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositorySwiftChecks.swift; sourceTree = "<group>"; };
 		BB0000000000000000000001 /* RepositoryCheckReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryCheckReport.swift; sourceTree = "<group>"; };
 		B90000000000000000000001 /* GitHub-Octicons-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Resources/GitHub-Octicons-LICENSE.txt"; sourceTree = "<group>"; };
 		B20000000000000000000002 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
@@ -119,6 +121,7 @@
 		C10000000000000000000003 /* RepoManCore */ = {
 			isa = PBXGroup;
 			children = (
+				AB81F6E6D2049239189D75F5 /* RepositorySwiftChecks.swift */,
 				B80000000000000000000002 /* AppUpdateInstaller.swift */,
 				B80000000000000000000001 /* AppUpdate.swift */,
 				B10000000000000000000090 /* RepositoryCheckPolicy.swift */,
@@ -252,6 +255,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2F703CA2D4ABCDAF1DA7DDFB /* RepositorySwiftChecks.swift in Sources */,
 				AA0000000000000000000001 /* RepositoryCheckReport.swift in Sources */,
 				A80000000000000000000003 /* AppUpdateController.swift in Sources */,
 				A80000000000000000000002 /* AppUpdateInstaller.swift in Sources */,

@@ -30,6 +30,13 @@ public struct RepositoryInspectionContext: Sendable {
         let source = try readText(path)
         return try parsing.value("ini:" + path, bytes: source.utf8.count) { try InspectionConfig.ini(source) }
     }
+    func propertyListObject(_ path: String) throws -> [String: Any] {
+        let source = try readText(path)
+        return try parsing.value("plist:" + path, bytes: source.utf8.count) {
+            guard let object = try PropertyListSerialization.propertyList(from: Data(source.utf8), options: [], format: nil) as? [String: Any] else { throw InspectionError.blocked("Expected a project property list.") }
+            return object
+        }
+    }
     func jsonObject(_ path: String) throws -> [String: Any] {
         let source = try readText(path)
         return try parsing.value("json:" + path, bytes: source.utf8.count) {

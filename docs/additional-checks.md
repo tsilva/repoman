@@ -30,6 +30,8 @@ Component paths must be literal repository-relative paths. Ecosystems are `pytho
 
 | ID | Check | Evidence and scope |
 | --- | --- | --- |
+| `dependencies.swiftResolution` | Swift package resolution | Static literal SwiftPM and Xcode Git-package declarations, tracked Package.resolved schemas 1–3, revision/branch/exact/stable version-range consistency. Leaf apps and executables require resolution files when external packages exist; libraries do not impose their own locks on consumers. URLs and credentials are withheld. No manifests or resolvers execute. |
+| `files.swiftProjectReferences` | Swift and Xcode references | Explicit Swift target/local-package paths and supported Xcode group-relative/SOURCE_ROOT file references. SDK and build-product references are excluded. Missing paths are findings; unreadable inputs, cyclic graphs and unsupported expressions retain incomplete coverage beside known findings. |
 | `dependencies.manager` | Package-manager mismatch | JavaScript `packageManager` versions, competing lockfiles, and recognizable CI installation commands. A root project with no declared manager is reported for review. Installs in other working directories and global tool installs are skipped. |
 | `dependencies.safeguards` | Dependency safeguards missing | npm age and lifecycle-script settings; pnpm workspace age and exotic dependency blocking, plus pnpm 10 `.npmrc` compatibility settings; Bun repository-owned `install.minimumReleaseAge >= 604800` seconds, age exclusions, lifecycle-script suppression (`install.ignoreScripts` or `.npmrc`) and CI overrides; effective uv cutoff and bad-package constraints; tracked pip constraint references. |
 | `dependencies.lockfile` | Missing or untracked lockfile | Dependency manifests without a matching Git-tracked lockfile in their directory or workspace ancestors. Git-staged lockfiles count as tracked; the ordinary uncommitted-change check still applies. |
@@ -95,6 +97,12 @@ Exceptions map a check ID and exact finding subject to a nonempty reason; subjec
 Changing a repository exception changes the detector's policy, and can verify a finding as absent under that policy. Global display toggles and Ignore Check do not change verification. Inspect the recorded reason when reviewing a policy-based resolution.
 
 Unknown configuration fields, unsupported versions, empty exception reasons and out-of-range thresholds make the new checks unavailable. `stashAgeDays` accepts 1–3650; notebook output limits accept 1024–8388608 bytes. `maximumTrackedFileBytes` accepts 1024–1073741824 bytes (default 10485760). Missing fields retain defaults; notebook checks default to disabled until a repository opts in.
+
+## Native Swift inspection boundaries
+
+SwiftPM support requires a literal top-level `let package = Package(...)` (or `var`) and literal arrays for products, targets and dependencies. Supported Git dependency requirements are `from`, exact, branch, hexadecimal revision prefixes and stable numeric ranges. Xcode reads OpenStep/XML property lists and active project package/target references; source paths use supported group or source-root trees. Resolved versions support three-part stable versions, valid Git revisions and matching locations.
+
+Conditional/computed manifests, registry declarations, prerelease version comparisons, dynamic or absolute project paths and unsupported property-list graphs remain incomplete. If a separate external `.xcworkspace` might own an absent project resolution file, RepoMan requests manual workspace review instead of asserting a missing lockfile. Transitive dependency resolution, package trust and compiler compatibility remain the responsibility of normal tooling and CI. These checks never fetch packages or execute Swift/Xcode.
 
 ## Published metadata
 
