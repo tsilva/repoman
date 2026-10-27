@@ -8,9 +8,14 @@ public struct RepositoryInspectionContext: Sendable {
     private let files = InspectionFileCache()
     private let git = InspectionGitCache()
     private let parsing = InspectionParsingCache()
+    private let ciStatus = InspectionCIStatusCache()
     private let freshness = InspectionFreshness()
     public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false) {
         self.snapshot = snapshot; self.allowCachedRemoteMetadata = allowCachedRemoteMetadata
+    }
+    func ciStatuses(load: @escaping @Sendable (RepositorySnapshot) async throws -> [CIBranchStatus]) async throws -> [CIBranchStatus] {
+        let current = snapshot
+        return try await ciStatus.value { try await load(current) }
     }
     var parsingComputationCount: Int { parsing.count }
     func toml(_ path: String, standaloneUV: Bool = false, allSections: Bool = false) throws -> InspectionConfig {

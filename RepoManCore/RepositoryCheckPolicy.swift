@@ -7,7 +7,61 @@ struct RepositoryCheckPolicy: Decodable, Sendable {
     var stashAgeDays = 30
     var maximumTrackedFileBytes = 10_485_760
     var notebooks = NotebookPolicy()
+    var ci = CIPolicy()
 
+    struct CIPolicy: Decodable, Sendable {
+        struct Component: Decodable, Sendable {
+            let path: String
+            var ecosystem = "generic"
+            var requires = ["any"]
+            enum CodingKeys: String, CodingKey { case path, ecosystem, requires }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                let raw = try c.decode(String.self, forKey: .path)
+                guard !raw.split(separator: "/").contains("..") else { throw InspectionError.blocked("CI component paths cannot contain parent traversal.") }
+                path = (raw as NSString).standardizingPath
+                ecosystem = try c.decodeIfPresent(String.self, forKey: .ecosystem) ?? "generic"
+                requires = try c.decodeIfPresent([String].self, forKey: .requires) ?? ["any"]
+            }
+        }
+        struct ExpectedCheck: Decodable, Sendable {
+            let name: String
+            let workflow: String?
+            let event: String?
+            let app: String?
+            let acceptedConclusions: [String]
+            enum CodingKeys: String, CodingKey { case name, workflow, event, app, acceptedConclusions }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                name = try c.decode(String.self, forKey: .name)
+                workflow = try c.decodeIfPresent(String.self, forKey: .workflow)
+                event = try c.decodeIfPresent(String.self, forKey: .event)
+                app = try c.decodeIfPresent(String.self, forKey: .app)
+                acceptedConclusions = try c.decodeIfPresent([String].self, forKey: .acceptedConclusions) ?? ["SUCCESS"]
+            }
+        }
+        var components: [Component]?
+        var expectedChecks: [ExpectedCheck] = []
+        enum CodingKeys: String, CodingKey { case components, expectedChecks }
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            components = try c.decodeIfPresent([Component].self, forKey: .components)
+            expectedChecks = try c.decodeIfPresent([ExpectedCheck].self, forKey: .expectedChecks) ?? []
+        }
+        func validate() throws {
+            let kinds: Set<String> = ["any", "test", "build", "lint", "typecheck"]
+            guard expectedChecks.count <= 64, components.map({ !$0.isEmpty && $0.count <= 64 }) ?? true,
+                  components?.allSatisfy({ !$0.path.isEmpty && !$0.path.hasPrefix("/") && !$0.path.split(separator: "/").contains("..") && !$0.path.contains(where: { "$*?\\{}~".contains($0) }) && ["generic", "python", "javascript", "swift"].contains($0.ecosystem) && !$0.requires.isEmpty && Set($0.requires).isSubset(of: kinds) }) ?? true,
+                  expectedChecks.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.name.count <= 200 && !$0.acceptedConclusions.isEmpty && Set($0.acceptedConclusions).isSubset(of: ["SUCCESS", "SKIPPED", "NEUTRAL"]) && [$0.workflow, $0.event, $0.app].allSatisfy { $0.map { !$0.isEmpty && $0.count <= 200 } ?? true } }) else {
+                throw InspectionError.blocked("Invalid CI component or expected-check policy.")
+            }
+            let componentIDs = components?.map { $0.path + "#" + $0.ecosystem } ?? []
+            guard Set(componentIDs).count == componentIDs.count else { throw InspectionError.blocked("Duplicate CI component identity.") }
+            let identities = expectedChecks.map { [$0.name, $0.workflow ?? "*", $0.event ?? "*", $0.app ?? "*"].joined(separator: "\u{1f}") }
+            guard Set(identities).count == identities.count else { throw InspectionError.blocked("Duplicate expected CI check identity.") }
+        }
+    }
     struct NotebookPolicy: Decodable, Sendable {
         var enabled = false
         var maximumOutputBytes = 262_144
@@ -19,7 +73,7 @@ struct RepositoryCheckPolicy: Decodable, Sendable {
             maximumOutputBytes = try c.decodeIfPresent(Int.self, forKey: .maximumOutputBytes) ?? 262_144
         }
     }
-    enum CodingKeys: String, CodingKey { case version, exceptions, stashAgeDays, maximumTrackedFileBytes, notebooks }
+    enum CodingKeys: String, CodingKey { case version, exceptions, stashAgeDays, maximumTrackedFileBytes, notebooks, ci }
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -28,14 +82,20 @@ struct RepositoryCheckPolicy: Decodable, Sendable {
         stashAgeDays = try c.decodeIfPresent(Int.self, forKey: .stashAgeDays) ?? 30
         maximumTrackedFileBytes = try c.decodeIfPresent(Int.self, forKey: .maximumTrackedFileBytes) ?? 10_485_760
         notebooks = try c.decodeIfPresent(NotebookPolicy.self, forKey: .notebooks) ?? NotebookPolicy()
+        ci = try c.decodeIfPresent(CIPolicy.self, forKey: .ci) ?? CIPolicy()
     }
     static func load(_ context: RepositoryInspectionContext) throws -> Self {
         guard try context.exists(".repoman.json") else { return Self() }
         let data = Data(try context.readText(".repoman.json").utf8)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "exceptions", "stashAgeDays", "maximumTrackedFileBytes", "notebooks"]),
+              Set(object.keys).isSubset(of: ["version", "exceptions", "stashAgeDays", "maximumTrackedFileBytes", "notebooks", "ci"]),
               (object["notebooks"] as? [String: Any]).map({ Set($0.keys).isSubset(of: ["enabled", "maximumOutputBytes"]) }) ?? true else {
             throw InspectionError.blocked("Unsupported .repoman.json fields.")
+        }
+        if let ci = object["ci"] as? [String: Any] {
+            guard Set(ci.keys).isSubset(of: ["components", "expectedChecks"]),
+                  (ci["components"] as? [[String: Any]])?.allSatisfy({ Set($0.keys).isSubset(of: ["path", "ecosystem", "requires"]) }) ?? true,
+                  (ci["expectedChecks"] as? [[String: Any]])?.allSatisfy({ Set($0.keys).isSubset(of: ["name", "workflow", "event", "app", "acceptedConclusions"]) }) ?? true else { throw InspectionError.blocked("Unsupported CI policy fields.") }
         }
         let policy = try JSONDecoder().decode(Self.self, from: data)
         guard policy.version == 1, (1...3650).contains(policy.stashAgeDays),
@@ -44,6 +104,7 @@ struct RepositoryCheckPolicy: Decodable, Sendable {
               policy.exceptions.values.allSatisfy({ $0.values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }) else {
             throw InspectionError.blocked("Invalid .repoman.json version, threshold, or exception reason.")
         }
+        try policy.ci.validate()
         return policy
     }
 }

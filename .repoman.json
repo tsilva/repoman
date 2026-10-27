@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "ci": {
+    "components": [
+      {
+        "path": ".",
+        "ecosystem": "swift",
+        "requires": [
+          "test",
+          "build"
+        ]
+      }
+    ],
+    "expectedChecks": [
+      {
+        "name": "check",
+        "workflow": "Repository checks",
+        "event": "push",
+        "app": "github-actions"
+      },
+      {
+        "name": "Scan committed secrets",
+        "workflow": "Secret scanning",
+        "event": "push",
+        "app": "github-actions"
+      }
+    ]
+  }
+}

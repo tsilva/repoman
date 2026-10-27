@@ -92,7 +92,7 @@ public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
 
 /// Register another check without adding cases to the repository or issue views.
 public struct RepositoryCheck: Identifiable, Sendable {
-    public var requiresRemoteAccess: Bool { id == "ci.failing" || id.hasPrefix("github.") }
+    public var requiresRemoteAccess: Bool { ["ci.failing", "ci.expectedChecks"].contains(id) || id.hasPrefix("github.") }
     static func result(_ findings: [RepositoryFinding], for id: String, snapshot: RepositorySnapshot) -> RepositoryCheckResult {
         let comparisons: Set<String> = ["git.push", "git.pull", "git.diverged", "git.unpublishedBranches", "git.upstream"]
         guard comparisons.contains(id), snapshot.upstream != nil || snapshot.remoteURL != nil,

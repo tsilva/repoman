@@ -7,6 +7,7 @@ final class RepositoryCIChecksTests: XCTestCase {
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("RepoManCI-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        _ = try GitRunner.run(["init", "-b", "main"], at: root)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
 
@@ -125,7 +126,7 @@ final class RepositoryCIChecksTests: XCTestCase {
 
     func testBunTypecheckWithNoInstallResolvesCoverageDespiteSetupAction() async throws {
         let catalog = coverageCatalog()
-        let before = await catalog.inspect(snapshot())
+        let before = await catalog.inspect(snapshot(files: ["package.json"]))
         let finding = try XCTUnwrap(before.findings().first)
         try workflow("ci.yml", """
         on:
@@ -141,7 +142,7 @@ final class RepositoryCIChecksTests: XCTestCase {
               - run: bun install --frozen-lockfile --ignore-scripts
               - run: bunx --no-install tsc --noEmit
         """)
-        let after = await catalog.inspect(snapshot())
+        let after = await catalog.inspect(snapshot(files: ["package.json"]))
         XCTAssertTrue(after.unavailableChecks.isEmpty)
         if case .absent = catalog.verify(finding, in: after) {} else { XCTFail("Bun typecheck was not recognized as CI coverage") }
     }
@@ -268,7 +269,24 @@ final class RepositoryCIChecksTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 4)
     }
 
-    private func coverageCatalog() -> RepositoryIssueCatalog { RepositoryIssueCatalog(checks: [RepositoryCIChecks.checks()[1]]) }
+
+    func testDeclaredComponentRequirementsRejectPartialCoverageAndInvalidPolicy() async throws {
+        let policy = #"{"ci":{"components":[{"path":".","ecosystem":"python","requires":["test","typecheck"]}]}}"#
+        try policy.write(to: root.appendingPathComponent(".repoman.json"), atomically: true, encoding: .utf8)
+        try workflow("ci.yml", "on: [push]\njobs:\n  check:\n    steps:\n      - run: uv run pytest\n")
+        var report = await coverageCatalog().inspect(snapshot())
+        XCTAssertEqual(report.findings().count, 1)
+        XCTAssertTrue(report.findings()[0].evidence.contains("typecheck"))
+        try workflow("ci.yml", "on: [push]\njobs:\n  check:\n    steps:\n      - run: uv run pytest\n      - run: uv run mypy .\n")
+        report = await coverageCatalog().inspect(snapshot())
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+        try policy.replacingOccurrences(of: "typecheck", with: "unknown").write(to: root.appendingPathComponent(".repoman.json"), atomically: true, encoding: .utf8)
+        report = await coverageCatalog().inspect(snapshot())
+        XCTAssertNotNil(report.unavailableChecks["ci.coverage"])
+    }
+
+    private func coverageCatalog() -> RepositoryIssueCatalog { RepositoryIssueCatalog(checks: [RepositoryCIChecks.checks().first { $0.id == "ci.coverage" }!]) }
     private func snapshot(files: [String]? = ["pyproject.toml"], remote: String? = nil) -> RepositorySnapshot {
         RepositorySnapshot(url: root, name: "project", branch: "main", upstream: nil, remoteURL: remote,
             ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [], rootFiles: files)
@@ -288,6 +306,46 @@ final class RepositoryCIChecksTests: XCTestCase {
         return try JSONSerialization.data(withJSONObject: ["data": ["repository": ["defaultBranchRef": branch,
             "currentBranch": current ? branch as Any : NSNull()]]])
     }
+    func testComponentCoverageRequiresTheRightDirectoryAndValidationKind() async throws {
+        let source = "on: [push]\njobs:\n  check:\n    steps:\n      - run: uv run pytest\n      - run: pnpm test\n        working-directory: web\n"
+        let lines = try WorkflowInspection.lines(source)
+        XCTAssertEqual(WorkflowCoverage.analyze(lines, componentPath: ".", kind: "test", ecosystem: "python"), .covered)
+        XCTAssertEqual(WorkflowCoverage.analyze(lines, componentPath: "web", kind: "test", ecosystem: "javascript"), .covered)
+        XCTAssertEqual(WorkflowCoverage.analyze(lines, componentPath: "other", kind: "test", ecosystem: "javascript"), .missing)
+        XCTAssertEqual(WorkflowCoverage.analyze(lines, componentPath: "web", kind: "build", ecosystem: "javascript"), .missing)
+        let disabled = try WorkflowInspection.lines(source.replacingOccurrences(of: "- run: pnpm test", with: "- if: false\n        run: pnpm test"))
+        XCTAssertEqual(WorkflowCoverage.analyze(disabled, componentPath: "web", kind: "test", ecosystem: "javascript"), .missing)
+        let dynamic = try WorkflowInspection.lines(source.replacingOccurrences(of: "working-directory: web", with: "working-directory: ${{ matrix.path }}"))
+        XCTAssertEqual(WorkflowCoverage.analyze(dynamic, componentPath: "web", kind: "test", ecosystem: "javascript"), .unknown)
+        XCTAssertFalse(WorkflowCoverage.validationCommand("xcodebuild -version"))
+    }
+
+    func testExpectedChecksDistinguishMissingPendingSkippedAndAmbiguousIdentities() async throws {
+        let config = #"{"ci":{"expectedChecks":[{"name":"tests","workflow":"CI","event":"push","app":"github-actions"}]}}"#
+        try config.write(to: root.appendingPathComponent(".repoman.json"), atomically: true, encoding: .utf8)
+        func inspect(_ checks: [CICheckStatus]) async -> RepositoryInspectionReport {
+            let catalog = RepositoryIssueCatalog(checks: RepositoryCIChecks.checks(loadStatus: { _ in [CIBranchStatus(name: "main", sha: "aaaaaaaa", checks: checks)] }).filter { $0.id == "ci.expectedChecks" })
+            return await catalog.inspect(snapshot(remote: "https://github.com/owner/project"))
+        }
+        var report = await inspect([])
+        XCTAssertEqual(report.findings().count, 1)
+        let success = CICheckStatus(name: "tests", result: "SUCCESS", url: nil, workflow: "CI", event: "push", app: "github-actions")
+        report = await inspect([success])
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+        var skipped = success; skipped = CICheckStatus(name: "tests", result: "SKIPPED", url: nil, workflow: "CI", event: "push", app: "github-actions")
+        report = await inspect([skipped])
+        XCTAssertEqual(report.findings().count, 1)
+        report = await inspect([CICheckStatus(name: "tests", result: "IN_PROGRESS", url: nil, workflow: "CI", event: "push", app: "github-actions")])
+        XCTAssertNotNil(report.unavailableChecks["ci.expectedChecks"])
+        report = await inspect([success, success])
+        XCTAssertNotNil(report.unavailableChecks["ci.expectedChecks"])
+        try config.replacingOccurrences(of: #""name":"tests""#, with: #""name":"tests","acceptedConclusions":["SUCCESS","SKIPPED"]"#).write(to: root.appendingPathComponent(".repoman.json"), atomically: true, encoding: .utf8)
+        report = await inspect([skipped])
+        XCTAssertTrue(report.findings().isEmpty)
+        XCTAssertTrue(report.unavailableChecks.isEmpty)
+    }
+
 }
 
 private actor StatusFixture {

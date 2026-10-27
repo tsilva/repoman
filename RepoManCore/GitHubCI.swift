@@ -10,6 +10,9 @@ struct CICheckStatus: Sendable {
     let name: String
     let result: String
     let url: URL?
+    var workflow: String? = nil
+    var event: String? = nil
+    var app: String? = nil
     var failed: Bool { ["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].contains(result) }
     var finished: Bool { failed || ["SUCCESS", "NEUTRAL", "SKIPPED"].contains(result) }
 }
@@ -118,7 +121,7 @@ enum GitHubCI {
                 } else if context.__typename == "StatusContext", let state = context.state { result = state }
                 else { throw InspectionError.blocked("GitHub returned an unsupported CI result.") }
                 let url = (context.detailsUrl ?? context.targetUrl).flatMap(URL.init(string:))
-                return CICheckStatus(name: name, result: result, url: url)
+                return CICheckStatus(name: name, result: result, url: url, workflow: context.checkSuite?.workflowRun?.workflow.name, event: context.checkSuite?.workflowRun?.event, app: context.checkSuite?.app?.slug)
             }
             return CIBranchStatus(name: branch.name, sha: target.oid, checks: checks)
         }
@@ -215,5 +218,14 @@ enum GitHubCLI {
         var error = Data()
         var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return didTimeOut }
         func markTimedOut() { lock.lock(); defer { lock.unlock() }; didTimeOut = true }
+    }
+}
+
+actor InspectionCIStatusCache {
+    private var task: Task<[CIBranchStatus], Error>?
+    func value(load: @escaping @Sendable () async throws -> [CIBranchStatus]) async throws -> [CIBranchStatus] {
+        if let task { return try await task.value }
+        let fresh = Task { try await load() }; task = fresh
+        return try await fresh.value
     }
 }

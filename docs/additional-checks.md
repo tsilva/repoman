@@ -8,6 +8,24 @@ Dependency checks return **not applicable** when no supported manifests are pres
 
 Routine CI coverage excludes literal false job/step conditions and jobs depending on disabled jobs. Unevaluated conditions, missing dependencies and dependency cycles stay incomplete when no independent unconditional validation is recognized. Trigger filters and shell control flow are not fully interpreted.
 
+## CI components and expected jobs
+
+`ci.coverage` assesses every detected Python, JavaScript and Swift component separately, matching literal workflow/job/step working directories and recognizable commands. Default coverage requires one routine validation per component; `.repoman.json` can require explicit `test`, `build`, `lint` and `typecheck` categories. Repository policy may also describe generic components. Supported unconditional jobs and dependencies count; disabled jobs do not. Dynamic directories, custom wrappers, unknown conditions and unsupported syntax remain incomplete, preserving known missing-component findings.
+
+`ci.expectedChecks` is an opt-in remote check. It verifies each published branch commit against declared job names and optional workflow, event and publisher identities. Missing jobs and unexpected skipped/neutral results need attention; pending, ambiguous or unavailable identities stay incomplete. Failed jobs remain visible through `ci.failing`. The default accepted conclusion is `SUCCESS`; repositories can explicitly accept `SKIPPED` or `NEUTRAL` for jobs where nonexecution is intentional. Failure conclusions cannot be accepted. CI status reads are shared within one inspection.
+
+```json
+{
+  "version": 1,
+  "ci": {
+    "components": [{"path": ".", "ecosystem": "swift", "requires": ["test", "build"]}],
+    "expectedChecks": [{"name": "check", "workflow": "Repository checks", "event": "push", "app": "github-actions"}]
+  }
+}
+```
+
+Component paths must be literal repository-relative paths. Ecosystems are `python`, `javascript`, `swift` or `generic`. At most 64 components and 64 expected checks are supported. Duplicate identities, unknown fields and invalid conclusions make verification incomplete. This policy does not change GitHub branch protection or execute project commands.
+
 ## Detectors
 
 | ID | Check | Evidence and scope |

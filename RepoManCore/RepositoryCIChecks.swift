@@ -9,7 +9,8 @@ enum RepositoryCIChecks {
         [
             RepositoryCheck(id: "ci.failing", title: "CI failing", category: .ci, symbol: "xmark.seal", inspect: { context in
                 guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { throw InspectionError.notApplicable("No supported GitHub remote.") }
-                let branches = try await loadStatus(context.snapshot)
+                let branches = try await context.ciStatuses(load: loadStatus)
+                guard !branches.isEmpty else { throw InspectionError.blocked("No published branch CI results were returned.") }
                 var evidence: [String] = []
                 var detailsURL: URL?
                 var unknown: [String] = []
@@ -33,32 +34,100 @@ enum RepositoryCIChecks {
                     evidence: (evidence + unknown).joined(separator: "\n"), category: .ci, severity: .blocked,
                     symbol: "xmark.seal", detailsURL: detailsURL)]
             }),
-            RepositoryCheck(id: "ci.coverage", title: "Missing CI coverage", category: .ci, symbol: "checkmark.shield", inspect: { context in
-                guard let files = context.snapshot.rootFiles else {
-                    throw InspectionError.blocked("Repository files could not be inspected.")
-                }
-                guard hasCode(files) else { throw InspectionError.notApplicable("No recognized code project at the repository root.") }
-                if try files.contains(where: { [".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".travis.yml"].contains($0) }) ||
-                    !(try context.filenames(in: ".circleci")).isEmpty || !(try context.filenames(in: ".buildkite")).isEmpty {
-                    throw InspectionError.blocked("External CI configuration is present; coverage inspection currently supports GitHub Actions.")
-                }
-                let names = try context.filenames(in: ".github/workflows").filter { ["yml", "yaml"].contains(($0 as NSString).pathExtension) }
-                var uncertain = false
-                for name in names {
-                    switch WorkflowCoverage.analyze(try context.workflowLines(".github/workflows/" + name)) {
-                    case .covered: return []
-                    case .unknown: uncertain = true
-                    case .missing: break
+            RepositoryCheck(id: "ci.expectedChecks", title: "Expected CI validation", category: .ci, symbol: "checkmark.shield", evaluate: { context in
+                let policy = try RepositoryCheckPolicy.load(context)
+                guard !policy.ci.expectedChecks.isEmpty else { return .notApplicable("No expected CI checks are declared in .repoman.json.") }
+                guard GitHubCI.repository(context.snapshot.remoteURL) != nil else { return .notApplicable("No supported GitHub remote.") }
+                let branches = try await context.ciStatuses(load: loadStatus)
+                guard !branches.isEmpty else { throw InspectionError.blocked("No published branch CI results were returned.") }
+                var findings: [RepositoryFinding] = [], unknown: [String] = []
+                for branch in branches {
+                    for expected in policy.ci.expectedChecks {
+                        let named = branch.checks.filter { $0.name == expected.name }
+                        let matching = named.filter { check in
+                            (expected.workflow == nil || check.workflow == expected.workflow) && (expected.event == nil || check.event == expected.event) && (expected.app == nil || check.app == expected.app)
+                        }
+                        let identity: [String?] = [expected.name, expected.workflow, expected.event, expected.app]
+                        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+                        let subject = branch.name + "#expected:" + identity.map { $0?.addingPercentEncoding(withAllowedCharacters: allowed) ?? "*" }.joined(separator: "/")
+                        if matching.isEmpty {
+                            if named.contains(where: { expected.workflow != nil && $0.workflow == nil || expected.event != nil && $0.event == nil || expected.app != nil && $0.app == nil }) {
+                                unknown.append("Publisher/workflow identity is unavailable for expected check \(expected.name) on \(branch.name).")
+                            } else {
+                                findings.append(CheckSupport.finding(context, "ci.expectedChecks", subject, "Expected CI check is missing", "Expected \(expected.name) is absent on \(branch.name) at \(branch.sha.prefix(8)). Enable the expected job or review its declared identity.", .ci, "checkmark.shield"))
+                            }
+                            continue
+                        }
+                        guard matching.count == 1 else { unknown.append("Expected CI identity \(expected.name) is ambiguous on \(branch.name); declare workflow, event and app."); continue }
+                        let check = matching[0]
+                        if expected.acceptedConclusions.contains(check.result) { continue }
+                        if !check.finished && !check.failed { unknown.append("Expected check \(expected.name) is pending or incomplete on \(branch.name).") }
+                        else if check.failed { unknown.append("Expected check \(expected.name) failed on \(branch.name); see ci.failing.") }
+                        else { findings.append(CheckSupport.finding(context, "ci.expectedChecks", subject, "Expected validation did not execute successfully", "Expected \(expected.name) returned \(check.result.lowercased()) on \(branch.name). Its policy accepts \(expected.acceptedConclusions.joined(separator: ", ")); skipped/neutral results do not prove execution.", .ci, "checkmark.shield")) }
                     }
                 }
-                if uncertain { throw InspectionError.blocked("Workflow coverage could not be determined. Conditional execution, custom scripts, reusable workflows, and unsupported YAML need review.") }
-                return [RepositoryFinding(repositoryID: context.snapshot.id, checkID: "ci.coverage",
-                    title: "Missing CI coverage",
-                    evidence: names.isEmpty ? "No GitHub Actions workflows were found for this code project." :
-                        "No build, test, lint, or type-check validation triggered by branch pushes or pull requests was recognized in \(names.joined(separator: ", ")). Tag-only releases and dependency review do not provide routine code validation.",
-                    category: .ci, symbol: "checkmark.shield")]
+                findings = context.applyingExceptions(findings, policy: policy)
+                return unknown.isEmpty ? .findings(findings) : .partial(findings, unknown.prefix(10).joined(separator: " "))
+            }),
+            RepositoryCheck(id: "ci.coverage", title: "Routine validation coverage", category: .ci, symbol: "checkmark.shield", evaluate: { context in
+                let policy = try RepositoryCheckPolicy.load(context)
+                let files = try CheckSupport.rootFiles(context)
+                let components = try coverageComponents(context, policy: policy)
+                guard !components.isEmpty || hasCode(files) else { return .notApplicable("No recognized code components.") }
+                if try files.contains(where: { [".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".travis.yml"].contains($0) }) || !(try context.filenames(in: ".circleci")).isEmpty || !(try context.filenames(in: ".buildkite")).isEmpty {
+                    throw InspectionError.blocked("External CI configuration is present; component coverage supports GitHub Actions.")
+                }
+                let workflows = try CheckSupport.workflows(context)
+                var findings: [RepositoryFinding] = [], uncertain: [String] = []
+                let targets = components.isEmpty ? [CoverageComponent(path: ".", ecosystem: "generic", requires: ["any"])] : components
+                for component in targets {
+                    var missing: [String] = []
+                    for kind in component.requires {
+                        var covered = false, unknown = false
+                        for (path, _) in workflows {
+                            do {
+                                switch WorkflowCoverage.analyze(try context.workflowLines(path), componentPath: component.path, kind: kind, ecosystem: component.ecosystem) {
+                                case .covered: covered = true
+                                case .unknown: unknown = true
+                                case .missing: break
+                                }
+                            } catch { unknown = true }
+                        }
+                        if !covered {
+                            if unknown { uncertain.append("\(component.path) (\(component.ecosystem)): \(kind) validation could not be established statically.") }
+                            else { missing.append(kind) }
+                        }
+                    }
+                    if !missing.isEmpty {
+                        findings.append(CheckSupport.finding(context, "ci.coverage", component.path + "#" + component.ecosystem, "Component validation is missing", "No routine \(missing.joined(separator: ", ")) validation was recognized for \(component.path) (\(component.ecosystem)). Configure a branch-push/PR job in that component's working directory; tag-only releases do not count. Workflows inspected: \(workflows.map { $0.0 }.joined(separator: ", ")).", .ci, "checkmark.shield"))
+                    }
+                }
+                findings = context.applyingExceptions(findings, policy: policy)
+                return uncertain.isEmpty ? .findings(findings) : .partial(findings, uncertain.prefix(10).joined(separator: " "))
             })
         ]
+    }
+
+    private struct CoverageComponent { let path: String; let ecosystem: String; let requires: [String] }
+    private static func coverageComponents(_ context: RepositoryInspectionContext, policy: RepositoryCheckPolicy) throws -> [CoverageComponent] {
+        if let explicit = policy.ci.components { return explicit.map { CoverageComponent(path: $0.path == "./" ? "." : $0.path, ecosystem: $0.ecosystem, requires: $0.requires) } }
+        var discovered: [String: CoverageComponent] = [:]
+        func add(_ path: String, _ ecosystem: String) {
+            let directory = (path as NSString).deletingLastPathComponent
+            let root = directory.isEmpty ? "." : directory
+            discovered[root + "#" + ecosystem] = CoverageComponent(path: root, ecosystem: ecosystem, requires: ["any"])
+        }
+        for path in try CheckSupport.manifests(context) { add(path, path.hasSuffix("package.json") ? "javascript" : "python") }
+        let native = try context.trackedPaths(matching: [":(glob)**/Package.swift", ":(glob)**/*.xcodeproj/project.pbxproj"])
+        for path in native where !path.split(separator: "/").contains(where: { [".build", "DerivedData", "vendor", "node_modules"].contains(String($0)) }) {
+            if path.hasSuffix("project.pbxproj") {
+                let parent = ((path as NSString).deletingLastPathComponent as NSString).deletingLastPathComponent
+                add(parent.isEmpty ? "Package.swift" : parent + "/Package.swift", "swift")
+            } else { add(path, "swift") }
+        }
+        if try CheckSupport.rootFiles(context).contains("Package.swift") { add("Package.swift", "swift") }
+        guard discovered.count <= 64 else { throw InspectionError.blocked("More than 64 CI components need inspection.") }
+        return discovered.keys.sorted().map { discovered[$0]! }
     }
 
     private static func hasCode(_ files: [String]) -> Bool {
@@ -80,7 +149,7 @@ enum WorkflowCoverage {
         guard let parsed = try? WorkflowInspection.lines(source) else { return .unknown }
         return analyze(parsed)
     }
-    static func analyze(_ parsed: [WorkflowInspection.Line]) -> Result {
+    static func analyze(_ parsed: [WorkflowInspection.Line], componentPath: String? = nil, kind: String? = nil, ecosystem: String? = nil) -> Result {
         let lines = parsed.map { Line(indent: $0.indent, text: $0.text) }
         guard let onIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "on" }),
               let jobsIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "jobs" }) else { return .unknown }
@@ -182,6 +251,29 @@ enum WorkflowCoverage {
                         if field == "run" {
                             let command = text.hasPrefix("|") || text.hasPrefix(">") ? block(fields, at: index).map(\.text).joined(separator: "\n") : text
                             if validationCommand(command) {
+                                if let componentPath {
+                                    guard languageMatches(command, ecosystem ?? "generic") else { continue }
+                                    if matches(command, #"(?:^|[;&\n])\s*cd\s"#) { uncertain = true; continue }
+                                    func defaultsDirectory(_ scope: [Line], indent: Int) -> String? {
+                                        guard let defaults = scope.indices.first(where: { scope[$0].indent == indent && key(scope[$0].text) == "defaults" }) else { return nil }
+                                        let declaration = value(scope[defaults].text)
+                                        if !declaration.isEmpty && declaration != "{}" { return "${{ unsupported }}" }
+                                        let defaultsBlock = block(scope, at: defaults)
+                                        guard let run = defaultsBlock.indices.first(where: { key(defaultsBlock[$0].text) == "run" }) else { return nil }
+                                        if !value(defaultsBlock[run].text).isEmpty && value(defaultsBlock[run].text) != "{}" { return "${{ unsupported }}" }
+                                        return block(defaultsBlock, at: run).first(where: { key($0.text) == "working-directory" }).map { value($0.text) }
+                                    }
+                                    let declared = fields.first(where: { $0.indent == stepIndent + 2 && key($0.text) == "working-directory" }).map { value($0.text) }
+                                        ?? defaultsDirectory(Array(body.prefix(steps)), indent: fieldIndent)
+                                        ?? defaultsDirectory(Array(lines.prefix(jobsIndex)), indent: 0) ?? "."
+                                    guard let directory = normalizedDirectory(declared), let expected = normalizedDirectory(componentPath) else { uncertain = true; continue }
+                                    guard directory == expected else { continue }
+                                    guard languageMatches(command, ecosystem ?? "generic") else { continue }
+                                    if let kind, kind != "any", !validationKinds(command).contains(kind) {
+                                        if matches(command, #"\b(check|validate)\b"#) { uncertain = true }
+                                        continue
+                                    }
+                                }
                                 if state == .covered && stepState == .covered { return .covered }
                                 uncertain = true
                             } else if matches(command, #"(?:\./|bash\s|sh\s|python\s|python3\s|uv run\s|npm run\s|pnpm (?:run\s)?|yarn\s|bun run\s)"#) { uncertain = true }
@@ -203,6 +295,33 @@ enum WorkflowCoverage {
         guard let colon = text.firstIndex(of: ":") else { return "" }
         return String(text[text.index(after: colon)...]).components(separatedBy: " #")[0].trimmingCharacters(in: .whitespaces)
     }
+    private static func normalizedDirectory(_ source: String) -> String? {
+        let raw = InspectionConfig.scalar(source) ?? source
+        guard !raw.isEmpty, !raw.hasPrefix("/"), !raw.contains(where: { "$~{}*?".contains($0) }) else { return nil }
+        var parts: [String] = []
+        for part in raw.split(separator: "/") {
+            if part == "." { continue }
+            if part == ".." { guard !parts.isEmpty else { return nil }; parts.removeLast() }
+            else { parts.append(String(part)) }
+        }
+        return parts.isEmpty ? "." : parts.joined(separator: "/")
+    }
+    private static func languageMatches(_ command: String, _ ecosystem: String) -> Bool {
+        switch ecosystem {
+        case "swift": return matches(command, #"\b(swift\s+(test|build)|xcodebuild)\b"#)
+        case "python": return matches(command, #"\b(pytest|unittest|ruff|mypy|pyright|flake8|pylint|tox|nox|python[0-9.]*\s+-m\s+(build|compileall))\b"#)
+        case "javascript": return matches(command, #"\b(npm|pnpm|yarn|bun|bunx|vitest|jest|tsc|eslint)\b"#)
+        default: return true
+        }
+    }
+    static func validationKinds(_ command: String) -> Set<String> {
+        var result = Set<String>()
+        if matches(command, #"\b(test|pytest|unittest|vitest|jest|rspec|ctest)\b"#) { result.insert("test") }
+        if matches(command, #"\b(build|xcodebuild|compileall)\b"#) { result.insert("build") }
+        if matches(command, #"\b(lint|eslint|ruff|flake8|pylint|clippy|vet)\b"#) { result.insert("lint") }
+        if matches(command, #"\b(typecheck|type-check|tsc|mypy|pyright)\b"#) { result.insert("typecheck") }
+        return result
+    }
     static func validationCommand(_ text: String) -> Bool {
         // Require an executable command, not labels, comments, echo text, or setup steps.
         let patterns = [
@@ -214,7 +333,7 @@ enum WorkflowCoverage {
         ]
         return text.components(separatedBy: .newlines).contains { raw in
             let line = raw.components(separatedBy: " #")[0].trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
-            guard !line.hasPrefix("#"), !matches(line, #"^(echo|printf)\b"#) else { return false }
+            guard !line.hasPrefix("#"), !matches(line, #"^(echo|printf)\b"#), !matches(line, #"^xcodebuild\s+-(version|list|showBuildSettings|resolvePackageDependencies)\b"#) else { return false }
             let prefix = #"(?:^|&&\s*|;\s*|\buv run(?:\s+--(?:group|extra|python)\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+|\bpoetry run\s+|\b(?:pnpm exec|npm exec|yarn exec|npx)\s+|\b(?:bun x|bunx)(?:\s+--no-install)?\s+|\btimeout\s+\d+\s+)"#
             return patterns.contains { matches(line, prefix + $0) }
         }
