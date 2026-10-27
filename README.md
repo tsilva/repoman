@@ -40,6 +40,8 @@ Click **Choose Folder…** and select the parent folder containing your reposito
 
 Issue rows show current detector results. Incomplete checks remain visibly unknown, separate from confirmed findings. Queued and running checks appear while inspection is in progress; passed checks are hidden. Refresh after fixing something externally to check the result again. The app has no repair presets, selection checkboxes, conversations, agent execution or automatic repair recovery. Earlier conversation files remain on disk but are no longer loaded or resumed.
 
+The selected repository has one **Git synchronization** section combining ahead/behind counts, freshness and upstream findings. Individual CLI check IDs remain unchanged.
+
 Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. A `?` on an ahead/behind count means the remote comparison is provisional. Use your Git tools or the `repo-sync` skill to synchronize repositories; RepoMan does not commit, merge or push.
 
 The GitHub toolbar button appears for repositories with a GitHub remote and opens their repository page in your browser. HTTPS and SSH remotes are supported. The folder, terminal and editor toolbar buttons open the selected repository in your own tools. The changes button opens its read-only Git diff. Open **Settings…** from the overflow menu or press **⌘,** to enable or disable checks and change the monitored folder. These preferences do not modify monitored repositories. RepoMan has no model-provider setup or inference calls; use skills such as `optimize-readme` for editorial reviews.

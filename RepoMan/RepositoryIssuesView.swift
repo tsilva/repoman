@@ -7,13 +7,37 @@ struct RepositoryIssuesView: View {
     let checkID: String?
     @Binding var showsRepositoryChanges: Bool
     @State private var selectedIssueID: String?
-    private var issues: [RepositoryIssueListItem] {
+    private var allIssues: [RepositoryIssueListItem] {
         let visible = repository.map { store.issues(in: $0) }
             ?? store.repositories.flatMap { store.issues(in: $0) }
         return RepositoryIssueListItem.sortedByCheckCategory(
             visible.filter { checkID == nil || $0.finding.checkID == checkID }, checks: store.issueCatalog.checks)
     }
-    private var selected: RepositoryIssueListItem? { issues.first { $0.id == selectedIssueID } }
+    private var synchronizationVisible: Bool {
+        repository != nil && (checkID == nil || RepositoryIssueCatalog.synchronizationCheckIDs.contains(checkID!))
+    }
+    private var issues: [RepositoryIssueListItem] {
+        allIssues.filter { !synchronizationVisible || !RepositoryIssueCatalog.synchronizationCheckIDs.contains($0.finding.checkID) }
+    }
+    @ViewBuilder
+    private var synchronizationSection: some View {
+        if synchronizationVisible, let repository {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Git synchronization").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    if repository.synchronizationIsProvisional { Text("Provisional").font(.system(size: 10)).foregroundStyle(Theme.secondary) }
+                }
+                Text(repository.synchronizationSummary).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(allIssues.filter { RepositoryIssueCatalog.synchronizationCheckIDs.contains($0.finding.checkID) }) { issue in
+                    issueRow(issue)
+                }
+            }.padding(12)
+            issueSeparator()
+        }
+    }
+    private var selected: RepositoryIssueListItem? { allIssues.first { $0.id == selectedIssueID } }
     private func select(_ issue: RepositoryIssueListItem) { selectedIssueID = issue.id }
     private func isSelected(_ issue: RepositoryIssueListItem) -> Bool { selected?.id == issue.id }
     private var isChecking: Bool {
@@ -108,7 +132,8 @@ struct RepositoryIssuesView: View {
             } content: {
                 DashboardScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        if issues.isEmpty && !isChecking {
+                        synchronizationSection
+                        if allIssues.isEmpty && !isChecking {
                             VStack(spacing: 12) {
                                 Image(systemName: "checkmark.circle").font(.system(size: 25)).foregroundStyle(Theme.green)
                                 Text("No issues from available checks").foregroundStyle(Theme.secondary)
@@ -145,10 +170,10 @@ struct RepositoryIssuesView: View {
                 }
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { if store.isDemo { selectedIssueID = issues.first?.id } }
+        .onAppear { if store.isDemo { selectedIssueID = allIssues.first?.id } }
         .onChange(of: repository?.id) { _, _ in clearSelection() }
         .onChange(of: checkID) { _, _ in clearSelection() }
-        .onChange(of: issues) { _, _ in if selected == nil { selectedIssueID = nil } }
+        .onChange(of: allIssues) { _, _ in if selected == nil { selectedIssueID = nil } }
         .inspector(isPresented: $showsRepositoryChanges) {
             if let repository {
                 RepositoryWorkingTreeSidebar(repository: repository) { showsRepositoryChanges = false }

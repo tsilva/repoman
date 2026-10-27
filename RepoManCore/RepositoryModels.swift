@@ -29,6 +29,17 @@ public struct RepositorySnapshot: Identifiable, Sendable, Equatable {
         return (0..<300).contains(Date().timeIntervalSince(fetchedAt))
     }
 
+    public var synchronizationIsProvisional: Bool { upstream != nil && !hasFreshRemoteComparison }
+    public var synchronizationSummary: String {
+        guard let upstream else { return "\(branch) has no configured upstream. This may be an intentional local branch." }
+        guard let ahead, let behind else { return "\(branch) → \(upstream): upstream comparison is unavailable. Refresh to verify." }
+        if ahead == 0 && behind == 0 {
+            return hasFreshRemoteComparison ? "\(branch) matches \(upstream)." : "Local refs for \(branch) and \(upstream) match; remote freshness is unknown."
+        }
+        let prefix = hasFreshRemoteComparison ? "" : "Provisional local comparison: "
+        return prefix + "\(branch) → \(upstream): \(ahead) ahead, \(behind) behind." + (hasFreshRemoteComparison ? "" : " Refresh before synchronizing.")
+    }
+
     public init(
         url: URL,
         name: String,

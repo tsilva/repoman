@@ -198,6 +198,7 @@ public struct RepositoryCheck: Identifiable, Sendable {
 
 public struct RepositoryIssueCatalog: Sendable {
     /// Git activity is displayed as status, separately from actionable findings.
+    public static let synchronizationCheckIDs: Set<String> = ["git.push", "git.pull", "git.diverged", "git.upstream"]
     public static let activityCheckIDs: Set<String> = ["git.changes", "git.push", "git.pull", "git.diverged"]
     public let checks: [RepositoryCheck]
 

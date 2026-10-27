@@ -222,6 +222,19 @@ final class RepositoryIssuesTests: XCTestCase {
     private func write(_ path: String, _ text: String, in repo: URL) throws {
         try text.write(to: repo.appendingPathComponent(path), atomically: true, encoding: .utf8)
     }
+    func testSynchronizationSummaryNeverTreatsStaleCountsAsFreshAlignment() {
+        var snapshot = RepositorySnapshot(url: root, name: "repo", branch: "main", upstream: "origin/main", remoteURL: "https://github.com/example/project.git", ahead: 0, behind: 0, changes: [], staleBranches: [], worktrees: [], commits: [])
+        XCTAssertTrue(snapshot.synchronizationIsProvisional)
+        XCTAssertTrue(snapshot.synchronizationSummary.contains("freshness is unknown"))
+        snapshot.fetchedAt = Date()
+        XCTAssertFalse(snapshot.synchronizationIsProvisional)
+        XCTAssertEqual(snapshot.synchronizationSummary, "main matches origin/main.")
+        snapshot.fetchError = "Refresh failed"
+        XCTAssertTrue(snapshot.synchronizationIsProvisional)
+        XCTAssertTrue(snapshot.synchronizationSummary.contains("freshness is unknown"))
+        XCTAssertEqual(RepositoryIssueCatalog.synchronizationCheckIDs, ["git.push", "git.pull", "git.diverged", "git.upstream"])
+    }
+
     private func git(_ arguments: [String], at repo: URL) throws { _ = try GitRunner.run(arguments, at: repo) }
     private func text(_ arguments: [String], at repo: URL) throws -> String { try GitRunner.text(arguments, at: repo) }
 }
@@ -243,4 +256,6 @@ private actor InspectionTestGate {
         continuation?.resume()
         continuation = nil
     }
+
+
 }
