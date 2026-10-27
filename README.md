@@ -34,7 +34,7 @@ In Xcode, select the **RepoMan** scheme and run it on your Mac.
 
 ## Use
 
-The RepoMan logo and wordmark sit in the top bar beside the window controls, above the left pane. The sidebar toggle sits above the detail pane; selected-repository Refresh sits alongside Finder, Terminal, editor and diff icons at the top right; search stays at the top of the sidebar.
+The RepoMan logo and wordmark sit in the top bar beside the window controls, above the left pane. Toolbar action icons are gray, brighten on hover when enabled, and use a darker gray when disabled. The sidebar toggle sits above the detail pane; selected-repository Refresh sits alongside Finder, Terminal, editor and diff icons at the top right; search stays at the top of the sidebar.
 
 Click **Choose Folder…** and select the parent folder containing your repositories. Search, filter, or sort to find repositories needing attention. Select a repository to see its flat **Issues** list, ordered by check category and then check. Every finding appears directly, including repeated files or subjects. Select a finding to read its title, full evidence, subject, check ID and category. Available CI and issue links open in your browser. **Copy maintenance task** copies the evidence and a fresh verification command for use in Codex.
 

@@ -31,6 +31,7 @@ enum Theme {
     static let primary = color(0xECECEC)
     static let secondary = color(0xA3A3A3)
     static let subtle = color(0x858585)
+    static let disabledIcon = color(0x606060)
     static let blue = color(0xA3BBD1)
     static let green = color(0x83BD98)
     static let amber = color(0xDEB654)

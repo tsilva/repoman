@@ -181,8 +181,7 @@ struct ContentView: View {
                 .accessibilityIdentifier("open-in-cursor-button")
                 ToolbarActionButton(
                     icon: .diff,
-                    title: showsRepositoryChanges ? "Hide uncommitted changes" : "Show uncommitted changes",
-                    foregroundColor: showsRepositoryChanges ? Theme.primary : Theme.secondary
+                    title: showsRepositoryChanges ? "Hide uncommitted changes" : "Show uncommitted changes"
                 ) {
                     showsRepositoryChanges.toggle()
                 }
@@ -244,8 +243,7 @@ struct ContentView: View {
             ToolbarActionButton(
                 symbol: "arrow.clockwise",
                 title: "Refresh all repositories",
-                isRotating: store.isFetching || store.isScanning,
-                foregroundColor: Theme.primary
+                isRotating: store.isFetching || store.isScanning
             ) {
                 store.refreshAll()
             }
@@ -702,6 +700,7 @@ private struct BranchMenuTrigger: NSViewRepresentable {
 }
 
 private struct ToolbarIconMenu<Content: View>: View {
+    @Environment(\.isEnabled) private var isEnabled
     let symbol: String
     let title: String
     let value: String
@@ -713,9 +712,9 @@ private struct ToolbarIconMenu<Content: View>: View {
         Menu(content: content) {
             Image(systemName: symbol)
                 .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(isActive ? Theme.blue : Theme.secondary)
+                .foregroundStyle(!isEnabled ? Theme.disabledIcon : isHovered ? Theme.primary : isActive ? Theme.blue : Theme.secondary)
                 .frame(width: 26, height: 26)
-                .background(isHovered || isActive ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .background(isEnabled && (isHovered || isActive) ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
@@ -1198,21 +1197,22 @@ enum RepositoryToolbarIcon: Shape {
 }
 
 struct ToolbarActionButton: View {
+    @Environment(\.isEnabled) private var isEnabled
     var symbol: String = ""
     var icon: RepositoryToolbarIcon? = nil
     var asset: String? = nil
     let title: String
     var isRotating = false
     var isLoading = false
-    var foregroundColor: Color = Theme.secondary
     let action: () -> Void
     @State private var isHovered = false
+    private var iconColor: Color { !isEnabled ? Theme.disabledIcon : isHovered ? Theme.primary : Theme.secondary }
 
     var body: some View {
         Button(action: action) {
             Group {
                 if isLoading {
-                    ProgressView().controlSize(.mini)
+                    ProgressView().controlSize(.mini).tint(iconColor)
                 } else if let asset {
                     Image(asset).renderingMode(.template).resizable().scaledToFit()
                         .frame(width: 20, height: 20)
@@ -1230,8 +1230,8 @@ struct ToolbarActionButton: View {
         }
         .buttonStyle(.plain)
         .background { TitleBarControlRegion() }
-        .foregroundStyle(foregroundColor)
-        .background(isHovered ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .foregroundStyle(iconColor)
+        .background(isEnabled && isHovered ? Theme.control : .clear, in: RoundedRectangle(cornerRadius: 6))
         .onHover { isHovered = $0 }
         .accessibilityLabel(title)
         .help(title)

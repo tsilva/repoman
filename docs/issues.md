@@ -1,6 +1,6 @@
 # Checks and issue details
 
-RepoMan inspects local Git repositories and presents current findings. The app has no repair agent, prompt catalog, chat composer, task queue, transcript recovery or automatic issue-fixing execution. Repository maintenance happens in external tools and Codex skills. Selected-repository Refresh live in the top-right window toolbar beside the repository-opening and diff controls; the Issues panel header contains its title.
+RepoMan inspects local Git repositories and presents current findings. The app has no repair agent, prompt catalog, chat composer, task queue, transcript recovery or automatic issue-fixing execution. Repository maintenance happens in external tools and Codex skills. Selected-repository Refresh live in the top-right window toolbar beside the repository-opening and diff controls; the Issues panel header contains its title. Action icons use gray at rest, white on hover when enabled and darker gray when disabled; disabled icons do not highlight on hover.
 
 ## Modules
 
