@@ -51,7 +51,7 @@ enum RepositoryCIChecks {
                     case .missing: break
                     }
                 }
-                if uncertain { throw InspectionError.blocked("Workflow coverage could not be determined. Custom scripts, reusable workflows, and unsupported YAML need review.") }
+                if uncertain { throw InspectionError.blocked("Workflow coverage could not be determined. Conditional execution, custom scripts, reusable workflows, and unsupported YAML need review.") }
                 return [RepositoryFinding(repositoryID: context.snapshot.id, checkID: "ci.coverage",
                     title: "Missing CI coverage",
                     evidence: names.isEmpty ? "No GitHub Actions workflows were found for this code project." :
@@ -114,22 +114,83 @@ enum WorkflowCoverage {
         let jobs = block(lines, at: jobsIndex)
         guard !jobs.isEmpty else { return .unknown }
         if jobs.contains(where: { $0.text.hasPrefix("<<:") || matches($0.text, #":\s*&\w"#) || value($0.text).hasPrefix("*") }) { return .unknown }
-        var customExecution = false
-        for index in jobs.indices {
-            let field = key(jobs[index].text)
-            let text = value(jobs[index].text)
-            if field == "uses" {
-                // Setup and dependency review are not code validation. Reusable/custom actions need review.
-                if matches(text, #"^(actions/(?:checkout|setup-[a-z0-9-]+|cache|upload-artifact|download-artifact|dependency-review-action)@|github/codeql-action/|astral-sh/setup-uv@|docker/setup-|pnpm/action-setup@|ruby/setup-ruby@|dtolnay/rust-toolchain@)"#) { continue }
-                customExecution = true
+        guard let jobIndent = jobs.first?.indent else { return .unknown }
+        let starts = jobs.indices.filter { jobs[$0].indent == jobIndent }
+        let namedJobs = Dictionary(grouping: starts, by: { key(jobs[$0].text) })
+        guard namedJobs.values.allSatisfy({ $0.count == 1 }) else { return .unknown }
+        // A literal false guard disables execution. Expressions we cannot evaluate
+        // stay unknown, including guards inherited through a job's dependencies.
+        func condition(_ body: [Line], indent: Int) -> Result {
+            let guards = body.filter { $0.indent == indent && key($0.text) == "if" }
+            guard guards.count <= 1 else { return .unknown }
+            guard let guardLine = guards.first else { return .covered }
+            var expression = value(guardLine.text).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if expression.hasPrefix("${{"), expression.hasSuffix("}}") {
+                expression = String(expression.dropFirst(3).dropLast(2)).trimmingCharacters(in: .whitespaces)
             }
-            if field == "run" {
-                let command = text.hasPrefix("|") || text.hasPrefix(">") ? block(jobs, at: index).map(\.text).joined(separator: "\n") : text
-                if validationCommand(command) { return .covered }
-                if matches(command, #"(?:\./|bash\s|sh\s|python\s|python3\s|uv run\s|npm run\s|pnpm (?:run\s)?|yarn\s|bun run\s)"#) { customExecution = true }
+            if expression == "false" { return .missing }
+            return expression == "true" ? .covered : .unknown
+        }
+        func jobState(_ index: Int, visited: Set<Int> = []) -> Result {
+            guard !visited.contains(index), visited.count < 100 else { return .unknown }
+            let body = block(jobs, at: index)
+            guard let indent = body.first?.indent else { return .unknown }
+            let state = condition(body, indent: indent)
+            if state == .missing { return .missing }
+            var unknown = state == .unknown
+            for needs in body.indices where body[needs].indent == indent && key(body[needs].text) == "needs" {
+                let text = value(body[needs].text)
+                let names: [String]
+                if text.isEmpty {
+                    names = block(body, at: needs).map { $0.text.replacingOccurrences(of: "- ", with: "") }
+                } else { names = text.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).components(separatedBy: ",") }
+                guard !names.isEmpty else { return .unknown }
+                for raw in names {
+                    let name = raw.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                    guard let dependency = namedJobs[name]?.first else { return .unknown }
+                    let dependencyState = jobState(dependency, visited: visited.union([index]))
+                    // An unknown explicit condition could override GitHub's default
+                    // dependency skipping; do not claim it is definitely disabled.
+                    if dependencyState == .missing { return state == .covered ? .missing : .unknown }
+                    if dependencyState == .unknown { unknown = true }
+                }
+            }
+            return unknown ? .unknown : .covered
+        }
+        var uncertain = false
+        for job in starts {
+            let state = jobState(job)
+            if state == .missing { continue }
+            let body = block(jobs, at: job)
+            guard let fieldIndent = body.first?.indent else { uncertain = true; continue }
+            if body.contains(where: { $0.indent == fieldIndent && key($0.text) == "uses" }) { uncertain = true }
+            for steps in body.indices where body[steps].indent == fieldIndent && key(body[steps].text) == "steps" {
+                let stepLines = block(body, at: steps)
+                guard let stepIndent = stepLines.first?.indent else { uncertain = true; continue }
+                let stepStarts = stepLines.indices.filter { stepLines[$0].indent == stepIndent && stepLines[$0].text.hasPrefix("- ") }
+                for (offset, start) in stepStarts.enumerated() {
+                    let end = offset + 1 < stepStarts.count ? stepStarts[offset + 1] : stepLines.count
+                    var fields = Array(stepLines[start..<end])
+                    fields[0] = Line(indent: stepIndent + 2, text: String(fields[0].text.dropFirst(2)))
+                    let stepState = condition(fields, indent: stepIndent + 2)
+                    if stepState == .missing { continue }
+                    for index in fields.indices where fields[index].indent == stepIndent + 2 {
+                        let field = key(fields[index].text), text = value(fields[index].text)
+                        if field == "uses" {
+                            if !matches(text, #"^(actions/(?:checkout|setup-[a-z0-9-]+|cache|upload-artifact|download-artifact|dependency-review-action)@|github/codeql-action/|astral-sh/setup-uv@|docker/setup-|pnpm/action-setup@|ruby/setup-ruby@|dtolnay/rust-toolchain@)"#) { uncertain = true }
+                        }
+                        if field == "run" {
+                            let command = text.hasPrefix("|") || text.hasPrefix(">") ? block(fields, at: index).map(\.text).joined(separator: "\n") : text
+                            if validationCommand(command) {
+                                if state == .covered && stepState == .covered { return .covered }
+                                uncertain = true
+                            } else if matches(command, #"(?:\./|bash\s|sh\s|python\s|python3\s|uv run\s|npm run\s|pnpm (?:run\s)?|yarn\s|bun run\s)"#) { uncertain = true }
+                        }
+                    }
+                }
             }
         }
-        return customExecution ? .unknown : .missing
+        return uncertain ? .unknown : .missing
     }
     private static func block(_ lines: [Line], at index: Int) -> [Line] {
         Array(lines.dropFirst(index + 1).prefix { $0.indent > lines[index].indent })

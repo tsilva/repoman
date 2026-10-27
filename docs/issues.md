@@ -59,3 +59,5 @@ Exit 0 means the selected checks completed without actionable findings; informat
 Copy maintenance task includes the finding, original check completion time (or explicitly unknown time), and a shell-quoted verification command using the bundled executable. It only copies text. Skill invocation and any repair remain user-directed.
 
 The existing `dependabot-cleanup` skill optionally consumes dependency reports when a local checkout and CLI are already available. Its existing package-age, compatibility, exact-revision CI, merge and publication requirements remain authoritative. There is no shared daemon, imported run history or general skill executor.
+
+Service access metadata and local privacy checks are local-only and never inject credentials. The `github.dependabotAlerts` check uses the existing GitHub CLI login under the remote-access gate; known alerts survive incomplete pagination. Its results describe the published dependency graph rather than the mutable checkout. See [additional checks](additional-checks.md) for schema recognition and inventory bounds.

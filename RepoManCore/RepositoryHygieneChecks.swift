@@ -4,11 +4,11 @@ enum RepositoryHygieneChecks {
     static func checks() -> [RepositoryCheck] {
         [
             CheckSupport.check("files.generatedTracked", "Generated files tracked", .setup, "trash.slash", inspect: { context, _ in
-                let directories = ["node_modules", "__pycache__", ".venv", "DerivedData", ".DS_Store", ".pytest_cache", ".mypy_cache"]
+                let directories = ["node_modules", "__pycache__", ".venv", "DerivedData", ".DS_Store", ".pytest_cache", ".mypy_cache", ".build", ".next", ".ruff_cache"]
                 let patterns = directories.flatMap { [":(glob)**/" + $0, ":(glob)**/" + $0 + "/**"] } + [":(glob)**/*.pyc", ":(glob)**/*.pyo"]
                 return try context.trackedPaths(matching: patterns).filter { path in
                     let components = path.split(separator: "/").map(String.init)
-                    return components.contains { ["node_modules", "__pycache__", ".venv", "DerivedData", ".DS_Store", ".pytest_cache", ".mypy_cache"].contains($0) } || path.hasSuffix(".pyc") || path.hasSuffix(".pyo")
+                    return components.contains { directories.contains($0) } || path.hasSuffix(".pyc") || path.hasSuffix(".pyo")
                 }.map { path in
                     CheckSupport.finding(context, "files.generatedTracked", path, "Generated files tracked", "Git tracks \(path). Ignore rules do not remove files already in the index; review whether this is intentional.", .setup, "trash.slash")
                 }

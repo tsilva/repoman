@@ -287,6 +287,7 @@ public struct RepositoryIssueCatalog: Sendable {
         + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
         + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
+        + RepositoryAccessChecks.checks() + RepositoryDependabotChecks.checks()
 
 
     public static func isReadme(_ filename: String) -> Bool {
