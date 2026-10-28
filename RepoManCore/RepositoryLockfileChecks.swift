@@ -2,41 +2,49 @@ import Foundation
 
 enum RepositoryLockfileChecks {
     static func checks() -> [RepositoryCheck] {
-        [CheckSupport.check("dependencies.lockfileDrift", "Manifest and lockfile disagree", .setup, "lock.trianglebadge.exclamationmark", inspect: { context, _ in
+        [RepositoryCheck(id: "dependencies.lockfileDrift", title: "Manifest and lockfile disagree", category: .setup, symbol: "lock.trianglebadge.exclamationmark", evaluate: { context in
+            let policy = try RepositoryCheckPolicy.load(context)
             var findings: [RepositoryFinding] = []
+            var unknown: [String] = []
             for manifest in try CheckSupport.applicableManifests(context, names: ["package.json", "pyproject.toml"]) {
-                let prefixes = try RepositoryDependencyChecks.lockPrefixes(context, manifest)
-                let js = manifest.hasSuffix("package.json")
-                let manager = js ? try RepositoryDependencyChecks.manager(context, manifest) : "uv"
-                let names = js ? RepositoryDependencyChecks.lockNames(manager) : ["uv.lock"]
-                var candidates: [String] = []
-                for prefix in prefixes { for name in names where try context.exists(prefix + name) { candidates.append(prefix + name) } }
-                // The separate lockfile detector handles absence and tracking.
-                guard let lock = candidates.first else { throw InspectionError.blocked("No lockfile is available to verify manifest synchronization: " + manifest) }
-                let directory = (manifest as NSString).deletingLastPathComponent
-                let lockDirectory = (lock as NSString).deletingLastPathComponent
-                let relative = lockDirectory.isEmpty ? directory : String(directory.dropFirst(lockDirectory.count + 1))
-                let reasons: [String]
-                if js {
-                    let expected = try json(context, manifest)
-                    switch manager {
-                    case "npm": reasons = try npm(expected, lock: json(context, lock), directory: relative)
-                    case "pnpm":
-                        let configuration = try pnpmConfiguration(context, prefixes: prefixes, lockDirectory: lockDirectory)
-                        reasons = try pnpm(expected, lock: context.readText(lock), directory: relative,
-                                           overrides: resolvedPNPMOverrides(configuration.overrides, root: configuration.root))
-                    case "bun":
-                        guard lock.hasSuffix("bun.lock") else { throw InspectionError.blocked("Binary bun.lockb cannot be inspected statically; use a text bun.lock for manifest synchronization checks.") }
-                        reasons = try bun(expected, source: context.readText(lock), directory: relative)
-                    default: throw InspectionError.blocked("Static lockfile drift inspection supports npm v2/v3, pnpm v9, Bun text lockfiles and simple uv v1 projects; this manager needs manual review.")
+                do {
+                    let prefixes = try RepositoryDependencyChecks.lockPrefixes(context, manifest)
+                    let js = manifest.hasSuffix("package.json")
+                    let manager = js ? try RepositoryDependencyChecks.manager(context, manifest) : "uv"
+                    let names = js ? RepositoryDependencyChecks.lockNames(manager) : ["uv.lock"]
+                    var candidates: [String] = []
+                    for prefix in prefixes { for name in names where try context.exists(prefix + name) { candidates.append(prefix + name) } }
+                    // The separate lockfile detector handles absence and tracking.
+                    guard let lock = candidates.first else { throw InspectionError.blocked("No lockfile is available to verify manifest synchronization: " + manifest) }
+                    let directory = (manifest as NSString).deletingLastPathComponent
+                    let lockDirectory = (lock as NSString).deletingLastPathComponent
+                    let relative = lockDirectory.isEmpty ? directory : String(directory.dropFirst(lockDirectory.count + 1))
+                    let reasons: [String]
+                    if js {
+                        let expected = try json(context, manifest)
+                        switch manager {
+                        case "npm": reasons = try npm(expected, lock: json(context, lock), directory: relative)
+                        case "pnpm":
+                            let configuration = try pnpmConfiguration(context, prefixes: prefixes, lockDirectory: lockDirectory)
+                            let comparison = try pnpm(expected, lock: context.readText(lock), directory: relative,
+                                               overrides: resolvedPNPMOverrides(configuration.overrides, root: configuration.root),
+                                               supportsQualifiedOverrides: CheckSupport.matches(configuration.root["packageManager"] as? String ?? "", #"^pnpm@10\.[0-9]+\.[0-9]+(?:\+[^\s]+)?$"#))
+                            reasons = comparison.reasons
+                            unknown += comparison.unknown.map { manifest + ": " + $0 }
+                        case "bun":
+                            guard lock.hasSuffix("bun.lock") else { throw InspectionError.blocked("Binary bun.lockb cannot be inspected statically; use a text bun.lock for manifest synchronization checks.") }
+                            reasons = try bun(expected, source: context.readText(lock), directory: relative)
+                        default: throw InspectionError.blocked("Static lockfile drift inspection supports npm v2/v3, pnpm v9, Bun text lockfiles and simple uv v1 projects; this manager needs manual review.")
+                        }
+                    } else { reasons = try uv(project: context.readText(manifest), lock: context.readText(lock), directory: relative, manifest: manifest) }
+                    if !reasons.isEmpty {
+                        findings.append(CheckSupport.finding(context, "dependencies.lockfileDrift", manifest, "Manifest and lockfile disagree",
+                            "\(manifest) differs from \(lock): " + reasons.joined(separator: "; ") + ". No resolver or installer was run.", .setup, "lock.trianglebadge.exclamationmark"))
                     }
-                } else { reasons = try uv(project: context.readText(manifest), lock: context.readText(lock), directory: relative, manifest: manifest) }
-                if !reasons.isEmpty {
-                    findings.append(CheckSupport.finding(context, "dependencies.lockfileDrift", manifest, "Manifest and lockfile disagree",
-                        "\(manifest) differs from \(lock): " + reasons.joined(separator: "; ") + ". No resolver or installer was run.", .setup, "lock.trianglebadge.exclamationmark"))
-                }
+                } catch { unknown.append(manifest + ": " + error.localizedDescription) }
             }
-            return findings
+            let applicable = context.applyingExceptions(findings, policy: policy)
+            return unknown.isEmpty ? .findings(applicable) : .partial(applicable, unknown.prefix(10).joined(separator: "\n"))
         })]
     }
     static func json(_ context: RepositoryInspectionContext, _ path: String) throws -> [String: Any] {
@@ -140,15 +148,15 @@ enum RepositoryLockfileChecks {
             return value
         }
     }
-    private static func pnpm(_ expected: [String: Any], lock: String, directory: String, overrides: [String: String]) throws -> [String] {
+    private static func pnpm(_ expected: [String: Any], lock: String, directory: String, overrides: [String: String], supportsQualifiedOverrides: Bool) throws -> (reasons: [String], unknown: [String]) {
         let values = try InspectionConfig.yaml(lock).values
         guard InspectionConfig.scalar(values["lockfileVersion"]) == "9.0" else { throw InspectionError.blocked("Unsupported pnpm lockfile schema.") }
-        guard try pnpmOverrideMap(values) == overrides else { return ["pnpm override declarations differ from lockfile metadata"] }
+        guard try pnpmOverrideMap(values) == overrides else { return (["pnpm override declarations differ from lockfile metadata"], []) }
         guard try dependencies(expected, "peerDependencies").isEmpty else { throw InspectionError.blocked("pnpm peer auto-install behavior needs resolver review.") }
         let prefix = "importers." + (directory.isEmpty ? "." : directory)
-        guard let importer = values[prefix] else { return ["workspace importer is missing"] }
+        guard let importer = values[prefix] else { return (["workspace importer is missing"], []) }
         guard importer.isEmpty || importer == "{}" else { throw InspectionError.blocked("Inline pnpm importers need manual review.") }
-        var result: [String] = []
+        var result: [String] = [], unknown: [String] = []
         for type in dependencyTypes.dropLast() {
             var wanted = try dependencies(expected, type)
             guard !wanted.values.contains(where: { $0.hasPrefix("catalog:") }) else { throw InspectionError.blocked("pnpm catalogs need resolver review.") }
@@ -162,20 +170,38 @@ enum RepositoryLockfileChecks {
             for key in values.keys where key.hasPrefix(start) && !key.dropFirst(start.count).contains(".") {
                 guard actual[String(key.dropFirst(start.count))] != nil else { throw InspectionError.blocked("pnpm dependency metadata lacks a specifier.") }
             }
+            var uncertain = Set<String>()
             for name in wanted.keys {
-                if let override = overrides[name] {
-                    guard override != "-" else { throw InspectionError.blocked("Removing direct dependencies through pnpm overrides needs resolver review.") }
-                    wanted[name] = override
-                }
-                if wanted[name] != actual[name], overrides.keys.contains(where: {
-                    $0 != name && ($0.hasPrefix(name + "@") || $0.hasSuffix(">" + name) || $0.contains(">" + name + "@"))
-                }) {
-                    throw InspectionError.blocked("A version-qualified or parent-qualified pnpm override needs resolver review.")
+                do {
+                    let declared = wanted[name]!
+                    var applicable = Set(overrides[name].map { [$0] } ?? [])
+                    for (selector, target) in overrides where selector.hasPrefix(name + "@") {
+                        guard supportsQualifiedOverrides,
+                              let range = NPMVersionRange.parse(String(selector.dropFirst(name.count + 1))),
+                              let requirement = NPMVersionRange.parse(declared) else {
+                            throw InspectionError.blocked("This pnpm version-qualified override needs resolver review; static applicability requires pnpm 10 and supported stable numeric ranges.")
+                        }
+                        if range.overlaps(requirement) { applicable.insert(target) }
+                    }
+                    guard applicable.count <= 1 else { throw InspectionError.blocked("Competing applicable pnpm overrides need resolver review.") }
+                    if let override = applicable.first {
+                        guard override != "-" else { throw InspectionError.blocked("Removing direct dependencies through pnpm overrides needs resolver review.") }
+                        wanted[name] = override
+                    }
+                    if overrides.keys.contains(where: {
+                        $0.hasSuffix(">" + name) || $0.contains(">" + name + "@")
+                    }) {
+                        throw InspectionError.blocked("A parent-qualified pnpm override needs resolver review.")
+                    }
+                } catch {
+                    uncertain.insert(name)
+                    unknown.append(type + "." + name + ": " + error.localizedDescription)
                 }
             }
+            for name in uncertain { wanted.removeValue(forKey: name); actual.removeValue(forKey: name) }
             result += differences(wanted, actual, label: type)
         }
-        return result
+        return (result, unknown)
     }
     private static func uv(project: String, lock: String, directory: String, manifest: String) throws -> [String] {
         let projectValues = try InspectionConfig.toml(project, allSections: true).values
@@ -559,4 +585,50 @@ enum RepositoryLockfileChecks {
     }
     private static func normalizeName(_ name: String) -> String { name.lowercased().replacingOccurrences(of: #"[-_.]+"#, with: "-", options: .regularExpression) }
     private static func normalizeSpecifier(_ spec: String) -> String { spec.replacingOccurrences(of: " ", with: "").split(separator: ",").sorted().joined(separator: ",") }
+}
+
+/// Bounded stable numeric npm ranges, for pnpm override applicability only.
+/// OR, hyphen ranges, prereleases, tags, aliases and exotic sources stay unknown.
+private struct NPMVersionRange {
+    var lower = 0
+    var upper = Int.max
+    func overlaps(_ other: Self) -> Bool { max(lower, other.lower) < min(upper, other.upper) }
+
+    static func parse(_ source: String) -> Self? {
+        let text = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ["*", "x", "X"].contains(text) { return Self() }
+        let term = #"(>=|<=|>|<|=|\^|~)?\s*v?([0-9]+)(?:\.([0-9]+|[xX*]))?(?:\.([0-9]+|[xX*]))?"#
+        guard CheckSupport.matches(text, "^" + term + "(?:\\s+" + term + ")*$") else { return nil }
+        let matches = CheckSupport.captures(text, term)
+        guard !matches.isEmpty, matches.count <= 16 else { return nil }
+        var residue = text, result = Self()
+        for match in matches {
+            residue = residue.replacingOccurrences(of: match[0], with: "")
+            for part in match[2...4] where !part.isEmpty && Int(part) != nil {
+                guard part == "0" || !part.hasPrefix("0"), let number = Int(part), number < 1000 else { return nil }
+            }
+            guard let major = Int(match[2]), major < 1000 else { return nil }
+            let minor = Int(match[3]), patch = Int(match[4])
+            guard minor != nil || patch == nil else { return nil }
+            let value = major * 1_000_000 + (minor ?? 0) * 1000 + (patch ?? 0)
+            let partialUpper = minor == nil ? (major + 1) * 1_000_000 : patch == nil ? major * 1_000_000 + (minor! + 1) * 1000 : value + 1
+            switch match[1] {
+            case ">=": result.lower = max(result.lower, value)
+            case ">": result.lower = max(result.lower, partialUpper)
+            case "<": result.upper = min(result.upper, value)
+            case "<=": result.upper = min(result.upper, partialUpper)
+            case "^":
+                result.lower = max(result.lower, value)
+                let upper = major > 0 || minor == nil ? (major + 1) * 1_000_000
+                    : minor! > 0 || patch == nil ? (minor! + 1) * 1000 : value + 1
+                result.upper = min(result.upper, upper)
+            case "~":
+                result.lower = max(result.lower, value)
+                result.upper = min(result.upper, minor == nil ? (major + 1) * 1_000_000 : major * 1_000_000 + (minor! + 1) * 1000)
+            default: result.lower = max(result.lower, value); result.upper = min(result.upper, partialUpper)
+            }
+        }
+        guard residue.allSatisfy(\.isWhitespace), result.lower < result.upper else { return nil }
+        return result
+    }
 }

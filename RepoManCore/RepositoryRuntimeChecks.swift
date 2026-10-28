@@ -67,7 +67,9 @@ enum RepositoryRuntimeChecks {
                                     try add(path, InspectionConfig.scalar(values["project.requires-python"]), ci: true)
                                 } else { try add(path, contents, ci: true) }
                             }
-                            try add(path + " " + key, literalWorkflowRuntime(step.inputs[key], source: source), ci: true)
+                            for value in try literalWorkflowRuntimes(step.inputs[key], source: source, job: step.job) {
+                                try add(path + " " + key, value, ci: true)
+                            }
                         }
                     }
                 }
@@ -93,8 +95,50 @@ enum RepositoryRuntimeChecks {
             return findings
         })]
     }
+    /// Resolve a literal matrix axis in this job only. Includes, excludes,
+    /// expressions and unsupported YAML stay unknown rather than guessed.
+    private static func literalWorkflowRuntimes(_ value: String?, source: String, job: String) throws -> [String] {
+        guard let value else { return [] }
+        guard let match = CheckSupport.captures(value, #"^\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}$"#).first else {
+            return try literalWorkflowRuntime(value, source: source).map { [$0] } ?? []
+        }
+        let all = try WorkflowInspection.lines(source)
+        guard let jobsIndex = all.firstIndex(where: { $0.indent == 0 && $0.field == "jobs" }) else { return [value] }
+        let jobs = WorkflowInspection.block(all, jobsIndex)
+        guard let jobIndent = jobs.first?.indent,
+              jobs.filter({ $0.indent == jobIndent && $0.field == job }).count == 1,
+              let index = jobs.firstIndex(where: { $0.indent == jobIndent && $0.field == job }) else { return [value] }
+        let fields = WorkflowInspection.block(jobs, index)
+        guard let indent = fields.first?.indent,
+              let strategy = fields.firstIndex(where: { $0.indent == indent && $0.field == "strategy" }), fields[strategy].value.isEmpty else { return [value] }
+        let settings = WorkflowInspection.block(fields, strategy)
+        guard let matrix = settings.firstIndex(where: { $0.indent == indent + 2 && $0.field == "matrix" }), settings[matrix].value.isEmpty else { return [value] }
+        let axes = WorkflowInspection.block(settings, matrix)
+        let starts = axes.indices.filter { axes[$0].indent == indent + 4 }
+        guard !starts.isEmpty, starts.count <= 16 else { return [value] }
+        var values: [String: [String]] = [:]
+        for start in starts {
+            let field = axes[start]
+            guard !["include", "exclude"].contains(field.field), values[field.field] == nil else { return [value] }
+            let raw: String
+            if field.value.isEmpty {
+                let items = WorkflowInspection.block(axes, start)
+                guard !items.isEmpty, items.allSatisfy({ $0.indent == indent + 6 && $0.text.hasPrefix("- ") }) else { return [value] }
+                raw = "[" + items.map { String($0.text.dropFirst(2)) }.joined(separator: ",") + "]"
+            } else { raw = field.value }
+            let strings = CheckSupport.captures(raw, #"(["'])([^"'\\\r\n]+)\1"#)
+            let residue = strings.reduce(raw) { $0.replacingOccurrences(of: $1[0], with: "") }
+            let item = #"(?:"[^"\\\r\n]+"|'[^'\\\r\n]+')"#
+            let array = #"^\[\s*"# + item + #"(?:\s*,\s*"# + item + #")*\s*,?\s*\]$"#
+            // Quoted strings avoid YAML numeric coercion (3.10 becoming 3.1).
+            guard CheckSupport.matches(raw, array), !strings.isEmpty, strings.count <= 32,
+                  residue.allSatisfy({ "[], \t".contains($0) }), !strings.contains(where: { $0[2].contains("${{") }) else { return [value] }
+            values[field.field] = strings.map { $0[2] }
+        }
+        return values[match[1]] ?? [value]
+    }
     /// Resolve only an unambiguous literal workflow-level env value. Overrides,
-    /// chained expressions, matrices and aliases remain outside static coverage.
+    /// chained expressions and aliases remain outside static coverage.
     private static func literalWorkflowRuntime(_ value: String?, source: String) throws -> String? {
         guard let value, let match = CheckSupport.captures(value,
             #"^\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$"#).first else { return value }

@@ -67,9 +67,9 @@ final class RepositoryPNPMOverrideTests: XCTestCase {
         XCTAssertEqual(report.status(for: "dependencies.lockfileDrift"), .findings)
     }
 
-    func testQualifiedOverrideWithChangedSpecifierStaysUnknown() async throws {
+    func testParentQualifiedOverrideWithChangedSpecifierStaysUnknown() async throws {
         try write("package.json", #"{"packageManager":"pnpm@10.17.1","dependencies":{"sharp":"^0.35.3"}}"#)
-        for selector in ["sharp@^0.35.3", "sharp@>=0.35.3", "parent@1>sharp", "parent@>=1>sharp@>=0.35.3"] {
+        for selector in ["parent@1>sharp", "parent@>=1>sharp@>=0.35.3"] {
             try write("pnpm-workspace.yaml", "overrides:\n  '\(selector)': 0.35.5\n")
             try write("pnpm-lock.yaml", lock().replacingOccurrences(of: "  sharp: 0.35.5", with: "  '\(selector)': 0.35.5"))
             let report = try await inspect()

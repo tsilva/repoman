@@ -339,7 +339,9 @@ enum WorkflowCoverage {
         return text.components(separatedBy: .newlines).contains { raw in
             let line = raw.components(separatedBy: " #")[0].trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
             guard !line.hasPrefix("#"), !matches(line, #"^(echo|printf)\b"#), !matches(line, #"^xcodebuild\s+-(version|list|showBuildSettings|resolvePackageDependencies)\b"#) else { return false }
-            let prefix = #"(?:^|&&\s*|;\s*|\buv run(?:\s+--(?:group|extra|python)\s+\S+|\s+--[\w-]+(?:=\S+)?)*\s+|\bpoetry run\s+|\b(?:pnpm exec|npm exec|yarn exec|npx)\s+|\b(?:bun x|bunx)(?:\s+--no-install)?\s+|\btimeout\s+\d+\s+)"#
+            // Shell operators or escapes inside config filenames must not look like commands.
+            guard !matches(raw, #"(?:^|\s)--config-file(?:=|\s+)(?:"[^"\r\n]*[\\;&|][^"\r\n]*"|'[^'\r\n]*[\\;&|][^'\r\n]*')"#) else { return false }
+            let prefix = #"(?:^|&&\s*|;\s*|\buv run(?:\s+--(?:group|extra|python)\s+\S+|\s+--config-file(?:=|\s+)(?:'[^']*'|"[^"]*"|\S+)|\s+(?!--config-file(?:[=\s]|$))--[\w-]+(?:=\S+)?)*\s+|\bpoetry run\s+|\b(?:pnpm exec|npm exec|yarn exec|npx)\s+|\b(?:bun x|bunx)(?:\s+--no-install)?\s+|\btimeout\s+\d+\s+)"#
             return patterns.contains { matches(line, prefix + $0) }
         }
     }
