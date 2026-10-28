@@ -87,10 +87,7 @@ enum RepositoryProjectReferenceChecks {
                         if let prefix = try? checkoutPath(step.inputs["path"] ?? ".") {
                             let remote = GitHubCI.repository(context.snapshot.remoteURL)
                             let expected = remote.map { ($0.owner + "/" + $0.name).lowercased() }
-                            let repository = step.inputs["repository"]
-                            let same = repository == nil || repository == "${{ github.repository }}" || (expected != nil && repository?.lowercased() == expected)
-                            let ref = step.inputs["ref"]
-                            layouts[prefix] = same && (ref == nil || ref == "" || ref == "${{ github.sha }}") && step.inputs["sparse-checkout"] == nil && !step.conditional
+                            layouts[prefix] = WorkflowInspection.isCurrentRepositoryCheckout(step, repository: expected)
                         } else { dynamicLayout = true }
                     }
                     if let reference = step.uses, reference.hasPrefix("./"), !reference.hasSuffix(".yml"), !reference.hasSuffix(".yaml"), let local = try resolve(reference) {

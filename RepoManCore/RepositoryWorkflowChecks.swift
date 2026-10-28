@@ -59,6 +59,15 @@ enum WorkflowInspection {
         let uses: String?
         let inputs: [String: String]
         let conditional: Bool
+        var shell: String? = nil
+    }
+    static func isCurrentRepositoryCheckout(_ step: Step, repository: String?) -> Bool {
+        let declared = step.inputs["repository"]
+        let same = declared == nil || declared == "${{ github.repository }}" ||
+            (repository != nil && declared?.lowercased() == repository?.lowercased())
+        let ref = step.inputs["ref"]
+        return same && (ref == nil || ref == "" || ref == "${{ github.sha }}") &&
+            step.inputs["sparse-checkout"] == nil && !step.conditional
     }
     static func lines(_ source: String) throws -> [Line] {
         var lines: [Line] = [], scalarIndent: Int?
@@ -173,7 +182,8 @@ enum WorkflowInspection {
                 }
                 result.append(Step(job: jobs[index].field, label: label, commands: commands, workingDirectory: try workingDirectory(properties) ?? jobDirectory,
                                    toleratesFailure: failure, uses: uses, inputs: inputs,
-                                   conditional: job.contains { $0.indent == fieldIndent && $0.field == "if" } || properties.contains { $0.field == "if" }))
+                                   conditional: job.contains { $0.indent == fieldIndent && $0.field == "if" } || properties.contains { $0.field == "if" },
+                                   shell: InspectionConfig.scalar(properties.first { $0.field == "shell" }?.value ?? defaults.first { $0.field == "shell" }?.value ?? global.first { $0.field == "shell" }?.value)))
             }
         }
         return result

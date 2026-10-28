@@ -83,6 +83,10 @@ enum RepositoryCIChecks {
                 }
                 let workflows = try CheckSupport.workflows(context)
                 var findings: [RepositoryFinding] = [], uncertain: [String] = []
+                var scriptSources: [String: WorkflowCoverage.Result] = [:]
+                let scriptSteps = Dictionary(uniqueKeysWithValues: workflows.map { path, _ in
+                    (path, (try? PythonUnittestInspection.candidates(context, workflow: path)) ?? [:])
+                })
                 let targets = components.isEmpty ? [CoverageComponent(path: ".", ecosystem: "generic", requires: ["any"])] : components
                 for component in targets {
                     var missing: [String] = []
@@ -90,7 +94,17 @@ enum RepositoryCIChecks {
                         var covered = false, unknown = false
                         for (path, _) in workflows {
                             do {
-                                switch WorkflowCoverage.analyze(try context.workflowLines(path), componentPath: component.path, kind: kind, ecosystem: component.ecosystem) {
+                                switch WorkflowCoverage.analyze(try context.workflowLines(path), componentPath: component.path, kind: kind, ecosystem: component.ecosystem, scriptValidation: { job, step, command in
+                                    guard ["python", "generic"].contains(component.ecosystem),
+                                          let candidate = scriptSteps[path]?[.init(job: job, number: step)],
+                                          PythonUnittestInspection.literalScript(command) == candidate.argument else { return .missing }
+                                    guard let sourcePath = candidate.path else { return .unknown }
+                                    if let cached = scriptSources[sourcePath] { return cached }
+                                    guard scriptSources.count < 32 else { return .unknown }
+                                    let result = PythonUnittestInspection.validate(context, path: sourcePath)
+                                    scriptSources[sourcePath] = result
+                                    return result
+                                }) {
                                 case .covered: covered = true
                                 case .unknown: unknown = true
                                 case .missing: break
@@ -153,7 +167,8 @@ enum WorkflowCoverage {
         guard let parsed = try? WorkflowInspection.lines(source) else { return .unknown }
         return analyze(parsed)
     }
-    static func analyze(_ parsed: [WorkflowInspection.Line], componentPath: String? = nil, kind: String? = nil, ecosystem: String? = nil) -> Result {
+    static func analyze(_ parsed: [WorkflowInspection.Line], componentPath: String? = nil, kind: String? = nil, ecosystem: String? = nil,
+                        scriptValidation: ((String, Int, String) -> Result)? = nil) -> Result {
         let lines = parsed.map { Line(indent: $0.indent, text: $0.text) }
         guard let onIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "on" }),
               let jobsIndex = lines.firstIndex(where: { $0.indent == 0 && key($0.text) == "jobs" }) else { return .unknown }
@@ -254,9 +269,10 @@ enum WorkflowCoverage {
                         }
                         if field == "run" {
                             let command = text.hasPrefix("|") || text.hasPrefix(">") ? block(fields, at: index).map(\.text).joined(separator: "\n") : text
-                            if validationCommand(command) {
+                            let script = scriptValidation?(key(jobs[job].text), offset, command) ?? .missing
+                            if validationCommand(command) || script == .covered {
                                 if let componentPath {
-                                    guard languageMatches(command, ecosystem ?? "generic") else { continue }
+                                    guard script == .covered || languageMatches(command, ecosystem ?? "generic") else { continue }
                                     if matches(command, #"(?:^|[;&\n])\s*cd\s"#) { uncertain = true; continue }
                                     func defaultsDirectory(_ scope: [Line], indent: Int) -> String? {
                                         guard let defaults = scope.indices.first(where: { scope[$0].indent == indent && key(scope[$0].text) == "defaults" }) else { return nil }
@@ -272,15 +288,15 @@ enum WorkflowCoverage {
                                         ?? defaultsDirectory(Array(lines.prefix(jobsIndex)), indent: 0) ?? "."
                                     guard let directory = normalizedDirectory(declared), let expected = normalizedDirectory(componentPath) else { uncertain = true; continue }
                                     guard directory == expected else { continue }
-                                    guard languageMatches(command, ecosystem ?? "generic") else { continue }
-                                    if let kind, kind != "any", !validationKinds(command).contains(kind) {
+                                    let kinds: Set<String> = script == .covered ? ["test"] : validationKinds(command)
+                                    if let kind, kind != "any", !kinds.contains(kind) {
                                         if matches(command, #"\b(check|validate)\b"#) { uncertain = true }
                                         continue
                                     }
                                 }
                                 if state == .covered && stepState == .covered { return .covered }
                                 uncertain = true
-                            } else if matches(command, #"(?:\./|bash\s|sh\s|python\s|python3\s|uv run\s|npm run\s|pnpm (?:run\s)?|yarn\s|bun run\s)"#) { uncertain = true }
+                            } else if script == .unknown || matches(command, #"(?:\./|bash\s|sh\s|python\s|python3\s|uv run\s|npm run\s|pnpm (?:run\s)?|yarn\s|bun run\s)"#) { uncertain = true }
                         }
                     }
                 }
@@ -299,7 +315,7 @@ enum WorkflowCoverage {
         guard let colon = text.firstIndex(of: ":") else { return "" }
         return String(text[text.index(after: colon)...]).components(separatedBy: " #")[0].trimmingCharacters(in: .whitespaces)
     }
-    private static func normalizedDirectory(_ source: String) -> String? {
+    static func normalizedDirectory(_ source: String) -> String? {
         let raw = InspectionConfig.scalar(source) ?? source
         guard !raw.isEmpty, !raw.hasPrefix("/"), !raw.contains(where: { "$~{}*?".contains($0) }) else { return nil }
         var parts: [String] = []
@@ -348,4 +364,163 @@ enum WorkflowCoverage {
     private static func matches(_ text: String, _ pattern: String) -> Bool {
         text.range(of: pattern, options: .regularExpression) != nil
     }
+}
+
+/// Bounded metadata inspection only. Neither Python source nor workflow commands are executed.
+enum PythonUnittestInspection {
+    struct StepKey: Hashable { let job: String; let number: Int }
+    struct Candidate { let argument: String; let path: String? }
+
+    static func literalScript(_ command: String) -> String? {
+        let expression = #"^\s*python(?:3(?:\.[0-9]+)?)?\s+(?:'([^'\n]+\.py)'|\"([^\"\n]+\.py)\"|([^\s]+\.py))\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: expression),
+              let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command)) else { return nil }
+        for index in 1...3 {
+            if let range = Range(match.range(at: index), in: command) {
+                let path = String(command[range])
+                guard !path.hasPrefix("-"), !path.contains(where: { "$~;&|<>*?()[]#\\`\"'".contains($0) }),
+                      WorkflowCoverage.normalizedDirectory(path) != nil else { return nil }
+                return path
+            }
+        }
+        return nil
+    }
+
+    static func candidates(_ context: RepositoryInspectionContext, workflow: String) throws -> [StepKey: Candidate] {
+        let remote = GitHubCI.repository(context.snapshot.remoteURL)
+        let repository = remote.map { $0.owner + "/" + $0.name }
+        var counters: [String: Int] = [:], checkouts: [String: Bool] = [:], result: [StepKey: Candidate] = [:]
+        for step in try context.workflowSteps(workflow, includeInputs: true, inputKeys: [], checkoutInputKeys: ["repository", "ref", "path", "sparse-checkout"]) {
+            let number = counters[step.job, default: 0]
+            counters[step.job] = number + 1
+            if step.uses?.lowercased().hasPrefix("actions/checkout@") == true {
+                checkouts[step.job] = WorkflowInspection.isCurrentRepositoryCheckout(step, repository: repository) &&
+                    WorkflowCoverage.normalizedDirectory(step.inputs["path"] ?? ".") == "."
+            }
+            guard step.commands.count == 1, let argument = literalScript(step.commands[0]) else { continue }
+            let path = checkouts[step.job] == true && !step.toleratesFailure &&
+                (step.shell == nil || ["bash", "sh"].contains(step.shell!))
+                ? WorkflowCoverage.normalizedDirectory((step.workingDirectory ?? ".") + "/" + argument) : nil
+            result[StepKey(job: step.job, number: number)] = Candidate(argument: argument, path: path)
+        }
+        return result
+    }
+
+    static func validate(_ context: RepositoryInspectionContext, path: String, interpreter: String = "/usr/bin/python3") -> WorkflowCoverage.Result {
+        do {
+            guard try context.isTracked(path), let size = try context.regularFileSize(path), size <= 262_144 else { return .unknown }
+            let source = try context.readText(path)
+            guard let imports = importsIfUnittest(source, interpreter: interpreter) else { return .unknown }
+            let directory = (path as NSString).deletingLastPathComponent
+            // Script-directory and workspace imports can shadow the modules established by the parser.
+            for root in Set(["", directory]) {
+                for name in imports {
+                    let prefix = root.isEmpty ? name : root + "/" + name
+                    if try context.exists(prefix + ".py") || context.exists(prefix) { return .unknown }
+                }
+            }
+            return .covered
+        } catch { return .unknown }
+    }
+
+    static func importsIfUnittest(_ source: String, interpreter: String = "/usr/bin/python3") -> [String]? {
+        guard source.utf8.count <= 262_144, FileManager.default.isExecutableFile(atPath: interpreter) else { return nil }
+        let process = Process(), input = Pipe(), output = Pipe(), done = DispatchSemaphore(value: 0)
+        process.executableURL = URL(fileURLWithPath: interpreter)
+        process.arguments = ["-I", "-S", "-B", "-c", parser]
+        process.currentDirectoryURL = URL(fileURLWithPath: "/")
+        process.environment = ["PATH": "/usr/bin:/bin"]
+        process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in done.signal() }
+        do { try process.run() } catch { return nil }
+        let written = DispatchGroup()
+        written.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer { try? input.fileHandleForWriting.close(); written.leave() }
+            try? input.fileHandleForWriting.write(contentsOf: Data(source.utf8))
+        }
+        if done.wait(timeout: .now() + 3) == .timedOut {
+            process.terminate()
+            if done.wait(timeout: .now() + 1) == .timedOut { kill(process.processIdentifier, SIGKILL); process.waitUntilExit() }
+            return nil
+        }
+        guard written.wait(timeout: .now() + 1) == .success, process.terminationStatus == 0 else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard data.count <= 4096 else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String]
+    }
+
+    // A deliberately small, auditable AST subset. Parsing occurs in isolated system Python,
+    // with source on stdin and only module-name metadata returned. Unsupported forms stay unknown.
+    private static let parser = #"""
+import ast, json, sys
+
+def inspect(source):
+    tree = ast.parse(source)
+    body = tree.body
+    if not body or not isinstance(body[-1], ast.If): return None
+    guard = body[-1]
+    expected = ast.parse("__name__ == '__main__'", mode='eval').body
+    reverse = ast.parse("'__main__' == __name__", mode='eval').body
+    if ast.dump(guard.test) not in (ast.dump(expected), ast.dump(reverse)): return None
+    if guard.orelse or len(guard.body) != 1: return None
+    call = guard.body[0]
+    if not isinstance(call, ast.Expr) or ast.dump(call.value) != ast.dump(ast.parse('unittest.main()', mode='eval').body): return None
+    allowed = set('unittest pathlib json os pty select signal time shutil subprocess sys tempfile math re collections itertools functools typing dataclasses contextlib io asyncio enum datetime copy random string hashlib socket struct textwrap logging types abc statistics csv glob urllib platform threading queue warnings weakref inspect importlib'.split())
+    imports, names, tests, unittest_import = set(), set(), False, False
+    def doc(node): return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+    def function(node):
+        if not isinstance(node, ast.FunctionDef) or node.decorator_list or node.returns: return False
+        args = node.args
+        if any(not literal(v) for v in args.defaults) or any(v is not None and not literal(v) for v in args.kw_defaults): return False
+        return all(a.annotation is None for a in args.posonlyargs + args.args + args.kwonlyargs + ([args.vararg] if args.vararg else []) + ([args.kwarg] if args.kwarg else []))
+    def literal(node):
+        if isinstance(node, ast.Constant): return True
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)): return all(literal(v) for v in node.elts)
+        if isinstance(node, ast.Dict): return all(k is not None and literal(k) and literal(v) for k,v in zip(node.keys,node.values))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op,(ast.USub,ast.UAdd)): return isinstance(node.operand,ast.Constant) and isinstance(node.operand.value,(int,float))
+        return False
+    for node in body[:-1]:
+        if doc(node): continue
+        if isinstance(node,(ast.Import, ast.ImportFrom)):
+            if isinstance(node,ast.ImportFrom) and (node.level or not node.module): return None
+            modules = [a.name.split('.')[0] for a in node.names] if isinstance(node,ast.Import) else [node.module.split('.')[0]]
+            if any(m not in allowed for m in modules): return None
+            imports.update(modules)
+            for alias in node.names:
+                name = alias.asname or (alias.name.split('.')[0] if isinstance(node,ast.Import) else alias.name)
+                if name in names or name in ('__name__','load_tests') or alias.name == '*': return None
+                names.add(name)
+                if name == 'unittest':
+                    if not isinstance(node,ast.Import) or alias.name != 'unittest' or alias.asname: return None
+                    unittest_import = True
+                if name == 'Path' and (not isinstance(node,ast.ImportFrom) or node.module != 'pathlib' or alias.name != 'Path' or alias.asname): return None
+        elif isinstance(node,ast.Assign):
+            if not all(isinstance(t,ast.Name) and t.id not in names and t.id not in ('unittest','__name__','load_tests','Path') for t in node.targets): return None
+            path_value = 'Path' in names and ast.dump(node.value) == ast.dump(ast.parse('Path(__file__).resolve().parents[1]',mode='eval').body)
+            if not literal(node.value) and not path_value: return None
+            names.update(t.id for t in node.targets)
+        elif isinstance(node,ast.ClassDef):
+            if not unittest_import or node.name in names or node.name in ('load_tests','unittest','Path','__name__') or node.decorator_list or node.keywords or len(node.bases)!=1: return None
+            if ast.dump(node.bases[0]) != ast.dump(ast.parse('unittest.TestCase',mode='eval').body): return None
+            methods = set()
+            for member in node.body:
+                if doc(member) or isinstance(member,ast.Pass): continue
+                if not function(member) or member.name in methods or member.name in ('__init__','run','__call__'): return None
+                methods.add(member.name)
+            if not any(m.startswith('test') for m in methods): return None
+            tests = True
+            names.add(node.name)
+        elif function(node):
+            if node.name in names or node.name in ('unittest','Path','load_tests','__name__'): return None
+            names.add(node.name)
+        else: return None
+    return sorted(imports) if tests and unittest_import else None
+
+try:
+    result = inspect(sys.stdin.read())
+except (SyntaxError, ValueError, TypeError, RecursionError, MemoryError):
+    result = None
+print(json.dumps(result))
+"""#
 }
