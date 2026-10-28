@@ -56,6 +56,8 @@ Service-access checks validate root `.access.toml` and `.access.local.toml` meta
 
 Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, published description drift, and opt-in notebook hygiene. GitHub repositories whose names start with `private-` (case-insensitive) must have private visibility; public and internal visibility are flagged. The app only reads visibility; change repository settings in GitHub yourself. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
 
+The pnpm lockfile-drift check accounts for unambiguous root/workspace overrides and dependency-spec references, while retaining genuine declaration or override-metadata drift. Cases requiring resolver evaluation remain incomplete.
+
 Live website availability, Sentry, Analytics and Cloudflare probes have been retired from RepoMan. Run live-site audits separately; see [website audit migration and domain inventory](docs/website-checks.md).
 
 See [the checker and issue-details architecture](docs/issues.md) for extending the workflow.

@@ -21,7 +21,10 @@ enum RepositoryLockfileChecks {
                     let expected = try json(context, manifest)
                     switch manager {
                     case "npm": reasons = try npm(expected, lock: json(context, lock), directory: relative)
-                    case "pnpm": reasons = try pnpm(expected, lock: context.readText(lock), directory: relative)
+                    case "pnpm":
+                        let configuration = try pnpmConfiguration(context, prefixes: prefixes, lockDirectory: lockDirectory)
+                        reasons = try pnpm(expected, lock: context.readText(lock), directory: relative,
+                                           overrides: resolvedPNPMOverrides(configuration.overrides, root: configuration.root))
                     case "bun":
                         guard lock.hasSuffix("bun.lock") else { throw InspectionError.blocked("Binary bun.lockb cannot be inspected statically; use a text bun.lock for manifest synchronization checks.") }
                         reasons = try bun(expected, source: context.readText(lock), directory: relative)
@@ -91,16 +94,63 @@ enum RepositoryLockfileChecks {
         }
         return result
     }
-    private static func pnpm(_ expected: [String: Any], lock: String, directory: String) throws -> [String] {
+    private static func pnpmConfiguration(_ context: RepositoryInspectionContext, prefixes: [String], lockDirectory: String) throws -> (overrides: [String: String], root: [String: Any]) {
+        var rootPrefix = lockDirectory.isEmpty ? "" : lockDirectory + "/"
+        for prefix in prefixes where try context.exists(prefix + "pnpm-workspace.yaml") {
+            rootPrefix = prefix
+            break
+        }
+        let root = try context.exists(rootPrefix + "package.json") ? json(context, rootPrefix + "package.json") : [:]
+        var manifestOverrides: [String: String] = [:]
+        if let raw = root["pnpm"] {
+            guard let settings = raw as? [String: Any] else { throw InspectionError.blocked("Unsupported pnpm manifest settings.") }
+            manifestOverrides = try dependencies(settings, "overrides")
+        }
+        var workspaceOverrides: [String: String] = [:]
+        if try context.exists(rootPrefix + "pnpm-workspace.yaml") {
+            workspaceOverrides = try pnpmOverrideMap(context.yaml(rootPrefix + "pnpm-workspace.yaml").values)
+        }
+        guard manifestOverrides.isEmpty || workspaceOverrides.isEmpty || manifestOverrides == workspaceOverrides else {
+            throw InspectionError.blocked("Multiple pnpm override sources need resolver review.")
+        }
+        return (workspaceOverrides.isEmpty ? manifestOverrides : workspaceOverrides, root)
+    }
+    private static func pnpmOverrideMap(_ values: [String: String]) throws -> [String: String] {
+        if let raw = values["overrides"], !raw.isEmpty && raw != "{}" {
+            throw InspectionError.blocked("Inline pnpm overrides need resolver review.")
+        }
+        var result: [String: String] = [:]
+        for (key, raw) in values where key.hasPrefix("overrides.") {
+            guard let value = InspectionConfig.scalar(raw), !value.isEmpty,
+                  !value.hasPrefix("{"), !value.hasPrefix("[") else {
+                throw InspectionError.blocked("Unsupported pnpm override declaration.")
+            }
+            result[String(key.dropFirst("overrides.".count))] = value
+        }
+        return result
+    }
+    private static func resolvedPNPMOverrides(_ overrides: [String: String], root: [String: Any]) throws -> [String: String] {
+        try overrides.mapValues { override in
+            guard override.hasPrefix("$") else { return override }
+            let reference = String(override.dropFirst())
+            let declarations = try Set(dependencyTypes.dropLast().compactMap { try dependencies(root, $0)[reference] })
+            guard declarations.count == 1, let value = declarations.first, !value.hasPrefix("$") else {
+                throw InspectionError.blocked("A pnpm override reference needs resolver review.")
+            }
+            return value
+        }
+    }
+    private static func pnpm(_ expected: [String: Any], lock: String, directory: String, overrides: [String: String]) throws -> [String] {
         let values = try InspectionConfig.yaml(lock).values
         guard InspectionConfig.scalar(values["lockfileVersion"]) == "9.0" else { throw InspectionError.blocked("Unsupported pnpm lockfile schema.") }
+        guard try pnpmOverrideMap(values) == overrides else { return ["pnpm override declarations differ from lockfile metadata"] }
         guard try dependencies(expected, "peerDependencies").isEmpty else { throw InspectionError.blocked("pnpm peer auto-install behavior needs resolver review.") }
         let prefix = "importers." + (directory.isEmpty ? "." : directory)
         guard let importer = values[prefix] else { return ["workspace importer is missing"] }
         guard importer.isEmpty || importer == "{}" else { throw InspectionError.blocked("Inline pnpm importers need manual review.") }
         var result: [String] = []
         for type in dependencyTypes.dropLast() {
-            let wanted = try dependencies(expected, type)
+            var wanted = try dependencies(expected, type)
             guard !wanted.values.contains(where: { $0.hasPrefix("catalog:") }) else { throw InspectionError.blocked("pnpm catalogs need resolver review.") }
             let start = prefix + "." + type + "."
             var actual: [String: String] = [:]
@@ -111,6 +161,17 @@ enum RepositoryLockfileChecks {
             // Every nonempty locked entry must contain a specifier, otherwise absence is unknown.
             for key in values.keys where key.hasPrefix(start) && !key.dropFirst(start.count).contains(".") {
                 guard actual[String(key.dropFirst(start.count))] != nil else { throw InspectionError.blocked("pnpm dependency metadata lacks a specifier.") }
+            }
+            for name in wanted.keys {
+                if let override = overrides[name] {
+                    guard override != "-" else { throw InspectionError.blocked("Removing direct dependencies through pnpm overrides needs resolver review.") }
+                    wanted[name] = override
+                }
+                if wanted[name] != actual[name], overrides.keys.contains(where: {
+                    $0 != name && ($0.hasPrefix(name + "@") || $0.hasSuffix(">" + name) || $0.contains(">" + name + "@"))
+                }) {
+                    throw InspectionError.blocked("A version-qualified or parent-qualified pnpm override needs resolver review.")
+                }
             }
             result += differences(wanted, actual, label: type)
         }
