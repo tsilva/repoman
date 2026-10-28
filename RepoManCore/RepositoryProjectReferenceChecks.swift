@@ -6,8 +6,18 @@ enum RepositoryProjectReferenceChecks {
             let policy = try RepositoryCheckPolicy.load(context)
             var evidence: [String: Set<String>] = [:]
             var reasons = Set<String>()
-            func missing(_ subject: String, _ path: String, generated: Bool = false) throws {
+            func missing(_ subject: String, _ path: String, generated: Bool = false, dependencyRoot: String? = nil) throws {
                 guard !path.contains("$") && !path.contains("~") else { throw InspectionError.blocked("Dynamic project paths need manual review.") }
+                if let dependencyRoot {
+                    if try context.localTargetExists(path) { return }
+                    if !(try context.localTargetExists(dependencyRoot + "/package.json")) {
+                        reasons.insert(subject + ": Cannot verify dependency-provided target " + path + "; install the locked dependencies before checking its contents.")
+                        return
+                    }
+                    // An installed package with a missing referenced file is still a real broken target.
+                    evidence[subject, default: []].insert("Installed dependency target \(path) is missing.")
+                    return
+                }
                 if generated {
                     let components = path.split(separator: "/")
                     if components.contains(where: { ["dist", "build", "out", ".next", "target"].contains(String($0)) }) { return }
@@ -26,6 +36,21 @@ enum RepositoryProjectReferenceChecks {
                 func beside(_ path: String) -> String { directory.isEmpty ? path : directory + "/" + path }
                 if manifest.hasSuffix("package.json") {
                     let json = try RepositoryLockfileChecks.json(context, manifest)
+                    let dependencies = Set(["dependencies", "devDependencies", "optionalDependencies"].flatMap { field in
+                        (json[field] as? [String: Any] ?? [:]).compactMap { name, raw -> String? in
+                            guard let value = raw as? String, !value.isEmpty else { return nil }
+                            return name
+                        }
+                    })
+                    func dependencyRoot(_ target: String) -> String? {
+                        let parts = target.split(separator: "/").map(String.init).filter { $0 != "." }
+                        guard !parts.contains(".."), parts.first == "node_modules", parts.count >= 3 else { return nil }
+                        let scoped = parts[1].hasPrefix("@")
+                        guard !scoped || parts.count >= 4 else { return nil }
+                        let name = scoped ? parts[1] + "/" + parts[2] : parts[1]
+                        guard CheckSupport.matches(name, #"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9_-][A-Za-z0-9._-]*$"#), dependencies.contains(name) else { return nil }
+                        return beside("node_modules/" + name)
+                    }
                     var patterns: [String] = []
                     if let workspace = json["workspaces"] {
                         guard let list = workspace as? [String] ?? (workspace as? [String: Any])?["packages"] as? [String] else {
@@ -42,11 +67,19 @@ enum RepositoryProjectReferenceChecks {
                     for field in ["main", "module", "types", "typings", "bin", "exports"] {
                         for target in try targets(json[field]) {
                             if field == "exports" && !target.hasPrefix("./") { continue }
-                            try missing(manifest, beside(target), generated: true)
+                            // Expo's private-app main is a framework module specifier, not a local filename.
+                            // Ordinary package main/module/types/bin/exports fields retain local-path semantics.
+                            if field == "main", target == "expo-router/entry", json["private"] as? Bool == true,
+                               dependencies.contains("expo"), dependencies.contains("expo-router") {
+                                try missing(manifest, beside("node_modules/expo-router/entry.js"), dependencyRoot: beside("node_modules/expo-router"))
+                            } else {
+                                try missing(manifest, beside(target), generated: true,
+                                            dependencyRoot: field == "main" ? dependencyRoot(target) : nil)
+                            }
                         }
                     }
                     if let scripts = json["scripts"] as? [String: String] {
-                        for command in scripts.values { for path in try scriptPaths(command) { try missing(manifest, beside(path)) } }
+                        for command in scripts.values { for path in try scriptPaths(command) { try missing(manifest, beside(path), dependencyRoot: dependencyRoot(path)) } }
                     }
                 } else {
                     let values = try context.toml(manifest, allSections: true).values
