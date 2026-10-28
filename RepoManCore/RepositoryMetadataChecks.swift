@@ -183,8 +183,8 @@ enum GitHubTagline {
         let prefix = String(readme[..<a.lowerBound])
         guard CheckSupport.matches(readme.trimmingCharacters(in: .whitespacesAndNewlines), #"^<p\s+align="center"\s*>"#),
               let headerEnd = readme.range(of: "</p>"), b.upperBound <= headerEnd.lowerBound,
-              prefix.contains("<img "), !prefix.contains("```"), !prefix.contains("~~~") else {
-            throw InspectionError.blocked("Published tagline must follow the logo inside the opening centered header.")
+              !prefix.contains("```"), !prefix.contains("~~~") else {
+            throw InspectionError.blocked("Published tagline must be inside the opening centered header and outside code fences.")
         }
         let block = String(readme[a.upperBound..<b.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let match = CheckSupport.captures(block, #"^<strong>([^<>]*)</strong>$"#).first else {

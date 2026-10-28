@@ -126,6 +126,37 @@ final class RepositoryCheckerRegressionTests: XCTestCase {
     private func workflow(_ steps: String) throws {
         try write(".github/workflows/ci.yml", "on: [push, pull_request]\njobs:\n  test:\n    steps:\n" + steps)
     }
+
+    func testLogoFreeTaglinePassesButDescriptionMismatchRemainsActionable() async throws {
+        let readme = taglineHeader("Build &amp; learn")
+        XCTAssertEqual(try GitHubTagline.tagline(readme), "Build & learn")
+        XCTAssertEqual(try GitHubTagline.tagline(readme.replacingOccurrences(of: "</p>", with: "<img src=\"logo.png\" />\n</p>")), "Build & learn")
+        let snapshot = RepositorySnapshot(url: root, name: "fixture", branch: "main", upstream: nil,
+            remoteURL: "https://github.com/owner/project.git", ahead: nil, behind: nil,
+            changes: [], staleBranches: [], worktrees: [], commits: [], rootFiles: [])
+        for (description, expected) in [("Build & learn", RepositoryCheckStatus.passed), ("Stale description", .findings)] {
+            let checks = RepositoryMetadataChecks.checks(load: { _ in
+                PublishedRepositoryMetadata(description: description, branch: "main", sha: "abcdef123", readme: readme)
+            }).filter { $0.id == "github.description" }
+            let report = await RepositoryIssueCatalog(checks: checks).inspect(snapshot)
+            XCTAssertEqual(report.status(for: "github.description"), expected)
+        }
+    }
+
+    func testLogoFreeTaglineStillRejectsInvalidMarkersAndContent() throws {
+        let valid = taglineHeader("Valid")
+        for readme in [valid + valid, valid.replacingOccurrences(of: "repo-tagline:end", with: "repo-tagline:star"),
+                       valid.replacingOccurrences(of: "repo-tagline:start", with: "repo-tagline:end"),
+                       taglineHeader(""), taglineHeader("<em>Nested</em>"), taglineHeader(String(repeating: "x", count: 351)),
+                       "```html\n" + valid + "\n```", valid.replacingOccurrences(of: "<p align=\"center\">", with: "<p>"),
+                       "<p align=\"center\">Other content</p>\n" + valid] {
+            XCTAssertThrowsError(try GitHubTagline.tagline(readme))
+        }
+    }
+
+    private func taglineHeader(_ text: String) -> String {
+        "<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>" + text + "</strong>\n<!-- repo-tagline:end -->\n</p>"
+    }
     private func write(_ path: String, _ text: String) throws {
         let url = root.appendingPathComponent(path)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

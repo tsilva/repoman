@@ -58,6 +58,8 @@ Additional checks cover dependency safeguards, lockfile and runtime consistency,
 
 The pnpm lockfile-drift check accounts for unambiguous root/workspace overrides and dependency-spec references, while retaining genuine declaration or override-metadata drift. Cases requiring resolver evaluation remain incomplete. The uv check recognizes equivalent minor-version upper bounds serialized with `python_full_version`, while keeping changed bounds and non-equivalent markers actionable.
 
+GitHub description comparison uses the published marked tagline, including logo-free headers. Logo placement is an editorial concern; malformed markers remain incomplete.
+
 Project-reference checks map literal same-repository Actions checkout paths to local source. Other revisions, external repositories, conditional checkouts and unsupported layouts remain incomplete; known missing references stay visible.
 
 Live website availability, Sentry, Analytics and Cloudflare probes have been retired from RepoMan. Run live-site audits separately; see [website audit migration and domain inventory](docs/website-checks.md).

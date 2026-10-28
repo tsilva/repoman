@@ -110,7 +110,7 @@ The visibility check uses a separate read-only GraphQL query with the existing G
 
 The metadata check uses the installed GitHub CLI and its existing login. A read-only GraphQL request discovers the actual root README filename; a second request returns the description and that README together from the latest default-branch commit. All root README variants recognized by RepoMan are supported. Repositories without README files or tagline markers are skipped. It does not copy credentials or change descriptions during refresh.
 
-Tagline validation follows the existing push-sync header contract: exactly one marker pair, after the logo in the opening centered paragraph, containing one plain-text `<strong>` element. Invalid markers or unsupported HTML entities remain unavailable. The normalized tagline must be nonempty and at most 350 Unicode code points. Authentication failures, API errors, binary/unreadable READMEs and missing default branches cannot resolve existing metadata findings. RepoMan never changes descriptions or Actions automation; make those changes in your own tools.
+Tagline validation follows the existing push-sync header contract: exactly one marker pair inside the opening centered paragraph, containing one plain-text `<strong>` element. A logo is an editorial choice and is not required to extract or compare the marked description. Invalid markers or unsupported HTML entities remain unavailable. The normalized tagline must be nonempty and at most 350 Unicode code points. Authentication failures, API errors, binary/unreadable READMEs and missing default branches cannot resolve existing metadata findings. RepoMan never changes descriptions or Actions automation; make those changes in your own tools.
 
 ## Inspection bounds
 
