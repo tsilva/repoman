@@ -94,6 +94,50 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         let observed6 = try await inspect("dependencies.safeguards").findings().isEmpty
         XCTAssertTrue(observed6)
     }
+    func testNPMSafeguardsMeasureReleaseAgeInDays() async throws {
+        try write("package.json", #"{"packageManager":"npm@11.20.0"}"#)
+        for age in ["7", "7.5", "10080"] {
+            try write(".npmrc", "min-release-age=\(age)\nignore-scripts=true\n")
+            let report = try await inspect("dependencies.safeguards")
+            XCTAssertTrue(report.findings().isEmpty, "npm age \(age) is measured in days")
+            XCTAssertTrue(report.unavailableChecks.isEmpty)
+        }
+        for age in ["6", "6.5", "-1", "invalid"] {
+            try write(".npmrc", "min-release-age=\(age)\nignore-scripts=true\n")
+            let report = try await inspect("dependencies.safeguards")
+            XCTAssertTrue(report.findings().first?.evidence.contains("7 days") == true)
+        }
+        try write(".npmrc", "min-release-age=7\nignore-scripts=false\n")
+        let scripts = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(scripts.findings().first?.evidence.contains("lifecycle scripts") == true)
+    }
+    func testPNPMSafeguardsStillRequireMinutes() async throws {
+        try write("package.json", #"{"packageManager":"pnpm@10.33.0"}"#)
+        try write(".npmrc", "minimum-release-age=7\nblock-exotic-subdeps=true\n")
+        try write("pnpm-workspace.yaml", "minimumReleaseAge: 7\nblockExoticSubdeps: true\n")
+        let report = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(report.findings().first?.evidence.contains("10080 minutes") == true)
+        try write(".npmrc", "minimum-release-age=10080\nblock-exotic-subdeps=true\n")
+        try write("pnpm-workspace.yaml", "minimumReleaseAge: 10080\nblockExoticSubdeps: true\n")
+        let healthy = try await inspect("dependencies.safeguards")
+        XCTAssertTrue(healthy.findings().isEmpty)
+    }
+    func testCIReleaseAgeOverridesUseEachManagersUnits() async throws {
+        try write("package.json", #"{"packageManager":"npm@11.20.0"}"#)
+        try write(".npmrc", "min-release-age=7\nignore-scripts=true\n")
+        for command in ["npm ci --min-release-age=7", "npm install --min-release-age 7.5", "npm ci --min-release-age='7' && pnpm install --minimum-release-age=10080"] {
+            try workflow("ci.yml", "on: push\njobs:\n  test:\n    steps:\n      - run: \(command)\n")
+            let healthy = try await inspect("dependencies.safeguards")
+            XCTAssertTrue(healthy.findings().isEmpty, command)
+        }
+        for (command, units) in [("npm ci --min-release-age=6.5", "7 days"), ("npm install --min-release-age=-1", "7 days"), ("npm ci --min-release-age=7 && pnpm install --minimum-release-age=7", "10080 minutes")] {
+            try workflow("ci.yml", "on: push\njobs:\n  test:\n    steps:\n      - run: \(command)\n")
+            let report = try await inspect("dependencies.safeguards")
+            let evidence = report.findings().first?.evidence ?? ""
+            XCTAssertTrue(evidence.contains("ci.yml"), command)
+            XCTAssertTrue(evidence.contains(units), command)
+        }
+    }
     func testPipConstraintsMustExistAndBeTracked() async throws {
         try write("requirements.txt", "-c constraints.txt\npytest==8.4.0")
         let observed7 = try await inspect("dependencies.safeguards").findings().isEmpty

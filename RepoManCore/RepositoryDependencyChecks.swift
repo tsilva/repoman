@@ -185,16 +185,18 @@ enum RepositoryDependencyChecks {
                         if try context.exists(prefix + "pnpm-workspace.yaml") { workspace.merge(try context.yaml(prefix + "pnpm-workspace.yaml").values) { _, new in new } }
                     }
                     if name == "pnpm" {
-                        if (Int(InspectionConfig.scalar(workspace["minimumReleaseAge"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm-workspace.yaml lacks minimumReleaseAge >= 10080.") }
+                        if (Int(InspectionConfig.scalar(workspace["minimumReleaseAge"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm-workspace.yaml lacks minimumReleaseAge >= 10080 minutes (seven days).") }
                         if InspectionConfig.scalar(workspace["blockExoticSubdeps"]) != "true" { reasons.append("pnpm-workspace.yaml lacks blockExoticSubdeps: true.") }
                         var declared = (try json(context, path))["packageManager"] as? String
                         if declared == nil, try context.exists("package.json") { declared = (try json(context, "package.json"))["packageManager"] as? String }
                         if declared?.hasPrefix("pnpm@10.") == true {
-                            if (Int(InspectionConfig.scalar(rc["minimum-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm 10 .npmrc lacks minimum-release-age >= 10080.") }
+                            if (Int(InspectionConfig.scalar(rc["minimum-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("pnpm 10 .npmrc lacks minimum-release-age >= 10080 minutes (seven days).") }
                             if InspectionConfig.scalar(rc["block-exotic-subdeps"]) != "true" { reasons.append("pnpm 10 .npmrc lacks block-exotic-subdeps=true.") }
                         }
                     } else {
-                        if (Int(InspectionConfig.scalar(rc["min-release-age"]) ?? "") ?? 0) < 10080 { reasons.append("npm .npmrc lacks min-release-age >= 10080.") }
+                        // npm expresses its relative age cutoff in days; pnpm uses minutes.
+                        let age = Double(InspectionConfig.scalar(rc["min-release-age"]) ?? "") ?? 0
+                        if !age.isFinite || age < 7 { reasons.append("npm .npmrc lacks min-release-age >= 7 days.") }
                         if InspectionConfig.scalar(rc["ignore-scripts"]) != "true" { reasons.append("npm lifecycle scripts are enabled; document an exception if they are required.") }
                     }
                 }
@@ -225,8 +227,16 @@ enum RepositoryDependencyChecks {
                     for step in try context.workflowSteps(workflow) {
                         for command in step.commands {
                             if CheckSupport.matches(command, #"\b(?:npm|pnpm)\s+(?:ci|install)\b"#) {
-                                for age in CheckSupport.captures(command, #"--min(?:imum)?-release-age(?:=|\s+)(\d+)"#) where (Int(age[1]) ?? 0) < 10080 {
-                                    reasons.append("\(workflow) overrides the dependency age below seven days.")
+                                // Keep each invocation's manager and flags together, including in
+                                // mixed npm/pnpm command lists. Quoted shell separators are data.
+                                for install in CheckSupport.captures(command, #"\b(npm|pnpm)\s+(?:ci|install)\b((?:[^;&|\n"'\\]|"[^"\n]*"|'[^'\n]*'|\\[^\n])*)"#) {
+                                    let npm = install[1] == "npm"
+                                    let flag = npm ? "--min-release-age" : "--minimum-release-age"
+                                    let minimum = npm ? 7.0 : 10080.0
+                                    for age in CheckSupport.captures(install[2], flag + #"(?:=|\s+)["']?(-?\d+(?:\.\d+)?)["']?(?=\s|$)"#) where (Double(age[1]) ?? 0) < minimum {
+                                        let units = npm ? "7 days" : "10080 minutes (seven days)"
+                                        reasons.append("\(workflow) overrides \(install[1]) dependency age below \(units).")
+                                    }
                                 }
                                 if CheckSupport.matches(command, #"--(?:block-exotic-subdeps|ignore-scripts)=false\b"#) {
                                     reasons.append("\(workflow) explicitly disables dependency installation safeguards.")
