@@ -16,7 +16,9 @@ enum RepositoryAccessChecks {
                         }
                     } catch { reasons.append(path + ": Access metadata could not be fully read or parsed. Supported TOML uses bare table/key names, scalar strings and string arrays; inspect syntax and regular-file containment. Values are withheld.") }
                 }
-                guard !presentFiles.isEmpty || !reasons.isEmpty else { throw InspectionError.notApplicable("No repository access metadata files are present.") }
+                guard !presentFiles.isEmpty || !reasons.isEmpty else {
+                    throw InspectionError.notApplicable("No .access.toml or .access.local.toml service-access inventory is present. Legacy .keyenv.toml and .infisical.json files are not access inventories.")
+                }
                 var findings: [RepositoryFinding] = []
                 if !presentFiles.contains(".access.toml"), presentFiles.contains(".access.local.toml"), reasons.isEmpty {
                     findings.append(finding(context, ".access.local.toml", "A local access file requires a shared .access.toml inventory."))
