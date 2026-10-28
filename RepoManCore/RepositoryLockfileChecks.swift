@@ -389,7 +389,12 @@ enum RepositoryLockfileChecks {
         case any([PythonMarker])
         var canonical: String {
             switch self {
-            case let .comparison(left, op, right): return "\(left.utf8.count):\(left)\(op)\(right.utf8.count):\(right)"
+            case let .comparison(left, op, right):
+                // uv serializes minor-version upper bounds with python_full_version.
+                // Do not conflate equality or patch-level bounds: those have different meanings.
+                let normalized = left == "v:python_version" && op == "<" && CheckSupport.matches(right, #"^s:[0-9]+\.[0-9]+$"#)
+                    ? "v:python_full_version" : left
+                return "\(normalized.utf8.count):\(normalized)\(op)\(right.utf8.count):\(right)"
             case .all(let nodes):
                 let flattened = nodes.flatMap { $0.terms(conjunction: true) }
                 return "and[" + Set(flattened.map(\.canonical)).sorted().map { "\($0.utf8.count):\($0)" }.joined() + "]"

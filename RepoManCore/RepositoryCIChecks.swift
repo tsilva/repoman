@@ -314,7 +314,7 @@ enum WorkflowCoverage {
         switch ecosystem {
         case "swift": return matches(command, #"\b(swift\s+(test|build)|xcodebuild)\b"#)
         case "python": return matches(command, #"\b(pytest|unittest|ruff|mypy|pyright|flake8|pylint|tox|nox|python[0-9.]*\s+-m\s+(build|compileall))\b"#)
-        case "javascript": return matches(command, #"\b(npm|pnpm|yarn|bun|bunx|vitest|jest|tsc|eslint)\b"#)
+        case "javascript": return matches(command, #"\b(npm|pnpm|yarn|bun|bunx|vitest|jest|tsc|eslint)\b|\bnode\s+--test(?:[=\s]|$)"#)
         default: return true
         }
     }
@@ -329,6 +329,7 @@ enum WorkflowCoverage {
     static func validationCommand(_ text: String) -> Bool {
         // Require an executable command, not labels, comments, echo text, or setup steps.
         let patterns = [
+            #"node\s+--test(?:[=\s]|$)"#,
             #"(?:npm|pnpm|yarn|bun)\s+(?:(?:run|exec|x)\s+)?(?:test|build|lint|typecheck|type-check|check|validate)(?:[\s:'\";]|$)"#,
             #"(?:pytest|ruff\s+check|mypy|pyright|flake8|pylint|tox|nox|tsc|eslint|vitest|jest)(?:[\s'\";]|$)"#,
             #"python(?:3)?\s+-m\s+(?:pytest|unittest|compileall)\b"#,

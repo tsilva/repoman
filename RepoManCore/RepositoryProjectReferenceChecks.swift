@@ -2,8 +2,10 @@ import Foundation
 
 enum RepositoryProjectReferenceChecks {
     static func checks() -> [RepositoryCheck] {
-        [CheckSupport.check("files.projectReferences", "Broken project references", .setup, "link.badge.plus", inspect: { context, _ in
+        [RepositoryCheck(id: "files.projectReferences", title: "Broken project references", category: .setup, symbol: "link.badge.plus", evaluate: { context in
+            let policy = try RepositoryCheckPolicy.load(context)
             var evidence: [String: Set<String>] = [:]
+            var reasons = Set<String>()
             func missing(_ subject: String, _ path: String, generated: Bool = false) throws {
                 guard !path.contains("$") && !path.contains("~") else { throw InspectionError.blocked("Dynamic project paths need manual review.") }
                 if generated {
@@ -53,30 +55,74 @@ enum RepositoryProjectReferenceChecks {
                     try workspace(members, excludes: excluded, manifest: manifest, directory: directory, filename: "pyproject.toml", context: context, evidence: &evidence)
                 }
             }
-            for (path, source) in try CheckSupport.workflows(context) {
-                for reference in try context.workflowReferences(path) where reference.hasPrefix("./") {
-                    if reference.hasSuffix(".yml") || reference.hasSuffix(".yaml") { try missing(path, reference) }
-                    else if try !context.exists(reference + "/action.yml") && !context.exists(reference + "/action.yaml") {
-                        evidence[path, default: []].insert("Local action \(reference) has no action.yml or action.yaml.")
-                    }
+            for (path, _) in try CheckSupport.workflows(context) {
+                // Reusable workflow paths are repository-relative, independent of runner checkout paths.
+                for reference in try context.workflowReferences(path) where reference.hasPrefix("./") && (reference.hasSuffix(".yml") || reference.hasSuffix(".yaml")) {
+                    try missing(path, reference)
                 }
-                for step in try context.workflowSteps(path, includeInputs: true, inputKeys: ["node-version-file", "python-version-file"]) {
+                var job = "", layouts: [String: Bool] = [:], dynamicLayout = false
+                func resolve(_ target: String) throws -> String? {
+                    let normalized = try checkoutPath(target)
+                    if dynamicLayout {
+                        reasons.insert(path + ": Dynamic checkout paths need manual reference review.")
+                        return nil
+                    }
+                    if let prefix = layouts.keys.sorted(by: { $0.count > $1.count }).first(where: { $0 == "." || normalized == $0 || normalized.hasPrefix($0 + "/") }) {
+                        guard layouts[prefix] == true else {
+                            reasons.insert(path + ": Checkout repository, revision, sparse contents or conditional execution cannot be verified from local files.")
+                            return nil
+                        }
+                        if prefix == "." { return normalized }
+                        return normalized == prefix ? "." : String(normalized.dropFirst(prefix.count + 1))
+                    }
+                    guard layouts.isEmpty else {
+                        reasons.insert(path + ": Reference falls outside the job's checkout paths; generated workspace files need manual review.")
+                        return nil
+                    }
+                    return normalized
+                }
+                for step in try context.workflowSteps(path, includeInputs: true, inputKeys: ["node-version-file", "python-version-file"], checkoutInputKeys: ["path", "repository", "ref", "sparse-checkout"]) {
+                    if step.job != job { job = step.job; layouts = [:]; dynamicLayout = false }
+                    if step.uses?.lowercased().hasPrefix("actions/checkout@") == true {
+                        if let prefix = try? checkoutPath(step.inputs["path"] ?? ".") {
+                            let remote = GitHubCI.repository(context.snapshot.remoteURL)
+                            let expected = remote.map { ($0.owner + "/" + $0.name).lowercased() }
+                            let repository = step.inputs["repository"]
+                            let same = repository == nil || repository == "${{ github.repository }}" || (expected != nil && repository?.lowercased() == expected)
+                            let ref = step.inputs["ref"]
+                            layouts[prefix] = same && (ref == nil || ref == "" || ref == "${{ github.sha }}") && step.inputs["sparse-checkout"] == nil && !step.conditional
+                        } else { dynamicLayout = true }
+                    }
+                    if let reference = step.uses, reference.hasPrefix("./"), !reference.hasSuffix(".yml"), !reference.hasSuffix(".yaml"), let local = try resolve(reference) {
+                        if try !context.exists(local + "/action.yml") && !context.exists(local + "/action.yaml") {
+                            evidence[path, default: []].insert("Local action \(reference) has no action.yml or action.yaml.")
+                        }
+                    }
                     let directory = step.workingDirectory ?? "."
-                    if directory != "." { try missing(path, directory) }
+                    if directory != ".", let local = try resolve(directory) { try missing(path, local) }
                     for command in step.commands { for target in try scriptPaths(command) {
                         guard !CheckSupport.matches(step.commands.joined(separator: "\n"), #"(?:^|[;&\n])\s*cd\s"#) else {
                             throw InspectionError.blocked("Shell directory changes need manual reference review.")
                         }
-                        try missing(path, directory == "." ? target : directory + "/" + target)
+                        if let local = try resolve(directory == "." ? target : directory + "/" + target) { try missing(path, local) }
                     } }
-                    for key in ["node-version-file", "python-version-file"] { if let file = step.inputs[key] { try missing(path, file) } }
+                    for key in ["node-version-file", "python-version-file"] { if let file = step.inputs[key], let local = try resolve(file) { try missing(path, local) } }
                 }
             }
-            return evidence.keys.sorted().map { subject in
+            let findings = context.applyingExceptions(evidence.keys.sorted().map { subject in
                 CheckSupport.finding(context, "files.projectReferences", subject, "Broken project references",
                     evidence[subject]!.sorted().joined(separator: "\n"), .setup, "link.badge.plus")
-            }
+            }, policy: policy)
+            return reasons.isEmpty ? .findings(findings) : .partial(findings, reasons.sorted().joined(separator: "\n"))
         })]
+    }
+    private static func checkoutPath(_ path: String) throws -> String {
+        guard !path.hasPrefix("/"), !path.contains("$"), !path.contains("~"), !path.contains("\\"),
+              !path.split(separator: "/").contains("..") else {
+            throw InspectionError.blocked("Dynamic or escaping checkout paths need manual reference review.")
+        }
+        let parts = path.split(separator: "/").filter { $0 != "." }
+        return parts.isEmpty ? "." : parts.joined(separator: "/")
     }
     private static func targets(_ value: Any?) throws -> [String] {
         guard let value else { return [] }

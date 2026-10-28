@@ -51,12 +51,14 @@ enum WorkflowInspection {
         }
     }
     struct Step {
+        let job: String
         let label: String
         let commands: [String]
         let workingDirectory: String?
         let toleratesFailure: Bool
         let uses: String?
         let inputs: [String: String]
+        let conditional: Bool
     }
     static func lines(_ source: String) throws -> [Line] {
         var lines: [Line] = [], scalarIndent: Int?
@@ -120,7 +122,7 @@ enum WorkflowInspection {
     static func steps(_ source: String, includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [Step] {
         return try steps(lines(source), includeInputs: includeInputs, inputKeys: inputKeys)
     }
-    static func steps(_ all: [Line], includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [Step] {
+    static func steps(_ all: [Line], includeInputs: Bool = false, inputKeys: Set<String>? = nil, checkoutInputKeys: Set<String> = []) throws -> [Step] {
         guard let jobsIndex = all.firstIndex(where: { $0.indent == 0 && $0.field == "jobs" }) else { return [] }
         let jobs = block(all, jobsIndex)
         guard let jobIndent = jobs.first?.indent else { return [] }
@@ -154,11 +156,13 @@ enum WorkflowInspection {
                     else { commands.append(InspectionConfig.scalar(value) ?? value) }
                 }
                 var inputs: [String: String] = [:]
+                let uses = InspectionConfig.scalar(properties.first { $0.field == "uses" }?.value)
+                let selectedKeys = uses?.lowercased().hasPrefix("actions/checkout@") == true ? inputKeys.map { $0.union(checkoutInputKeys) } : inputKeys
                 if includeInputs, let withIndex = content.firstIndex(where: { $0.indent == stepIndent + 2 && $0.field == "with" }) {
                     let value = content[withIndex].value
-                    let relevant = inputKeys == nil || inputKeys!.contains(where: { value.contains($0) })
+                    let relevant = selectedKeys == nil || selectedKeys!.contains(where: { value.contains($0) })
                     guard value.isEmpty || !relevant else { throw InspectionError.blocked("Inline workflow action inputs need manual review.") }
-                    let fields = block(content, withIndex).filter { $0.indent == stepIndent + 4 && (inputKeys == nil || inputKeys!.contains($0.field)) }
+                    let fields = block(content, withIndex).filter { $0.indent == stepIndent + 4 && (selectedKeys == nil || selectedKeys!.contains($0.field)) }
                     guard fields.allSatisfy({ !$0.value.hasPrefix("|") && !$0.value.hasPrefix(">") }) else {
                         throw InspectionError.blocked("Unsupported workflow action input syntax.")
                     }
@@ -167,8 +171,9 @@ enum WorkflowInspection {
                         inputs[field.field] = InspectionConfig.scalar(field.value)
                     }
                 }
-                result.append(Step(label: label, commands: commands, workingDirectory: try workingDirectory(properties) ?? jobDirectory,
-                                   toleratesFailure: failure, uses: InspectionConfig.scalar(properties.first { $0.field == "uses" }?.value), inputs: inputs))
+                result.append(Step(job: jobs[index].field, label: label, commands: commands, workingDirectory: try workingDirectory(properties) ?? jobDirectory,
+                                   toleratesFailure: failure, uses: uses, inputs: inputs,
+                                   conditional: job.contains { $0.indent == fieldIndent && $0.field == "if" } || properties.contains { $0.field == "if" }))
             }
         }
         return result

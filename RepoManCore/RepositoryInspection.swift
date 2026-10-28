@@ -52,10 +52,10 @@ public struct RepositoryInspectionContext: Sendable {
         let lines = try workflowLines(path)
         return try parsing.value("workflow-references:" + path, bytes: 0) { try WorkflowInspection.references(lines) }
     }
-    func workflowSteps(_ path: String, includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [WorkflowInspection.Step] {
+    func workflowSteps(_ path: String, includeInputs: Bool = false, inputKeys: Set<String>? = nil, checkoutInputKeys: Set<String> = []) throws -> [WorkflowInspection.Step] {
         let lines = try workflowLines(path)
-        let key = "workflow-steps:\(includeInputs):" + (inputKeys?.sorted().joined(separator: ",") ?? "*") + ":" + path
-        return try parsing.value(key, bytes: 0) { try WorkflowInspection.steps(lines, includeInputs: includeInputs, inputKeys: inputKeys) }
+        let key = "workflow-steps:\(includeInputs):" + (inputKeys?.sorted().joined(separator: ",") ?? "*") + ":" + checkoutInputKeys.sorted().joined(separator: ",") + ":" + path
+        return try parsing.value(key, bytes: 0) { try WorkflowInspection.steps(lines, includeInputs: includeInputs, inputKeys: inputKeys, checkoutInputKeys: checkoutInputKeys) }
     }
     func markCached(_ checkID: String) { freshness.insert(checkID) }
     var cachedChecks: Set<String> { freshness.values }
