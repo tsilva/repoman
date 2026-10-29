@@ -587,9 +587,9 @@ enum RepositoryLockfileChecks {
     private static func normalizeSpecifier(_ spec: String) -> String { spec.replacingOccurrences(of: " ", with: "").split(separator: ",").sorted().joined(separator: ",") }
 }
 
-/// Bounded stable numeric npm ranges, for pnpm override applicability only.
+/// Bounded stable numeric npm ranges for override applicability and advisory consistency.
 /// OR, hyphen ranges, prereleases, tags, aliases and exotic sources stay unknown.
-private struct NPMVersionRange {
+struct NPMVersionRange: Sendable {
     var lower = 0
     var upper = Int.max
     func overlaps(_ other: Self) -> Bool { max(lower, other.lower) < min(upper, other.upper) }
