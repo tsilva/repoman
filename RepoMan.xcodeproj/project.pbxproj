@@ -52,6 +52,8 @@
 		B367B3B42AA14E53BB0C1D21 /* CurrentDependencyInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E63CC31B832B4438A09E312A /* CurrentDependencyInventory.swift */; };
 		AA40B815019343869AA25FDB /* RepositoryVulnerabilityEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A188D221C73471995801D68 /* RepositoryVulnerabilityEvidence.swift */; };
 		C71C807985A94AF3B34B6489 /* RepositoryVulnerabilityChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBE97DC79E5F4898BD561F0A /* RepositoryVulnerabilityChecks.swift */; };
+		D870A719815340F28B368C84 /* NPMBundleArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F830CE9A72742B3A177BD61 /* NPMBundleArchive.swift */; };
+		BC7C9F5A291241CBBEF3D428 /* NPMBundleEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D08DC1FC3349FD991C987F /* NPMBundleEvidence.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -101,6 +103,8 @@
 		E63CC31B832B4438A09E312A /* CurrentDependencyInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentDependencyInventory.swift; sourceTree = "<group>"; };
 		2A188D221C73471995801D68 /* RepositoryVulnerabilityEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryVulnerabilityEvidence.swift; sourceTree = "<group>"; };
 		CBE97DC79E5F4898BD561F0A /* RepositoryVulnerabilityChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryVulnerabilityChecks.swift; sourceTree = "<group>"; };
+		3F830CE9A72742B3A177BD61 /* NPMBundleArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPMBundleArchive.swift; sourceTree = "<group>"; };
+		60D08DC1FC3349FD991C987F /* NPMBundleEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPMBundleEvidence.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -147,6 +151,8 @@
 				EA95B90FB96B460494BF7D61 /* RepositoryRegistryEvidence.swift */,
 				2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */,
 				CBE97DC79E5F4898BD561F0A /* RepositoryVulnerabilityChecks.swift */,
+				60D08DC1FC3349FD991C987F /* NPMBundleEvidence.swift */,
+				3F830CE9A72742B3A177BD61 /* NPMBundleArchive.swift */,
 				2A188D221C73471995801D68 /* RepositoryVulnerabilityEvidence.swift */,
 				E63CC31B832B4438A09E312A /* CurrentDependencyInventory.swift */,
 				B10000000000000000000101 /* RepositoryAccessChecks.swift */,
@@ -290,6 +296,8 @@
 				0CECBD07AD8543D593989718 /* RepositoryRegistryEvidence.swift in Sources */,
 				C51AD2E4E72D4C089318DA37 /* RepositoryReleaseAgeChecks.swift in Sources */,
 				C71C807985A94AF3B34B6489 /* RepositoryVulnerabilityChecks.swift in Sources */,
+				BC7C9F5A291241CBBEF3D428 /* NPMBundleEvidence.swift in Sources */,
+				D870A719815340F28B368C84 /* NPMBundleArchive.swift in Sources */,
 				AA40B815019343869AA25FDB /* RepositoryVulnerabilityEvidence.swift in Sources */,
 				B367B3B42AA14E53BB0C1D21 /* CurrentDependencyInventory.swift in Sources */,
 				A10000000000000000000101 /* RepositoryAccessChecks.swift in Sources */,

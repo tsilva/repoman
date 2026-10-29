@@ -21,6 +21,36 @@ final class DependencyLockInventoryTests: XCTestCase {
         XCTAssertEqual(Set(entries.map(\.identity)), ["npm:direct@1.0.0", "npm:@scope/child@2.1.0", "npm:real-name@3.0.0"])
         XCTAssertTrue(entries.allSatisfy { $0.source == "npm" })
     }
+    func testDeclaredBundleCandidateRetainsPublicParentButIsNotYetTrusted() throws {
+        let packages: [String: Any] = ["node_modules/parent": ["version": "1.0.0", "resolved": "https://registry.npmjs.org/parent/-/parent-1.0.0.tgz", "integrity": "sha512-fixture", "bundleDependencies": ["@scope/child"]],
+                                      "node_modules/parent/node_modules/@scope/child": ["version": "2.0.0", "inBundle": true]]
+        let value = try XCTUnwrap(parse(npm(packages)).first { $0.name == "@scope/child" })
+        XCTAssertEqual(value.source, "unsupported"); XCTAssertEqual(value.bundle?.parent.identity, "npm:parent@1.0.0")
+        XCTAssertEqual(value.bundle?.parent.lockfile, "package-lock.json")
+        XCTAssertEqual(value.bundle?.memberPath, "package/node_modules/@scope/child/package.json")
+    }
+    func testPrivateUndeclaredAndExplicitSourceBundlesNeverAcquirePublicParentCandidates() throws {
+        let publicParent: [String: Any] = ["version": "1.0.0", "resolved": "https://registry.npmjs.org/parent/-/parent-1.0.0.tgz", "integrity": "sha512-fixture", "bundleDependencies": ["child"]]
+        for change in [0, 1, 2, 3] {
+            var parent = publicParent, child: [String: Any] = ["version": "2.0.0", "inBundle": true]
+            if change == 0 { parent["resolved"] = "https://user:CANARY@private.invalid/parent.tgz" }
+            if change == 1 { parent["bundleDependencies"] = ["other"] }
+            if change == 2 { child["resolved"] = "https://private.invalid/child.tgz" }
+            if change == 3 { child["inBundle"] = 1 }
+            let value = try XCTUnwrap(parse(npm(["node_modules/parent": parent, "node_modules/parent/node_modules/child": child])).first { $0.name == "child" })
+            XCTAssertNil(value.bundle); XCTAssertEqual(value.source, "unsupported")
+            XCTAssertFalse(String(describing: value).contains("CANARY"))
+        }
+    }
+    func testChangedBundleParentCannotReuseAnUnsupportedSourceFingerprint() throws {
+        func source(_ version: String) throws -> String {
+            try npm(["node_modules/parent": ["version": version, "resolved": "https://registry.npmjs.org/parent/-/parent-" + version + ".tgz", "integrity": "sha512-fixture", "bundleDependencies": ["child"]],
+                     "node_modules/parent/node_modules/child": ["version": "1.0.0", "inBundle": true]])
+        }
+        let a = try XCTUnwrap(parse(source("1.0.0")).first { $0.name == "child" })
+        let b = try XCTUnwrap(parse(source("2.0.0")).first { $0.name == "child" })
+        XCTAssertNotEqual(a.sourceFingerprint, b.sourceFingerprint)
+    }
     func testExistingLegacyNPMCapitalizationPreservesPackageIdentity() throws {
         let source=try npm(["node_modules/JSONStream":["version":"1.3.5","resolved":"https://registry.npmjs.org/JSONStream/-/JSONStream-1.3.5.tgz"]])
         XCTAssertEqual(try parse(source).map(\.identity),["npm:JSONStream@1.3.5"])

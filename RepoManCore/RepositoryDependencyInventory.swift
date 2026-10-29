@@ -4,6 +4,18 @@ import CoreFoundation
 
 /// Full external lock inventories. Parsing does not install packages or execute repository code.
 enum DependencyLockInventory {
+    struct BundleParent: Sendable, Equatable, Hashable {
+        let name: String
+        let version: String
+        let tarball: String
+        let integrity: String
+        let lockfile: String
+        var identity: String { "npm:" + name + "@" + version }
+    }
+    struct BundleOrigin: Sendable, Equatable, Hashable {
+        let parent: BundleParent
+        let memberPath: String
+    }
     struct Entry: Sendable, Equatable {
         let ecosystem: String
         let name: String
@@ -13,6 +25,7 @@ enum DependencyLockInventory {
         let integrity: String?
         let tarball: String?
         var sourceFingerprint: String? = nil
+        var bundle: BundleOrigin? = nil
         var identity: String { ecosystem + ":" + name + "@" + version }
     }
     typealias Read = (String) throws -> String
@@ -138,9 +151,26 @@ enum DependencyLockInventory {
             guard let version = item["version"] as? String else { throw failure("npm lock entry lacks an exact version.") }
             let resolved = item["resolved"] as? String
             let publicSource = resolved.map(publicNPMTarball) == true
-            result.append(try entry(item["name"] as? String ?? inferred, version, ecosystem: "npm", path: path,
-                                    source: publicSource ? "npm" : "unsupported", integrity: item["integrity"] as? String,
-                                    tarball: publicSource ? resolved : nil, sourceToken: (resolved ?? "missing-resolved") + "\n" + (item["integrity"] as? String ?? "missing-integrity")))
+            var value = try entry(item["name"] as? String ?? inferred, version, ecosystem: "npm", path: path,
+                                  source: publicSource ? "npm" : "unsupported", integrity: item["integrity"] as? String,
+                                  tarball: publicSource ? resolved : nil, sourceToken: (resolved ?? "missing-resolved") + "\n" + (item["integrity"] as? String ?? "missing-integrity"))
+            // A bundle marker alone is not public provenance. Preserve a narrow candidate for
+            // the advisory check to verify against the parent's registry metadata and archive.
+            if !publicSource, item["resolved"] == nil, item["integrity"] == nil, boolean(item["inBundle"]) == true,
+               value.name == inferred {
+                let parentLocation = String(location[..<marker.lowerBound]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                if let parent = packages[parentLocation], let parentMarker = parentLocation.range(of: "node_modules/", options: .backwards),
+                   let parentVersion = parent["version"] as? String, let tarball = parent["resolved"] as? String, publicNPMTarball(tarball),
+                   let integrity = parent["integrity"] as? String,
+                   let declared = parent["bundleDependencies"] as? [String], declared.count <= 256, declared.contains(inferred),
+                   let parentEntry = try? entry(parent["name"] as? String ?? String(parentLocation[parentMarker.upperBound...]), parentVersion,
+                                                ecosystem: "npm", path: path, source: "npm", integrity: integrity, tarball: tarball) {
+                    value.bundle = .init(parent: .init(name: parentEntry.name, version: parentEntry.version, tarball: tarball, integrity: integrity, lockfile: path),
+                                         memberPath: "package/node_modules/" + inferred + "/package.json")
+                    value.sourceFingerprint = SHA256.hash(data: Data((parentEntry.identity + "\n" + tarball + "\n" + integrity).utf8)).map { String(format: "%02x", $0) }.joined()
+                }
+            }
+            result.append(value)
         }
         return result
     }
