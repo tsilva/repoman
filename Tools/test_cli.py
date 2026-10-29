@@ -58,6 +58,48 @@ class CLITests(unittest.TestCase):
     def check(self, *args):
         return self.cli('check', '--repo', str(self.repo), '--format', 'json', *args)
 
+    def test_vulnerabilities_require_remote_opt_in_but_no_comparison_base(self):
+        self.assertIn('dependencies.vulnerabilities [remote]', self.cli('--list-checks').stdout)
+        denied = self.check('--check', 'dependencies.vulnerabilities')
+        self.assertEqual(denied.returncode, 2)
+        self.assertIn('--remote', denied.stderr)
+        local = self.check()
+        payload = json.loads(local.stdout)
+        entry = next(x for x in payload['checks'] if x['id'] == 'dependencies.vulnerabilities')
+        self.assertEqual(entry['status'], 'skipped')
+        self.assertNotIn('dependencyVulnerabilities', payload)
+
+    def test_vulnerabilities_missing_lock_is_incomplete_without_network_or_base(self):
+        (self.repo / 'package.json').write_text('{"name":"fixture","dependencies":{"child":"1.0.0"}}')
+        result = self.check('--remote', '--check', 'dependencies.vulnerabilities')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['schemaVersion'], 3)
+        self.assertEqual(payload['checks'][0]['status'], 'incomplete')
+        evidence = payload['dependencyVulnerabilities']
+        self.assertEqual(evidence['provider'], 'OSV')
+        self.assertEqual(evidence['candidateHead'], self.git('rev-parse', 'HEAD').decode().strip())
+        self.assertTrue(evidence['includesWorkingTree'])
+        self.assertTrue(evidence['incompleteReasons'])
+        self.assertEqual(evidence['versions'], [])
+        self.assertEqual([x['path'] for x in evidence['inputs']], ['package.json'])
+        self.assertEqual(len(evidence['inputs'][0]['sha256']), 64)
+        self.assertNotIn('dependencyComparison', payload)
+        self.assertFalse((self.repo / '.git/FETCH_HEAD').exists())
+
+    def test_vulnerabilities_complete_empty_lock_has_bound_clear_evidence(self):
+        (self.repo / 'package.json').write_text('{"name":"fixture"}')
+        (self.repo / 'package-lock.json').write_text('{"lockfileVersion":3,"packages":{}}')
+        result = self.check('--remote', '--check', 'dependencies.vulnerabilities')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['checks'][0]['status'], 'passed')
+        evidence = payload['dependencyVulnerabilities']
+        self.assertEqual(evidence['versions'], [])
+        self.assertEqual(evidence['incompleteReasons'], [])
+        self.assertEqual({x['path'] for x in evidence['inputs']}, {'package.json', 'package-lock.json'})
+        self.assertTrue(all(x['side'] == 'candidate' for x in evidence['inputs']))
+
     def test_release_age_registration_and_explicit_base_requirement(self):
         listed = self.cli('--list-checks')
         self.assertIn('dependencies.releaseAge [remote]', listed.stdout)

@@ -36,8 +36,9 @@ public struct RepositoryCheckReport: Codable, Sendable {
     public let remoteRefs: String
     public let checks: [Check]
     public let dependencyComparison: DependencyComparisonReport?
+    public let dependencyVulnerabilities: DependencyVulnerabilityReport?
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, checkerVersion, repository, head, observedAt, remoteRefs, checks, coverage, dependencyComparison
+        case schemaVersion, checkerVersion, repository, head, observedAt, remoteRefs, checks, coverage, dependencyComparison, dependencyVulnerabilities
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -50,6 +51,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
         try values.encode(checks, forKey: .checks)
         try values.encode(coverage, forKey: .coverage)
         try values.encodeIfPresent(dependencyComparison, forKey: .dependencyComparison)
+        try values.encodeIfPresent(dependencyVulnerabilities, forKey: .dependencyVulnerabilities)
     }
     public var exitCode: Int32 {
         if checks.contains(where: { $0.findings.contains { $0.severity != .information } }) { return 1 }
@@ -57,9 +59,11 @@ public struct RepositoryCheckReport: Codable, Sendable {
     }
 
     public init(_ report: RepositoryInspectionReport, head: String?, checkerVersion: String,
-                skipped: [String] = [], dependencyComparison: DependencyComparisonReport? = nil) {
+                skipped: [String] = [], dependencyComparison: DependencyComparisonReport? = nil,
+                dependencyVulnerabilities: DependencyVulnerabilityReport? = nil) {
         schemaVersion = 3
         self.dependencyComparison = dependencyComparison
+        self.dependencyVulnerabilities = dependencyVulnerabilities
         coverage = report.coverage
         self.checkerVersion = checkerVersion
         repository = report.snapshot.url.path
@@ -100,6 +104,9 @@ public struct RepositoryCheckReport: Codable, Sendable {
     }
     public var text: String {
         var lines = ["Repository: \(repository)", "HEAD: \(head ?? "unborn")", remoteRefs]
+        if let advisory = dependencyVulnerabilities {
+            lines.append("Locked advisory snapshot: \(advisory.versions.count) versions; provider \(advisory.provider); observed \(advisory.checkedAt)")
+        }
         if let comparison = dependencyComparison {
             lines.append("Comparison base: \(comparison.baseCommit); includes working tree; observed \(comparison.checkedAt)")
             lines.append("Introduced locked versions: \(comparison.introduced.count); minimum age: \(comparison.minimumAgeDays) days")
@@ -154,6 +161,10 @@ public enum RepositoryChecker {
             }
         }
         let capture = DependencyComparisonCapture()
+        let vulnerabilities = DependencyVulnerabilityCapture()
+        selected = selected.map { check in
+            check.id == RepositoryVulnerabilityChecks.id ? RepositoryVulnerabilityChecks.checks(record: { vulnerabilities.record($0) })[0] : check
+        }
         if let comparisonBase {
             let bytes = try GitRunner.run(["rev-parse", "--verify", "--end-of-options", comparisonBase + "^{commit}"], at: root,
                                           timeout: 10, maximumOutputBytes: 256,
@@ -168,7 +179,8 @@ public enum RepositoryChecker {
         snapshot.fetchedAt = fetchedAt
         snapshot.fetchError = fetchError
         let report = await RepositoryIssueCatalog(checks: selected).inspect(snapshot, forceRefresh: true)
-        return RepositoryCheckReport(report, head: head, checkerVersion: checkerVersion, skipped: skipped, dependencyComparison: capture.value)
+        return RepositoryCheckReport(report, head: head, checkerVersion: checkerVersion, skipped: skipped,
+                                     dependencyComparison: capture.value, dependencyVulnerabilities: vulnerabilities.value)
     }
 }
 

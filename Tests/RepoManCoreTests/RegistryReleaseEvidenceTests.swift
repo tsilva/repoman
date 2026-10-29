@@ -22,6 +22,33 @@ final class RegistryReleaseEvidenceTests: XCTestCase {
         XCTAssertEqual(old.ageEligible, true); XCTAssertEqual(old.eligibleAt, now)
         XCTAssertEqual(RegistryReleaseEvidence.evaluate([entry()], document: npm(), at: now.addingTimeInterval(-1)).ageEligible, false)
     }
+    func testPublicIdentityDoesNotBorrowReleaseAgeOrRiskPolicy() {
+        let document = npm(published: "invalid", deprecated: "Review release")
+        XCTAssertTrue(RegistryReleaseEvidence.publicIdentity([entry()], document: document))
+        XCTAssertNotNil(RegistryReleaseEvidence.evaluate([entry()], document: document, at: now).unknownReason)
+        XCTAssertTrue(RegistryReleaseEvidence.publicIdentity([entry("pypi", name: "some-package")], document: pypi(["invalid"], yanked: true)))
+    }
+    func testPublicIdentityRejectsUnsupportedSourcesAndMismatchedArtifacts() {
+        var unsupported = entry(); unsupported = .init(ecosystem: unsupported.ecosystem, name: unsupported.name,
+            version: unsupported.version, lockfile: unsupported.lockfile, source: "unsupported", integrity: nil, tarball: nil)
+        XCTAssertFalse(RegistryReleaseEvidence.publicIdentity([unsupported], document: npm()))
+        XCTAssertFalse(RegistryReleaseEvidence.publicIdentity([entry(version: "2.0.0")], document: npm()))
+        XCTAssertFalse(RegistryReleaseEvidence.publicIdentity([entry(integrity: "sha512-" + Data(repeating: 2, count: 64).base64EncodedString())], document: npm()))
+        XCTAssertFalse(RegistryReleaseEvidence.publicIdentity([entry("pypi", name: "other")], document: pypi()))
+        XCTAssertFalse(RegistryReleaseEvidence.publicIdentity([entry("pypi", name: "some-package")], document: pypi([])))
+    }
+    func testPyPINumericReleaseZeroPaddingDoesNotChangeIdentityOrBypassAge() {
+        let locked = entry("pypi", name: "some-package", version: "13.0.3.0")
+        var document = pypi(); document["info"] = ["name": "Some_Package", "version": "13.0.3"]
+        XCTAssertTrue(RegistryReleaseEvidence.publicIdentity([locked], document: document))
+        XCTAssertEqual(RegistryReleaseEvidence.evaluate([locked], document: document, at: now).ageEligible, true)
+        document["urls"] = [["upload_time_iso_8601": "2026-10-09T00:00:00Z", "yanked": false]]
+        XCTAssertEqual(RegistryReleaseEvidence.evaluate([locked], document: document, at: now).ageEligible, false)
+        for wrong in ["13.0.4", "13.0.3.post1", "13.0.3+local", "13.0.3rc1", "13.0.3.1"] {
+            document["info"] = ["name": "Some_Package", "version": wrong]
+            XCTAssertFalse(RegistryReleaseEvidence.publicIdentity([locked], document: document), wrong)
+        }
+    }
     func testPublicationFractionBeyondMillisecondsIsNotRoundedDown() {
         let observed = RegistryReleaseEvidence.date("2026-10-10T12:00:00Z")!.addingTimeInterval(0.123)
         let verdict = RegistryReleaseEvidence.evaluate([entry()], document: npm(published:"2026-10-03T12:00:00.123456Z"), at: observed)
@@ -126,6 +153,68 @@ final class RegistryReleaseEvidenceTests: XCTestCase {
             do { _=try await PublicRegistryRequest.read(URL(string:raw)!);XCTFail("Expected unsupported URL rejection") }
             catch { XCTAssertFalse(String(describing:error).contains("CANARY")) }
         }
+    }
+    private func advisoryQuery() throws -> URLRequest {
+        var request = URLRequest(url: URL(string: "https://api.osv.dev/v1/querybatch")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["queries": [
+            ["package": ["ecosystem": "npm", "name": "child"], "version": "1.0.0"]
+        ]])
+        return request
+    }
+    func testAdvisoryTransportPostsTypedQueriesWithoutAmbientCredentials() async throws {
+        RegistryFixtureProtocol.configure(status: 200, body: Data("{\"results\":[{}]}".utf8))
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RegistryFixtureProtocol.self]
+        config.httpAdditionalHeaders = ["Authorization": "CANARY", "Cookie": "CANARY"]
+        _ = try await PublicRegistryRequest.advisory(advisoryQuery(), configuration: config)
+        let request = try XCTUnwrap(RegistryFixtureProtocol.request())
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString, "https://api.osv.dev/v1/querybatch")
+        XCTAssertFalse((request.allHTTPHeaderFields ?? [:]).keys.contains { ["authorization", "cookie"].contains($0.lowercased()) })
+    }
+    func testAdvisoryTransportReadsOnlyFixedDetailPaths() async throws {
+        RegistryFixtureProtocol.configure(status: 200, body: Data("{}".utf8))
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RegistryFixtureProtocol.self]
+        let request = URLRequest(url: URL(string: "https://api.osv.dev/v1/vulns/GHSA-fixture")!)
+        _ = try await PublicRegistryRequest.advisory(request, configuration: config)
+        XCTAssertEqual(RegistryFixtureProtocol.request()?.httpMethod, "GET")
+        do { _ = try await PublicRegistryRequest.read(request.url!); XCTFail("Registry-only access must stay registry-only") }
+        catch { XCTAssertFalse(String(describing: error).contains("CANARY")) }
+    }
+    func testAdvisoryTransportRejectsOtherDestinationsPayloadFieldsAndCredentialsBeforeSending() async throws {
+        var requests: [URLRequest] = []
+        for raw in ["http://api.osv.dev/v1/querybatch", "https://private.invalid/v1/querybatch", "https://user:CANARY@api.osv.dev/v1/querybatch", "https://api.osv.dev/v1/querybatch?token=CANARY", "https://api.osv.dev/v1/vulns/a%2Fb"] {
+            var request = try advisoryQuery(); request.url = URL(string: raw)!; requests.append(request)
+        }
+        var credential = try advisoryQuery(); credential.setValue("CANARY", forHTTPHeaderField: "Authorization"); requests.append(credential)
+        var method = try advisoryQuery(); method.httpMethod = "DELETE"; requests.append(method)
+        for path in ["https://api.osv.dev/v1/vulns/a%2Fb", "https://api.osv.dev/v1/vulns/GHSA-fixture%0A", "https://api.osv.dev/v1/querybatch"] {
+            requests.append(URLRequest(url: URL(string: path)!))
+        }
+        var control = try advisoryQuery()
+        control.httpBody = try JSONSerialization.data(withJSONObject: ["queries": [["package": ["ecosystem": "npm", "name": "child"], "version": "1.0.0\n"]]])
+        requests.append(control)
+        var extra = try advisoryQuery()
+        extra.httpBody = Data("{\"queries\":[{\"package\":{\"ecosystem\":\"npm\",\"name\":\"child\"},\"version\":\"1.0.0\",\"repository\":\"CANARY\"}]}".utf8)
+        requests.append(extra)
+        var empty = try advisoryQuery(); empty.httpBody = Data("{\"queries\":[]}".utf8); requests.append(empty)
+        var token = try advisoryQuery()
+        token.httpBody = try JSONSerialization.data(withJSONObject: ["queries": [["package": ["ecosystem": "PyPI", "name": "child"], "version": "1.0.0", "page_token": String(repeating: "x", count: 1_025)]]])
+        requests.append(token)
+        for request in requests {
+            RegistryFixtureProtocol.configure(status: 200, body: Data("{}".utf8))
+            let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RegistryFixtureProtocol.self]
+            do { _ = try await PublicRegistryRequest.advisory(request, configuration: config); XCTFail("Expected unsupported request rejection") }
+            catch { XCTAssertFalse(String(describing: error).contains("CANARY")) }
+            XCTAssertNil(RegistryFixtureProtocol.request())
+        }
+    }
+    func testAdvisoryTransportKeepsStreamingBounds() async throws {
+        RegistryFixtureProtocol.configure(status: 200, body: Data(repeating: 1, count: 128))
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [RegistryFixtureProtocol.self]
+        do { _ = try await PublicRegistryRequest.advisory(advisoryQuery(), maximumBytes: 32, configuration: config); XCTFail("Expected response limit") }
+        catch { XCTAssertFalse(String(describing: error).contains("CANARY")) }
     }
 }
 

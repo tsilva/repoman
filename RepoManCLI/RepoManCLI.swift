@@ -10,7 +10,7 @@ struct RepoManCLI {
            repoman --list-checks
 
     Fresh repository checks using RepoManCore. Fetch refs only with --fetch; no install, commit, merge or push.
-    Remote checks are skipped unless --remote permits read-only GitHub and public registry requests.
+    Remote checks are skipped unless --remote permits read-only GitHub, public-registry and advisory requests.
     --base explicitly compares current npm/pnpm/uv locks with a Git commit; it never selects a baseline automatically.
     Exit: 0 = no actionable findings or incomplete checks (information is allowed),
           1 = actionable findings (coverage may also be incomplete), 2 = error,

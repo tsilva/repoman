@@ -218,16 +218,10 @@ enum RepositoryReleaseAgeChecks {
     private static func isLock(_ path: String) -> Bool { DependencyLockInventory.lockNames.contains((path as NSString).lastPathComponent) }
     private static func isManifest(_ path: String) -> Bool { ["package.json", "pyproject.toml"].contains((path as NSString).lastPathComponent) }
     private static func paths(_ data: Data) throws -> [String] {
-        guard let text = String(data: data, encoding: .utf8) else { throw InspectionError.blocked("Comparison paths are not UTF-8.") }
-        let result = Set(text.split(separator: "\0").map(String.init)).sorted()
-        guard result.count <= 20_000, result.allSatisfy(DependencyLockInventory.safePath) else { throw InspectionError.blocked("Comparison path inventory is too large or unsupported.") }
-        return result
+        try DependencyLockInventory.paths(data)
     }
     private static func workingPaths(_ context: RepositoryInspectionContext) throws -> [String] {
-        let listed = try paths(GitRunner.run(["--no-optional-locks", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], at: context.snapshot.url,
-                                            timeout: 10, maximumOutputBytes: 2_097_152))
-        // Unstaged deletions are absent from the candidate; unreadable/escaping paths still throw.
-        return try listed.filter { isLock($0) || isManifest($0) || $0 == ".repoman.json" || ($0 as NSString).lastPathComponent == "pnpm-workspace.yaml" }.filter { try context.exists($0) }
+        try DependencyLockInventory.workingPaths(context)
     }
 
 }

@@ -15,12 +15,57 @@ final class PublicRegistryRequest: NSObject, URLSessionDataDelegate, @unchecked 
         guard url.scheme == "https", ["registry.npmjs.org", "pypi.org"].contains(url.host?.lowercased() ?? ""),
               url.user == nil, url.password == nil, url.port == nil, url.fragment == nil, url.query == nil,
               maximumBytes > 0, timeout > 0 else { throw InspectionError.blocked("Unsupported public registry request.") }
+        var request = URLRequest(url: url); request.httpMethod = "GET"
+        return try await send(request, timeout: timeout, maximumBytes: maximumBytes, configuration: configuration)
+    }
+    /// OSV receives only the typed package/version query produced after public-registry verification.
+    static func advisory(_ request: URLRequest, timeout: TimeInterval = 20, maximumBytes: Int = 8_388_608,
+                         configuration: URLSessionConfiguration = .ephemeral) async throws -> Data {
+        guard let url = request.url, url.scheme == "https", url.host == "api.osv.dev",
+              url.user == nil, url.password == nil, url.port == nil, url.query == nil, url.fragment == nil,
+              request.httpBodyStream == nil,
+              (request.allHTTPHeaderFields ?? [:]).allSatisfy({ $0.key.lowercased() == "content-type" && $0.value == "application/json" }) else {
+            throw InspectionError.blocked("Unsupported advisory request.")
+        }
+        if request.httpMethod == "GET" {
+            guard request.httpBody == nil, url.path.hasPrefix("/v1/vulns/"),
+                  !url.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+                  CheckSupport.matches(String(url.path.dropFirst("/v1/vulns/".count)), #"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"#) else {
+                throw InspectionError.blocked("Unsupported advisory detail request.")
+            }
+        } else if request.httpMethod == "POST" {
+            guard url.path == "/v1/querybatch", let body = request.httpBody, body.count <= 1_048_576,
+                  let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any], Set(object.keys) == ["queries"],
+                  let queries = object["queries"] as? [[String: Any]], !queries.isEmpty, queries.count <= 100,
+                  queries.allSatisfy(validQuery) else { throw InspectionError.blocked("Unsupported advisory package query.") }
+        } else { throw InspectionError.blocked("Unsupported advisory request method.") }
+        return try await send(request, timeout: timeout, maximumBytes: maximumBytes, configuration: configuration)
+    }
+    private static func validQuery(_ query: [String: Any]) -> Bool {
+        guard Set(query.keys).isSubset(of: ["package", "version", "page_token"]),
+              let package = query["package"] as? [String: Any], Set(package.keys) == ["ecosystem", "name"],
+              let ecosystem = package["ecosystem"] as? String, ["npm", "PyPI"].contains(ecosystem),
+              let name = package["name"] as? String,
+              !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              (try? DependencyLockInventory.normalizedName(name, ecosystem: ecosystem == "npm" ? "npm" : "pypi")) == name,
+              let version = query["version"] as? String, version.count <= 128,
+              !version.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              CheckSupport.matches(version, #"^[A-Za-z0-9][A-Za-z0-9.!+_-]*$"#) else { return false }
+        if let raw = query["page_token"] {
+            guard let token = raw as? String, !token.isEmpty, token.utf8.count <= 1_024,
+                  !token.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { return false }
+        }
+        return true
+    }
+    private static func send(_ request: URLRequest, timeout: TimeInterval, maximumBytes: Int,
+                             configuration: URLSessionConfiguration) async throws -> Data {
+        guard timeout > 0, maximumBytes > 0 else { throw InspectionError.blocked("Invalid public evidence request limits.") }
         let operation = PublicRegistryRequest(maximumBytes: maximumBytes)
         return try await withTaskCancellationHandler(operation: {
-            try await withCheckedThrowingContinuation { continuation in operation.start(url, timeout, configuration, continuation) }
+            try await withCheckedThrowingContinuation { continuation in operation.start(request, timeout, configuration, continuation) }
         }, onCancel: { operation.cancel() })
     }
-    private func start(_ url: URL, _ timeout: TimeInterval, _ configuration: URLSessionConfiguration,
+    private func start(_ source: URLRequest, _ timeout: TimeInterval, _ configuration: URLSessionConfiguration,
                        _ continuation: CheckedContinuation<Data, Error>) {
         lock.lock()
         guard !cancelled else { lock.unlock(); continuation.resume(throwing: CancellationError()); return }
@@ -28,10 +73,10 @@ final class PublicRegistryRequest: NSObject, URLSessionDataDelegate, @unchecked 
         configuration.urlCache = nil; configuration.urlCredentialStorage = nil; configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false; configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = timeout; configuration.timeoutIntervalForResource = timeout
-        configuration.httpAdditionalHeaders = ["Accept": "application/json", "User-Agent": "RepoMan/dependency-release-age"]
+        configuration.httpAdditionalHeaders = ["Accept": "application/json", "User-Agent": "RepoMan/dependency-evidence"]
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         self.session = session
-        var request = URLRequest(url: url); request.httpMethod = "GET"; request.timeoutInterval = timeout
+        var request = source; request.timeoutInterval = timeout; request.httpShouldHandleCookies = false
         let task = session.dataTask(with: request); self.task = task
         lock.unlock(); task.resume()
     }
@@ -103,6 +148,40 @@ enum RegistryReleaseEvidence {
         let version = entry.version.addingPercentEncoding(withAllowedCharacters: allowed)!
         return URL(string: "https://pypi.org/pypi/" + name + "/" + version + "/json")!
     }
+    /// Public identity/provenance is independent of release age and yanking/deprecation policy.
+    static func publicIdentity(_ entries: [DependencyLockInventory.Entry], document: [String: Any]) -> Bool {
+        guard let entry = entries.first, entries.allSatisfy({ $0.identity == entry.identity && $0.source != "unsupported" }) else { return false }
+        if entry.ecosystem == "npm" { return npmVersion(entries, document: document) != nil }
+        return pypiFiles(entry, document: document) != nil
+    }
+    private static func npmVersion(_ entries: [DependencyLockInventory.Entry], document: [String: Any]) -> [String: Any]? {
+        guard let entry = entries.first, document["name"] as? String == entry.name,
+              let versions = document["versions"] as? [String: [String: Any]], let version = versions[entry.version],
+              version["version"] as? String == entry.version, version["name"] as? String == entry.name,
+              let dist = version["dist"] as? [String: Any], entries.allSatisfy({ matchesPublicArtifact($0, dist: dist) }) else { return nil }
+        return version
+    }
+    private static func pypiFiles(_ entry: DependencyLockInventory.Entry, document: [String: Any]) -> [[String: Any]]? {
+        guard let info = document["info"] as? [String: Any], let name = info["name"] as? String,
+              (try? DependencyLockInventory.normalizedName(name, ecosystem: "pypi")) == entry.name,
+              let publishedVersion = info["version"] as? String, equivalentPythonRelease(publishedVersion, entry.version),
+              let files = document["urls"] as? [[String: Any]], !files.isEmpty else { return nil }
+        return files
+    }
+    /// PEP 440 zero-pads numeric release segments; other spellings remain strict.
+    private static func equivalentPythonRelease(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        func release(_ text: String) -> [String]? {
+            guard CheckSupport.matches(text, #"^[0-9]+(?:\.[0-9]+)*$"#) else { return nil }
+            var parts = text.split(separator: ".").map { part -> String in
+                let digits = part.drop(while: { $0 == "0" }); return digits.isEmpty ? "0" : String(digits)
+            }
+            while parts.count > 1 && parts.last == "0" { parts.removeLast() }
+            return parts
+        }
+        guard let x = release(a), let y = release(b) else { return false }
+        return x == y
+    }
     static func evaluate(_ entries: [DependencyLockInventory.Entry], document: [String: Any], at: Date) -> Verdict {
         guard let entry = entries.first, entries.allSatisfy({ $0.identity == entry.identity && $0.source != "unsupported" }) else {
             return Verdict(unknownReason: "Dependency source is unsupported or cannot be verified.")
@@ -110,10 +189,7 @@ enum RegistryReleaseEvidence {
         var result = Verdict()
         let published: Date?
         if entry.ecosystem == "npm" {
-            guard document["name"] as? String == entry.name,
-                  let versions = document["versions"] as? [String: [String: Any]], let version = versions[entry.version],
-                  version["version"] as? String == entry.version, version["name"] as? String == entry.name,
-                  let dist = version["dist"] as? [String: Any], entries.allSatisfy({ matchesPublicArtifact($0, dist: dist) }) else {
+            guard let version = npmVersion(entries, document: document) else {
                 return Verdict(unknownReason: "Public npm package identity or locked artifact provenance could not be verified.")
             }
             if let deprecated = version["deprecated"] {
@@ -122,10 +198,7 @@ enum RegistryReleaseEvidence {
             }
             published = (document["time"] as? [String: String])?[entry.version].flatMap(date)
         } else {
-            guard let info = document["info"] as? [String: Any], let name = info["name"] as? String,
-                  (try? DependencyLockInventory.normalizedName(name, ecosystem: "pypi")) == entry.name,
-                  info["version"] as? String == entry.version,
-                  let files = document["urls"] as? [[String: Any]], !files.isEmpty else {
+            guard let files = pypiFiles(entry, document: document) else {
                 return Verdict(unknownReason: "PyPI release identity or complete artifact evidence is missing.")
             }
             if files.contains(where: { DependencyLockInventory.boolean($0["yanked"]) == true }) { result.risks.append("yanked") }

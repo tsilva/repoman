@@ -92,7 +92,7 @@ public enum RepositoryIssueStatus: String, CaseIterable, Sendable {
 
 /// Register another check without adding cases to the repository or issue views.
 public struct RepositoryCheck: Identifiable, Sendable {
-    public var requiresRemoteAccess: Bool { ["ci.failing", "ci.expectedChecks", "ci.allowedActions", "dependencies.releaseAge"].contains(id) || id.hasPrefix("github.") }
+    public var requiresRemoteAccess: Bool { ["ci.failing", "ci.expectedChecks", "ci.allowedActions", "dependencies.releaseAge", "dependencies.vulnerabilities"].contains(id) || id.hasPrefix("github.") }
     static func result(_ findings: [RepositoryFinding], for id: String, snapshot: RepositorySnapshot) -> RepositoryCheckResult {
         let comparisons: Set<String> = ["git.push", "git.pull", "git.diverged", "git.unpublishedBranches", "git.upstream"]
         guard comparisons.contains(id), snapshot.upstream != nil || snapshot.remoteURL != nil,
@@ -303,7 +303,7 @@ public struct RepositoryIssueCatalog: Sendable {
         + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
         + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
-        + RepositoryAccessChecks.checks() + RepositoryDependabotChecks.checks() + RepositorySwiftChecks.checks() + RepositoryActionsPolicyChecks.checks() + RepositoryReleaseAgeChecks.checks()
+        + RepositoryAccessChecks.checks() + RepositoryDependabotChecks.checks() + RepositorySwiftChecks.checks() + RepositoryActionsPolicyChecks.checks() + RepositoryReleaseAgeChecks.checks() + RepositoryVulnerabilityChecks.checks()
 
 
     public static func isReadme(_ filename: String) -> Bool {
