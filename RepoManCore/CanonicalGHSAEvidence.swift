@@ -26,7 +26,7 @@ enum CanonicalGHSAEvidence {
         for record in records {
             guard let package = record["package"] as? [String: Any], let ecosystem = package["ecosystem"] as? String,
                   let name = package["name"] as? String else { unsupported = true; continue }
-            let expected = entry.ecosystem == "npm" ? "npm" : "pip"
+            let expected = entry.ecosystem == "go" ? "go" : entry.ecosystem == "npm" ? "npm" : "pip"
             guard ecosystem == expected, (try? DependencyLockInventory.normalizedName(name, ecosystem: entry.ecosystem)) == entry.name else { continue }
             guard let range = record["vulnerable_version_range"] as? String, !range.isEmpty, range.utf8.count <= 2_048,
                   !range.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { unsupported = true; continue }
@@ -45,6 +45,7 @@ enum CanonicalGHSAEvidence {
                      reason: "OSV matches the locked version but complete supported canonical GHSA ranges exclude it; independent review is required.")
     }
     static func contains(_ version: String, range: String, ecosystem: String) -> Bool? {
+        if ecosystem == "go" { return GoVersion.contains(version, range: range) }
         if ecosystem == "npm" {
             guard CheckSupport.matches(version, #"^[0-9]+\.[0-9]+\.[0-9]+$"#), let point = NPMVersionRange.parse(version) else { return nil }
             let alternatives = range.components(separatedBy: "||")

@@ -12,8 +12,9 @@ final class PublicRegistryRequest: NSObject, URLSessionDataDelegate, @unchecked 
     private init(maximumBytes: Int) { self.maximumBytes = maximumBytes }
     static func read(_ url: URL, timeout: TimeInterval = 20, maximumBytes: Int = 67_108_864,
                      configuration: URLSessionConfiguration = .ephemeral) async throws -> Data {
-        guard url.scheme == "https", ["registry.npmjs.org", "pypi.org"].contains(url.host?.lowercased() ?? ""),
-              url.user == nil, url.password == nil, url.port == nil, url.fragment == nil, url.query == nil,
+        let ordinary = url.scheme == "https" && ["registry.npmjs.org", "pypi.org"].contains(url.host?.lowercased() ?? "") &&
+            url.user == nil && url.password == nil && url.port == nil && url.fragment == nil && url.query == nil
+        guard (ordinary || GoPublicModuleEvidence.allowed(url)),
               maximumBytes > 0, timeout > 0 else { throw InspectionError.blocked("Unsupported public registry request.") }
         var request = URLRequest(url: url); request.httpMethod = "GET"
         return try await send(request, timeout: timeout, maximumBytes: maximumBytes, configuration: configuration)
@@ -44,10 +45,10 @@ final class PublicRegistryRequest: NSObject, URLSessionDataDelegate, @unchecked 
     private static func validQuery(_ query: [String: Any]) -> Bool {
         guard Set(query.keys).isSubset(of: ["package", "version", "page_token"]),
               let package = query["package"] as? [String: Any], Set(package.keys) == ["ecosystem", "name"],
-              let ecosystem = package["ecosystem"] as? String, ["npm", "PyPI"].contains(ecosystem),
+              let ecosystem = package["ecosystem"] as? String, ["npm", "PyPI", "Go"].contains(ecosystem),
               let name = package["name"] as? String,
               !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              (try? DependencyLockInventory.normalizedName(name, ecosystem: ecosystem == "npm" ? "npm" : "pypi")) == name,
+              (try? DependencyLockInventory.normalizedName(name, ecosystem: ecosystem == "Go" ? "go" : ecosystem == "npm" ? "npm" : "pypi")) == name,
               let version = query["version"] as? String, version.count <= 128,
               !version.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               CheckSupport.matches(version, #"^[A-Za-z0-9][A-Za-z0-9.!+_-]*$"#) else { return false }
@@ -123,6 +124,8 @@ enum RegistryReleaseEvidence {
         var ageEligible: Bool?
         var risks: [String] = []
         var unknownReason: String?
+        var firstSeenAt: Date?
+        var evidenceURL: String?
     }
     static func date(_ raw: String) -> Date? {
         guard let match = CheckSupport.captures(raw, #"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$"#).first,

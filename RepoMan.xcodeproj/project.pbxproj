@@ -55,6 +55,11 @@
 		D870A719815340F28B368C84 /* NPMBundleArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F830CE9A72742B3A177BD61 /* NPMBundleArchive.swift */; };
 		BC7C9F5A291241CBBEF3D428 /* NPMBundleEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D08DC1FC3349FD991C987F /* NPMBundleEvidence.swift */; };
 		FDAF95604963423C81D922B1 /* CanonicalGHSAEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46B5E43FF73143C89B2D3ECD /* CanonicalGHSAEvidence.swift */; };
+		84E39420C68943E0A8578F86 /* GoModuleClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948E12FEAED14D13AB701EBD /* GoModuleClient.swift */; };
+		099D11DA50C4487DA93A47E7 /* GoModuleInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FBFAC3136794852BA96FE10 /* GoModuleInventory.swift */; };
+		419785169A424B19A0F788E2 /* GoPublicModuleEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2C98C67D9C94C66807FF873 /* GoPublicModuleEvidence.swift */; };
+		655EE14D8FF946DCA2809927 /* GoReleaseEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0222440C48142B489788176 /* GoReleaseEvidence.swift */; };
+		5C7074B6105C4536BC3A7F08 /* GoVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D99BCB3B4BEC43C4A7385EF5 /* GoVersion.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -107,6 +112,11 @@
 		3F830CE9A72742B3A177BD61 /* NPMBundleArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPMBundleArchive.swift; sourceTree = "<group>"; };
 		60D08DC1FC3349FD991C987F /* NPMBundleEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPMBundleEvidence.swift; sourceTree = "<group>"; };
 		46B5E43FF73143C89B2D3ECD /* CanonicalGHSAEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalGHSAEvidence.swift; sourceTree = "<group>"; };
+		948E12FEAED14D13AB701EBD /* GoModuleClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoModuleClient.swift; sourceTree = "<group>"; };
+		4FBFAC3136794852BA96FE10 /* GoModuleInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoModuleInventory.swift; sourceTree = "<group>"; };
+		F2C98C67D9C94C66807FF873 /* GoPublicModuleEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoPublicModuleEvidence.swift; sourceTree = "<group>"; };
+		D0222440C48142B489788176 /* GoReleaseEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoReleaseEvidence.swift; sourceTree = "<group>"; };
+		D99BCB3B4BEC43C4A7385EF5 /* GoVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoVersion.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -154,6 +164,11 @@
 				2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */,
 				CBE97DC79E5F4898BD561F0A /* RepositoryVulnerabilityChecks.swift */,
 				46B5E43FF73143C89B2D3ECD /* CanonicalGHSAEvidence.swift */,
+				D99BCB3B4BEC43C4A7385EF5 /* GoVersion.swift */,
+				D0222440C48142B489788176 /* GoReleaseEvidence.swift */,
+				F2C98C67D9C94C66807FF873 /* GoPublicModuleEvidence.swift */,
+				4FBFAC3136794852BA96FE10 /* GoModuleInventory.swift */,
+				948E12FEAED14D13AB701EBD /* GoModuleClient.swift */,
 				60D08DC1FC3349FD991C987F /* NPMBundleEvidence.swift */,
 				3F830CE9A72742B3A177BD61 /* NPMBundleArchive.swift */,
 				2A188D221C73471995801D68 /* RepositoryVulnerabilityEvidence.swift */,
@@ -300,6 +315,11 @@
 				C51AD2E4E72D4C089318DA37 /* RepositoryReleaseAgeChecks.swift in Sources */,
 				C71C807985A94AF3B34B6489 /* RepositoryVulnerabilityChecks.swift in Sources */,
 				FDAF95604963423C81D922B1 /* CanonicalGHSAEvidence.swift in Sources */,
+				5C7074B6105C4536BC3A7F08 /* GoVersion.swift in Sources */,
+				655EE14D8FF946DCA2809927 /* GoReleaseEvidence.swift in Sources */,
+				419785169A424B19A0F788E2 /* GoPublicModuleEvidence.swift in Sources */,
+				099D11DA50C4487DA93A47E7 /* GoModuleInventory.swift in Sources */,
+				84E39420C68943E0A8578F86 /* GoModuleClient.swift in Sources */,
 				BC7C9F5A291241CBBEF3D428 /* NPMBundleEvidence.swift in Sources */,
 				D870A719815340F28B368C84 /* NPMBundleArchive.swift in Sources */,
 				AA40B815019343869AA25FDB /* RepositoryVulnerabilityEvidence.swift in Sources */,

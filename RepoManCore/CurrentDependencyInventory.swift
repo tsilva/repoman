@@ -11,8 +11,10 @@ struct CurrentDependencyInventory: Sendable {
     let reasons: [String]
     let lockfiles: [String]
     let hasDeclarations: Bool
+    let goWorkspace: Bool
 
-    static func capture(_ context: RepositoryInspectionContext) throws -> Self {
+    static func capture(_ context: RepositoryInspectionContext,
+                        go: GoModuleInventory.Request = { try GoModuleClient.read($0, $1, $2, $3) }) throws -> Self {
         let paths = try DependencyLockInventory.workingPaths(context, includingRequirements: true)
         let head = try? GitRunner.text(["rev-parse", "--verify", "HEAD"], at: context.snapshot.url)
         let locks = paths.filter(DependencyLockInventory.isLock)
@@ -49,12 +51,17 @@ struct CurrentDependencyInventory: Sendable {
                 } catch { reasons.insert(path + ": the complete lock inventory could not be parsed or its local members verified.") }
             }
         }
+        let goWorkspace = GoModuleInventory.hasWorkspace(paths: paths, root: context.snapshot.url)
+        let selected = GoModuleInventory.capture(paths: paths, root: context.snapshot.url, read: read, request: go)
+        entries += selected.entries; reasons.formUnion(selected.reasons)
         return Self(paths: paths, head: head, inputs: inputs.values.sorted { $0.path < $1.path }, bytes: bytes,
-                    entries: entries, reasons: reasons.sorted(), lockfiles: locks, hasDeclarations: !manifests.isEmpty || !requirements.isEmpty)
+                    entries: entries, reasons: reasons.sorted(), lockfiles: (locks + paths.filter(GoModuleInventory.isModule)).sorted(),
+                    hasDeclarations: !manifests.isEmpty || !requirements.isEmpty || paths.contains(where: GoModuleInventory.isInput), goWorkspace: goWorkspace)
     }
     func unchanged(_ context: RepositoryInspectionContext) -> Bool {
         do {
             guard try DependencyLockInventory.workingPaths(context, includingRequirements: true) == paths,
+                  GoModuleInventory.hasWorkspace(paths: paths, root: context.snapshot.url) == goWorkspace,
                   (try? GitRunner.text(["rev-parse", "--verify", "HEAD"], at: context.snapshot.url)) == head else { return false }
             for (path, original) in bytes where try context.readFreshText(path) != original { return false }
             return true

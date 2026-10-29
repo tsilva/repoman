@@ -26,6 +26,7 @@ enum DependencyLockInventory {
         let tarball: String?
         var sourceFingerprint: String? = nil
         var bundle: BundleOrigin? = nil
+        var goModIntegrity: String? = nil
         var identity: String { ecosystem + ":" + name + "@" + version }
     }
     typealias Read = (String) throws -> String
@@ -42,7 +43,7 @@ enum DependencyLockInventory {
         let listed = try paths(GitRunner.run(["--no-optional-locks", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
                                             at: context.snapshot.url, timeout: 10, maximumOutputBytes: 2_097_152))
         return try listed.filter {
-            isLock($0) || isManifest($0) || $0 == ".repoman.json" || ($0 as NSString).lastPathComponent == "pnpm-workspace.yaml" ||
+            isLock($0) || isManifest($0) || GoModuleInventory.isInput($0) || $0 == ".repoman.json" || ($0 as NSString).lastPathComponent == "pnpm-workspace.yaml" ||
                 (includingRequirements && ($0 as NSString).lastPathComponent == "requirements.txt")
         }.filter { try context.exists($0) }
     }
@@ -66,6 +67,10 @@ enum DependencyLockInventory {
         return value.boolValue
     }
     static func normalizedName(_ raw: String, ecosystem: String) throws -> String {
+        if ecosystem == "go" {
+            guard GoModuleInventory.moduleName(raw) else { throw failure("Unsupported Go module identity.") }
+            return raw
+        }
         guard raw.count <= 214 else { throw failure("Dependency name exceeds the comparison limit.") }
         if ecosystem == "npm" {
             guard CheckSupport.matches(raw, #"^(?:@[A-Za-z0-9_~.-]+/)?[A-Za-z0-9_~.-]+$"#) else { throw failure("Unsupported npm package identity.") }

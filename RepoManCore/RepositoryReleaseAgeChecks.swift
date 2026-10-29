@@ -19,6 +19,7 @@ public struct DependencyComparisonReport: Codable, Sendable {
         public let risks: [String]
         public let unknownReason: String?
         public let exceptionReason: String?
+        public var firstSeenAt: String? = nil
     }
     public let baseCommit: String
     public let candidateHead: String?
@@ -41,10 +42,13 @@ enum RepositoryReleaseAgeChecks {
     static let id = "dependencies.releaseAge"
     typealias Request = @Sendable (URL, TimeInterval) async throws -> Data
     static func checks(base: String? = nil, at: Date? = nil,
-                       request: @escaping Request = { try await PublicRegistryRequest.read($0, timeout: $1) },
+                       request: @escaping Request = { try await PublicRegistryRequest.read($0, timeout: $1, maximumBytes: GoPublicModuleEvidence.allowed($0) ? 2_097_152 : 67_108_864) },
+                       go: @escaping GoModuleInventory.Request = { try GoModuleClient.read($0, $1, $2, $3) },
+                       goRepository: @escaping GoPublicRepositoryClient.Request = { try await GoPublicRepositoryClient.read($0, timeout: $1) },
+                       goManifest: @escaping GoReleaseEvidence.Manifest = { try GoModuleClient.manifest($0, excluding: $1, timeout: $2) },
                        record: @escaping @Sendable (DependencyComparisonReport) -> Void = { _ in }) -> [RepositoryCheck] {
         [RepositoryCheck(id: id, title: "Introduced dependency release age", category: .setup, symbol: "clock.badge.checkmark", evaluate: { context in
-            guard let base else { return .skipped("No explicit comparison base was selected. Use --base COMMIT and --remote to check newly locked npm, pnpm and uv versions.") }
+            guard let base else { return .skipped("No explicit comparison base was selected. Use --base COMMIT and --remote to check newly selected npm, pnpm, uv and Go versions.") }
             guard CheckSupport.matches(base, #"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"#) else { return .unavailable("Comparison requires a resolved Git commit, not an inferred baseline.") }
             let checkedAt = at ?? context.snapshot.checkedAt
             let candidateHead = try? String(decoding: context.gitRead(["rev-parse", "--verify", "HEAD"]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -84,12 +88,14 @@ enum RepositoryReleaseAgeChecks {
             } catch { reasons.insert("Complete base and candidate file inventories could not be read."); return finish() }
             if candidatePaths.contains(".repoman.json") { _ = try readCandidate(".repoman.json") }
             let beforeLocks = basePaths.filter(isLock), afterLocks = candidatePaths.filter(isLock)
-            guard !afterLocks.isEmpty else {
-                if !beforeLocks.isEmpty || candidatePaths.contains(where: isManifest) {
+            let beforeGo = basePaths.filter(GoModuleInventory.isInput), afterGo = candidatePaths.filter(GoModuleInventory.isInput)
+            let goWorkspace = GoModuleInventory.hasWorkspace(paths: candidatePaths, root: context.snapshot.url)
+            guard !afterLocks.isEmpty || !afterGo.isEmpty else {
+                if !beforeLocks.isEmpty || !beforeGo.isEmpty || candidatePaths.contains(where: isManifest) {
                     reasons.insert("No supported candidate lock inventory is available for declared JavaScript/Python dependencies; removed or unsupported locks cannot establish release-age compliance.")
                     return finish()
                 }
-                evidence(); return .notApplicable("No npm, pnpm or uv lock inventories are present. Other ecosystems are outside this comparison's scope.")
+                evidence(); return .notApplicable("No npm, pnpm, uv or Go module inventories are present. Other ecosystems are outside this comparison's scope.")
             }
             guard beforeLocks.count <= 128, afterLocks.count <= 128 else { reasons.insert("Lock inventories exceed the 128-file comparison limit."); return finish() }
             // Reuse the ordinary lock detector's declared-workspace lookup; a Python lock
@@ -117,6 +123,14 @@ enum RepositoryReleaseAgeChecks {
                 do { after += try DependencyLockInventory.parse(readCandidate(path), path: path, read: readCandidate) }
                 catch { reasons.insert(path + ": the complete candidate lock inventory could not be parsed or its local members verified.") }
             }
+            // Read both complete selected graphs independently. Historical sums are not
+            // a substitute for an unavailable baseline and must not invent new versions.
+            for path in afterGo { _ = try readCandidate(path) }
+            let oldGo = GoModuleInventory.capture(paths: beforeGo, root: context.snapshot.url, read: readBase, request: go)
+            let newGo = GoModuleInventory.capture(paths: afterGo, root: context.snapshot.url, read: readCandidate, request: go)
+            before += oldGo.entries; after += newGo.entries
+            if !oldGo.reasons.isEmpty { baselineComplete = false }
+            reasons.formUnion(oldGo.reasons.map { "Base: " + $0 }); reasons.formUnion(newGo.reasons.map { "Candidate: " + $0 })
             guard baselineComplete else { return finish() }
             let baseline = Dictionary(grouping: before, by: \.identity)
             let introduced = Dictionary(grouping: after.filter { changedOrigin($0, before: baseline[$0.identity] ?? []) }, by: \.identity)
@@ -133,13 +147,21 @@ enum RepositoryReleaseAgeChecks {
                 return entry.ecosystem == "npm" ? "npm:" + entry.name : entry.identity
             }.values.map { $0.sorted() }.sorted { $0[0] < $1[0] }
             let deadline = Date().addingTimeInterval(180)
+            let repositories = await GoPublicRepositoryClient.fetch(introduced.values.flatMap { $0 }, request: goRepository, deadline: deadline)
+            let candidateRoot = context.snapshot.url
             var documents: [String: [String: RegistryReleaseEvidence.Verdict]] = [:]
             // At most four anonymous reads execute concurrently. Only reduced verdicts are retained.
             await withTaskGroup(of: (String, [String: RegistryReleaseEvidence.Verdict]).self) { group in
                 var next = 0
                 func schedule(_ keys: [String]) {
                     group.addTask {
-                        let entry = introduced[keys[0]]!.first!, url = RegistryReleaseEvidence.url(entry)
+                        let entry = introduced[keys[0]]!.first!
+                        if entry.ecosystem == "go" {
+                            let value = await GoReleaseEvidence.evaluate(introduced[keys[0]]!, repositories: repositories, root: candidateRoot,
+                                at: checkedAt, request: request, manifest: goManifest, deadline: deadline)
+                            return (keys[0], [keys[0]: value])
+                        }
+                        let url = RegistryReleaseEvidence.url(entry)
                         var verdicts: [String: RegistryReleaseEvidence.Verdict] = [:]
                         guard Date() < deadline, !Task.isCancelled else {
                             for key in keys { verdicts[key] = .init(unknownReason: "Registry inspection time limit reached.") }; return (keys[0], verdicts)
@@ -179,11 +201,13 @@ enum RepositoryReleaseAgeChecks {
                 }
                 let status = !verdict.risks.isEmpty ? "review_required" : (verdict.unknownReason != nil || verdict.ageEligible == nil ? "unknown" : (exception != nil ? "excepted" : (verdict.ageEligible == true ? "eligible" : "too_young")))
                 versions.append(.init(identity: key, change: baseline[key] == nil ? "version" : "origin", lockfiles: Set(entries.map(\.lockfile)).sorted(), status: status,
-                                      evidenceURL: supportedSource ? RegistryReleaseEvidence.url(entry).absoluteString : nil, publishedAt: verdict.publishedAt.map(RegistryReleaseEvidence.timestamp),
-                                      eligibleAt: verdict.eligibleAt.map(RegistryReleaseEvidence.timestamp), risks: verdict.risks, unknownReason: verdict.unknownReason, exceptionReason: exception))
+                                      evidenceURL: supportedSource ? (verdict.evidenceURL ?? (entry.ecosystem == "go" ? nil : RegistryReleaseEvidence.url(entry).absoluteString)) : nil, publishedAt: verdict.publishedAt.map(RegistryReleaseEvidence.timestamp),
+                                      eligibleAt: verdict.eligibleAt.map(RegistryReleaseEvidence.timestamp), risks: verdict.risks, unknownReason: verdict.unknownReason, exceptionReason: exception,
+                                      firstSeenAt: verdict.firstSeenAt.map(RegistryReleaseEvidence.timestamp)))
             }
             do {
                 guard try workingPaths(context) == candidatePaths,
+                      GoModuleInventory.hasWorkspace(paths: candidatePaths, root: context.snapshot.url) == goWorkspace,
                       try GitRunner.text(["rev-parse", "--verify", "HEAD"], at: context.snapshot.url) == candidateHead else {
                     throw InspectionError.blocked("Candidate changed.")
                 }
@@ -198,6 +222,10 @@ enum RepositoryReleaseAgeChecks {
         if entry.source == "unsupported" { return !same.contains { $0.sourceFingerprint == entry.sourceFingerprint } }
         if let digest = entry.integrity {
             let previous = same.compactMap(\.integrity)
+            if !previous.isEmpty, !previous.contains(digest) { return true }
+        }
+        if let digest = entry.goModIntegrity {
+            let previous = same.compactMap(\.goModIntegrity)
             if !previous.isEmpty, !previous.contains(digest) { return true }
         }
         if let tarball = entry.tarball {
