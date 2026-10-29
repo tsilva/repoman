@@ -172,11 +172,12 @@ enum GitHubTagline {
         }
         return PublishedRepositoryMetadata(description: repository.description, branch: branch.name, sha: target.oid, readme: readme)
     }
-    static func tagline(_ readme: String) throws -> String? {
+    static func tagline(_ original: String) throws -> String? {
         let start = "<!-- repo-tagline:start -->", end = "<!-- repo-tagline:end -->"
-        let fragments = CheckSupport.captures(readme, #"<!--\s*repo-tagline\b|repo-tagline\s*:\s*(?:start|end)\s*-->"#)
+        let fragments = CheckSupport.captures(original, #"<!--\s*repo-tagline\b|repo-tagline\s*:\s*(?:start|end)\s*-->"#)
         guard !fragments.isEmpty else { return nil }
-        guard readme.components(separatedBy: start).count == 2, readme.components(separatedBy: end).count == 2,
+        let readme = try withoutManagedArchiveNotice(original)
+        guard original.components(separatedBy: start).count == 2, original.components(separatedBy: end).count == 2,
               fragments.count == 2, let a = readme.range(of: start), let b = readme.range(of: end), a.upperBound <= b.lowerBound else {
             throw InspectionError.blocked("Published README has invalid or duplicate tagline markers.")
         }
@@ -212,6 +213,27 @@ enum GitHubTagline {
             throw InspectionError.blocked("Published tagline is empty, contains controls, or exceeds GitHub's 350-character limit.")
         }
         return text
+    }
+    private static func withoutManagedArchiveNotice(_ original: String) throws -> String {
+        let fragments = CheckSupport.captures(original, #"<!--\s*archive-repo\b|archive-repo\s*:\s*deprecation-notice\s*:\s*(?:start|end)\s*-->"#)
+        guard !fragments.isEmpty else { return original }
+        let start = "<!-- archive-repo:deprecation-notice:start -->", end = "<!-- archive-repo:deprecation-notice:end -->"
+        let text = original.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard fragments.count == 2, text.components(separatedBy: start).count == 2,
+              text.components(separatedBy: end).count == 2, text.hasPrefix(start + "\n"),
+              let close = text.range(of: end) else {
+            throw InspectionError.blocked("Published README has malformed, duplicate or misplaced archive-repo notice markers.")
+        }
+        let body = String(text[text.index(text.startIndex, offsetBy: start.count + 1)..<close.lowerBound])
+        let lines = body.components(separatedBy: "\n")
+        let rationale = lines.dropFirst(3).dropLast()
+        guard lines.count >= 5, Array(lines.prefix(3)) == ["> [!WARNING]", "> **Deprecated**", ">"],
+              lines.last == "", rationale.allSatisfy({ $0 == ">" || $0.hasPrefix("> ") }),
+              rationale.contains(where: { !$0.dropFirst().trimmingCharacters(in: .whitespaces).isEmpty }),
+              !body.contains("```"), !body.contains("~~~"), text[close.upperBound...].hasPrefix("\n") else {
+            throw InspectionError.blocked("Published README archive-repo notice must be one complete quoted deprecation callout before the opening header.")
+        }
+        return String(text[close.upperBound...])
     }
     private struct Response: Decodable { let data: Payload?; let errors: [APIError]? }
     private struct APIError: Decodable { let message: String }

@@ -154,6 +154,35 @@ final class RepositoryCheckerRegressionTests: XCTestCase {
         }
     }
 
+    func testManagedArchiveNoticePreservesDescriptionTagline() throws {
+        for readme in ["<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\r\n> [!WARNING]\r\n> **Deprecated**\r\n>\r\n> Agents made this experiment obsolete.\r\n<!-- archive-repo:deprecation-notice:end -->\r\n\r\n<p align=\"center\">\r\n<!-- repo-tagline:start -->\r\n<strong>Build &amp; learn 🚀</strong>\r\n<!-- repo-tagline:end -->\r\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> First reason.\n>\n> Second reason.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>"] {
+            XCTAssertEqual(try GitHubTagline.tagline(readme), "Build & learn 🚀")
+        }
+    }
+
+    func testManagedNoticeCannotHideMalformedOrMisplacedMarkers() throws {
+        for readme in ["<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>\n<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:star -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:end -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!NOTE]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> Deprecated\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\nUnquoted rationale\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "```markdown\n<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>\n```",
+            "~~~markdown\n<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>\n~~~",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p><!-- archive-repo:deprecation-notice:start -->",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> <!-- repo-tagline:start -->\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:star -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p><p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p>\n<!-- repo-tagline:start -->\n<strong>Build &amp; learn 🚀</strong>\n<!-- repo-tagline:end -->\n</p>",
+            "<!-- archive-repo:deprecation-notice:start -->\n> [!WARNING]\n> **Deprecated**\n>\n> Agents made this experiment obsolete.\n<!-- archive-repo:deprecation-notice:end -->\n\n<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong><em>Bad</em></strong>\n<!-- repo-tagline:end -->\n</p>"] {
+            XCTAssertThrowsError(try GitHubTagline.tagline(readme))
+        }
+    }
+
     private func taglineHeader(_ text: String) -> String {
         "<p align=\"center\">\n<!-- repo-tagline:start -->\n<strong>" + text + "</strong>\n<!-- repo-tagline:end -->\n</p>"
     }
