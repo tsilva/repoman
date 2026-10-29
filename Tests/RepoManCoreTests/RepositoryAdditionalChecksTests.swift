@@ -67,18 +67,14 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         let observed2 = try await inspect("dependencies.manager").findings().isEmpty
         XCTAssertTrue(observed2)
     }
-    func testUVTomlSupersedesProjectConfigurationAndAcceptsOlderCutoff() async throws {
-        try write("pyproject.toml", "[tool.uv]\nexclude-newer = '1 day'")
+    func testUVTomlSupersedesProjectSettingsAndAcceptsOlderCutoff() async throws {
+        try write("pyproject.toml", "[tool.uv]\nexclude-newer = '1 day'\nconstraint-dependencies = ['mistralai!=2.4.6', 'guardrails-ai!=0.10.1']")
         try write("uv.toml", """
         exclude-newer = "7 days"
-        constraint-dependencies = [
-          "mistralai!=2.4.6",
-          "guardrails-ai!=0.10.1",
-        ]
         """)
         let observed3 = try await inspect("dependencies.safeguards").findings().isEmpty
         XCTAssertTrue(observed3)
-        try write("uv.toml", "exclude-newer = '2000-01-01T00:00:00Z'\nconstraint-dependencies = ['mistralai!=2.4.6', 'guardrails-ai!=0.10.1']")
+        try write("uv.toml", "exclude-newer = '2000-01-01T00:00:00Z'")
         let observed4 = try await inspect("dependencies.safeguards").findings().isEmpty
         XCTAssertTrue(observed4)
         try write("uv.toml", "exclude-newer = '1 day'")

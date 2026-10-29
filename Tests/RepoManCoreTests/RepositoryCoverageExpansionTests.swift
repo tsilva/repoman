@@ -13,12 +13,14 @@ final class RepositoryCoverageExpansionTests: XCTestCase {
 
     func testUVConfigFileValidationAndNonValidationCommands() async throws {
         try write("pyproject.toml", "[project]\nname='app'")
-        for command in ["uv run --locked --config-file uv.toml pytest -q", "uv run --config-file=uv.toml ruff check .", "uv run --config-file 'config path.toml' pytest"] {
+        for command in ["uv run --locked --config-file uv.toml pytest -q", "uv run --config-file=uv.toml ruff check .", "uv run --config-file 'config path.toml' pytest",
+                        "uv --config-file uv.toml run --locked pytest -q", "uv --config-file=uv.toml run ruff check .", "uv --config-file 'config path.toml' run pytest"] {
             try workflow("      - run: " + command)
             let report = try await inspect("ci.coverage")
             XCTAssertEqual(report.status(for: "ci.coverage"), .passed, command)
         }
-        for command in ["echo 'uv run --config-file uv.toml pytest'", "uv run --config-file pytest", "uv run --config-file uv.toml echo pytest", "uv run --config-file 'unused && pytest' echo done", "uv run --config-file 'unused && pytest'"] {
+        for command in ["echo 'uv run --config-file uv.toml pytest'", "uv run --config-file pytest", "uv run --config-file uv.toml echo pytest", "uv run --config-file 'unused && pytest' echo done", "uv run --config-file 'unused && pytest'",
+                        "echo 'uv --config-file uv.toml run pytest'", "python -c 'print(\"uv --config-file uv.toml run pytest\")'", "uv --config-file run pytest", "uv --config-file uv.toml run echo pytest", "uv --config-file 'unused && pytest' run echo done", "uv --config-file '$CONFIG' run pytest", "uv run --config-file '$CONFIG' pytest", "uv --config-file --locked run pytest"] {
             try workflow("      - run: " + command)
             let report = try await inspect("ci.coverage")
             XCTAssertNotEqual(report.status(for: "ci.coverage"), .passed, command)
@@ -26,6 +28,9 @@ final class RepositoryCoverageExpansionTests: XCTestCase {
         try workflow("      - run: uv run --config-file uv.toml pytest\n        continue-on-error: true")
         let suppressed = try await inspect("ci.suppressedFailures")
         XCTAssertEqual(suppressed.status(for: "ci.suppressedFailures"), .findings)
+        try workflow("      - run: uv --config-file uv.toml run pytest\n        continue-on-error: true")
+        let globalSuppressed = try await inspect("ci.suppressedFailures")
+        XCTAssertEqual(globalSuppressed.status(for: "ci.suppressedFailures"), .findings)
     }
 
     func testLiteralPythonMatrixPassesButUnsupportedRuntimeRemainsAFinding() async throws {

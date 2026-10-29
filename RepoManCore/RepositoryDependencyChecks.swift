@@ -142,9 +142,17 @@ enum RepositoryDependencyChecks {
         }
         return findings
     }
+    private static func uvProjectManifest(_ context: RepositoryInspectionContext, _ path: String) throws -> String {
+        let prefixes = try lockPrefixes(context, path)
+        guard prefixes.count <= 2, let root = prefixes.last else {
+            throw InspectionError.blocked("Nested or ambiguous uv workspaces need separate policy verification.")
+        }
+        return root + "pyproject.toml"
+    }
     private static func uvConfig(_ context: RepositoryInspectionContext, _ path: String) throws -> InspectionConfig {
-        // uv.toml supersedes [tool.uv] at the same level; nested projects inherit workspace policy.
-        for prefix in ancestors(path) {
+        // Workspace members do not supply settings. At the workspace/project root,
+        // uv.toml supersedes pyproject settings, but not project metadata constraints.
+        for prefix in ancestors(try uvProjectManifest(context, path)) {
             if try context.exists(prefix + "uv.toml") {
                 let config = try context.toml(prefix + "uv.toml", standaloneUV: true)
                 return InspectionConfig(values: Dictionary(uniqueKeysWithValues: config.values.map { ("tool.uv." + $0.key, $0.value) }))
@@ -206,10 +214,12 @@ enum RepositoryDependencyChecks {
                 if let pipCutoff = config.values["tool.uv.pip.exclude-newer"], !safeCutoff(pipCutoff, now: context.snapshot.checkedAt) {
                     reasons.append("The uv pip cutoff overrides the seven-day dependency policy.")
                 }
-                let constraints = config.values["tool.uv.constraint-dependencies"] ?? ""
+                let project = try uvProjectManifest(context, path)
+                let metadata = try context.toml(project)
+                let constraints = metadata.values["tool.uv.constraint-dependencies"] ?? ""
                 let exclusions = Set(CheckSupport.captures(constraints, #"(["'])(.*?)\1"#).map { $0[2].replacingOccurrences(of: " ", with: "") })
                 for item in ["mistralai!=2.4.6", "guardrails-ai!=0.10.1"] where !exclusions.contains(item) {
-                    reasons.append("Effective uv constraints do not exclude \(item). Review applicability or document an exception.")
+                    reasons.append("Project constraints in \(project) do not exclude \(item). Review applicability or document an exception.")
                 }
             } else {
                 let source = try context.readText(path)
