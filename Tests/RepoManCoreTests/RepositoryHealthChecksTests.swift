@@ -482,7 +482,6 @@ final class RepositoryHealthChecksTests: XCTestCase {
         }
         try write("pyproject.toml", project)
         for (before, after) in [
-            ("extra == 'test'", "extra == 'test' and python_version < '3.13'"),
             ("extra == 'test'", "extra == 'missing'"),
             ("extra == 'test'", "extra == ''"),
             ("name = \"pytest\"", "name = \"pytest\", unknown = \"value\""),

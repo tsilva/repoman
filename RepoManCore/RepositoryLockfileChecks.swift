@@ -280,7 +280,7 @@ enum RepositoryLockfileChecks {
             let requirement = try tomlString(item)
             let parts = requirement.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
             let marker = parts.count == 2 ? try pythonMarker(String(parts[1])) : nil
-            guard marker?.extraGroups == nil else { throw InspectionError.blocked("Extra markers inside requirement declarations need resolver review.") }
+            guard marker?.mentionsExtra != true else { throw InspectionError.blocked("Extra markers inside requirement declarations need resolver review.") }
             let matches = CheckSupport.captures(String(parts[0]), #"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\[\]]+)\])?\s*(.*)$"#)
             guard let match = matches.first else { throw InspectionError.blocked("Unsupported Python requirement declaration.") }
             let name = try pythonName(match[1])
@@ -396,11 +396,14 @@ enum RepositoryLockfileChecks {
             let dependencyExtras = try pythonExtras(fields["extras"] ?? "[]")
             try validatePythonSpecifier(specifier)
             let marker = try fields["marker"].map { try pythonMarker(tomlString($0)) }
-            let groups = marker?.extraGroups ?? [""]
-            guard marker?.extraGroups == nil || (!allowDuplicates && groups.isSubset(of: extras)) else {
+            let partition = marker?.extraPartition
+            let groups = partition?.groups ?? [""]
+            if let partition, allowDuplicates || !partition.groups.isSubset(of: extras) {
                 throw InspectionError.blocked("Python lock metadata references an undeclared extra.")
             }
-            let environmentMarker = marker?.extraGroups == nil ? marker?.canonical : nil
+            let environmentMarker: String?
+            if let partition { environmentMarker = partition.environment?.canonical }
+            else { environmentMarker = marker?.canonical }
             let key = name + (environmentMarker.map { "\u{1F}" + $0 } ?? "")
             for group in groups {
                 guard allowDuplicates || result[group]?[key] == nil else { throw InspectionError.blocked("Duplicate locked Python requirements.") }
@@ -455,6 +458,20 @@ enum RepositoryLockfileChecks {
                 return result
             case .all: return nil
             }
+        }
+        /// Separate one literal optional-extra guard without evaluating any environment.
+        /// Pure extra disjunctions retain existing support; mixed disjunctions,
+        /// repeated guards and multiple extra identities remain unsupported.
+        var extraPartition: (groups: Set<String>, environment: PythonMarker?)? {
+            if let groups = extraGroups { return (groups, nil) }
+            guard case .all(let nodes) = self else { return nil }
+            let flattened = nodes.flatMap { $0.terms(conjunction: true) }
+            let guards = flattened.filter(\.mentionsExtra)
+            guard guards.count == 1, case .comparison = guards[0],
+                  let groups = guards[0].extraGroups, groups.count == 1 else { return nil }
+            let environment = flattened.filter { !$0.mentionsExtra }
+            guard !environment.isEmpty else { return nil }
+            return (groups, environment.count == 1 ? environment[0] : .all(environment))
         }
     }
     /// Parse marker declarations for comparison only; never evaluate the host environment.
@@ -527,7 +544,7 @@ enum RepositoryLockfileChecks {
         }
         let result = try expression(0)
         guard index == tokens.count else { throw InspectionError.blocked("Trailing Python marker syntax.") }
-        guard !result.mentionsExtra || result.extraGroups != nil else {
+        guard !result.mentionsExtra || result.extraPartition != nil else {
             throw InspectionError.blocked("Combined optional-extra and environment markers need resolver review.")
         }
         return result
