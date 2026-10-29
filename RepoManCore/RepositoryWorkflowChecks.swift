@@ -107,8 +107,15 @@ enum WorkflowInspection {
     static func references(_ source: String) throws -> [String] {
         return try references(lines(source))
     }
+    struct ReferenceInspection { let references: [String]; let reasons: [String] }
     static func references(_ lines: [Line]) throws -> [String] {
-        var references: [String] = [], scalarIndent: Int?
+        let inspection = referenceInspection(lines)
+        guard inspection.reasons.isEmpty else { throw InspectionError.blocked(inspection.reasons.joined(separator: " ")) }
+        return inspection.references
+    }
+    /// Retain proven literal references when another step uses unsupported syntax.
+    static func referenceInspection(_ lines: [Line]) -> ReferenceInspection {
+        var references: [String] = [], reasons: [String] = [], scalarIndent: Int?
         for line in lines {
             if let indent = scalarIndent {
                 if line.indent > indent { continue }
@@ -116,17 +123,15 @@ enum WorkflowInspection {
             }
             if line.value.hasPrefix("|") || line.value.hasPrefix(">") { scalarIndent = line.indent; continue }
             if line.field == "uses" {
-                guard let reference = InspectionConfig.scalar(line.value), !reference.isEmpty, !reference.contains("${{") else {
-                    throw InspectionError.blocked("Dynamic or empty action reference needs manual review.")
-                }
-                references.append(reference)
+                if let reference = InspectionConfig.scalar(line.value), !reference.isEmpty, !reference.contains("${{") {
+                    references.append(reference)
+                } else { reasons.append("Dynamic or empty action reference needs manual review.") }
             }
-            // Inline steps can contain uses fields hidden from the structural reader.
             if line.text.hasPrefix("- {") || (line.field == "steps" && !line.value.isEmpty && line.value != "[]") {
-                throw InspectionError.blocked("Inline workflow steps require manual review.")
+                reasons.append("Inline workflow steps require manual review.")
             }
         }
-        return references
+        return ReferenceInspection(references: references, reasons: reasons)
     }
     static func steps(_ source: String, includeInputs: Bool = false, inputKeys: Set<String>? = nil) throws -> [Step] {
         return try steps(lines(source), includeInputs: includeInputs, inputKeys: inputKeys)

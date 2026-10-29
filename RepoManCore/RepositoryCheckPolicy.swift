@@ -189,9 +189,12 @@ enum CheckSupport {
         guard !files.isEmpty else { throw InspectionError.notApplicable("No GitHub Actions workflows are present.") }
         return files
     }
-    static func workflows(_ context: RepositoryInspectionContext) throws -> [(String, String)] {
+    static func workflowPaths(_ context: RepositoryInspectionContext) throws -> [String] {
         try context.filenames(in: ".github/workflows").filter { ["yaml", "yml"].contains(($0 as NSString).pathExtension) }
-            .map { name in let path = ".github/workflows/" + name; return (path, try context.readText(path)) }
+            .map { ".github/workflows/" + $0 }
+    }
+    static func workflows(_ context: RepositoryInspectionContext) throws -> [(String, String)] {
+        try workflowPaths(context).map { ($0, try context.readText($0)) }
     }
     static func matches(_ text: String, _ pattern: String) -> Bool { text.range(of: pattern, options: .regularExpression) != nil }
     static func captures(_ text: String, _ pattern: String) -> [[String]] {

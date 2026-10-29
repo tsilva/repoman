@@ -58,6 +58,17 @@ class CLITests(unittest.TestCase):
     def check(self, *args):
         return self.cli('check', '--repo', str(self.repo), '--format', 'json', *args)
 
+    def test_actions_policy_is_catalogued_as_remote_and_requires_opt_in(self):
+        listed = self.cli('--list-checks')
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn('ci.allowedActions [remote]', listed.stdout)
+        denied = self.check('--check', 'ci.allowedActions')
+        self.assertEqual(denied.returncode, 2)
+        local = self.check()
+        self.assertIn(local.returncode, (0, 1, 3))
+        result = next(check for check in json.loads(local.stdout)['checks'] if check['id'] == 'ci.allowedActions')
+        self.assertEqual(result['status'], 'skipped')
+
     def test_clean_findings_and_fresh_repair(self):
         clean = self.check('--check', 'files.readme')
         self.assertEqual(clean.returncode, 0, clean.stderr)

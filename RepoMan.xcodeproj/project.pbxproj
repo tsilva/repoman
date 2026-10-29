@@ -45,6 +45,7 @@
 		A80000000000000000000003 /* AppUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* AppUpdateController.swift */; };
 		A10000000000000000000101 /* RepositoryAccessChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000101 /* RepositoryAccessChecks.swift */; };
 		A10000000000000000000102 /* RepositoryDependabotChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000102 /* RepositoryDependabotChecks.swift */; };
+		A7F4135F0E8047FA9A4A42A1 /* RepositoryActionsPolicyChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92641158312F4E90960534F4 /* RepositoryActionsPolicyChecks.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -87,6 +88,7 @@
 		B80000000000000000000003 /* AppUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateController.swift; sourceTree = "<group>"; };
 		B10000000000000000000101 /* RepositoryAccessChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryAccessChecks.swift; sourceTree = "<group>"; };
 		B10000000000000000000102 /* RepositoryDependabotChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDependabotChecks.swift; sourceTree = "<group>"; };
+		92641158312F4E90960534F4 /* RepositoryActionsPolicyChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryActionsPolicyChecks.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -128,6 +130,7 @@
 				BB0000000000000000000001 /* RepositoryCheckReport.swift */,
 				B10000000000000000000100 /* RepositoryProjectReferenceChecks.swift */,
 				B10000000000000000000102 /* RepositoryDependabotChecks.swift */,
+				92641158312F4E90960534F4 /* RepositoryActionsPolicyChecks.swift */,
 				B10000000000000000000101 /* RepositoryAccessChecks.swift */,
 				B10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift */,
 				B10000000000000000000098 /* RepositoryRuntimeChecks.swift */,
@@ -264,6 +267,7 @@
 				A10000000000000000000090 /* RepositoryCheckPolicy.swift in Sources */,
 				A10000000000000000000100 /* RepositoryProjectReferenceChecks.swift in Sources */,
 				A10000000000000000000102 /* RepositoryDependabotChecks.swift in Sources */,
+				A7F4135F0E8047FA9A4A42A1 /* RepositoryActionsPolicyChecks.swift in Sources */,
 				A10000000000000000000101 /* RepositoryAccessChecks.swift in Sources */,
 				A10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift in Sources */,
 				A10000000000000000000098 /* RepositoryRuntimeChecks.swift in Sources */,
