@@ -46,6 +46,9 @@
 		A10000000000000000000101 /* RepositoryAccessChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000101 /* RepositoryAccessChecks.swift */; };
 		A10000000000000000000102 /* RepositoryDependabotChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000102 /* RepositoryDependabotChecks.swift */; };
 		A7F4135F0E8047FA9A4A42A1 /* RepositoryActionsPolicyChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92641158312F4E90960534F4 /* RepositoryActionsPolicyChecks.swift */; };
+		5D1D2FEB1EE6432380D73AF3 /* RepositoryDependencyInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1293D649E2C0424B9DF3C12E /* RepositoryDependencyInventory.swift */; };
+		0CECBD07AD8543D593989718 /* RepositoryRegistryEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA95B90FB96B460494BF7D61 /* RepositoryRegistryEvidence.swift */; };
+		C51AD2E4E72D4C089318DA37 /* RepositoryReleaseAgeChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -89,6 +92,9 @@
 		B10000000000000000000101 /* RepositoryAccessChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryAccessChecks.swift; sourceTree = "<group>"; };
 		B10000000000000000000102 /* RepositoryDependabotChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDependabotChecks.swift; sourceTree = "<group>"; };
 		92641158312F4E90960534F4 /* RepositoryActionsPolicyChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryActionsPolicyChecks.swift; sourceTree = "<group>"; };
+		1293D649E2C0424B9DF3C12E /* RepositoryDependencyInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDependencyInventory.swift; sourceTree = "<group>"; };
+		EA95B90FB96B460494BF7D61 /* RepositoryRegistryEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryRegistryEvidence.swift; sourceTree = "<group>"; };
+		2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryReleaseAgeChecks.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -131,6 +137,9 @@
 				B10000000000000000000100 /* RepositoryProjectReferenceChecks.swift */,
 				B10000000000000000000102 /* RepositoryDependabotChecks.swift */,
 				92641158312F4E90960534F4 /* RepositoryActionsPolicyChecks.swift */,
+				1293D649E2C0424B9DF3C12E /* RepositoryDependencyInventory.swift */,
+				EA95B90FB96B460494BF7D61 /* RepositoryRegistryEvidence.swift */,
+				2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */,
 				B10000000000000000000101 /* RepositoryAccessChecks.swift */,
 				B10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift */,
 				B10000000000000000000098 /* RepositoryRuntimeChecks.swift */,
@@ -268,6 +277,9 @@
 				A10000000000000000000100 /* RepositoryProjectReferenceChecks.swift in Sources */,
 				A10000000000000000000102 /* RepositoryDependabotChecks.swift in Sources */,
 				A7F4135F0E8047FA9A4A42A1 /* RepositoryActionsPolicyChecks.swift in Sources */,
+				5D1D2FEB1EE6432380D73AF3 /* RepositoryDependencyInventory.swift in Sources */,
+				0CECBD07AD8543D593989718 /* RepositoryRegistryEvidence.swift in Sources */,
+				C51AD2E4E72D4C089318DA37 /* RepositoryReleaseAgeChecks.swift in Sources */,
 				A10000000000000000000101 /* RepositoryAccessChecks.swift in Sources */,
 				A10000000000000000000099 /* RepositoryWorkflowSecurityChecks.swift in Sources */,
 				A10000000000000000000098 /* RepositoryRuntimeChecks.swift in Sources */,

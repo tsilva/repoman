@@ -35,8 +35,9 @@ public struct RepositoryCheckReport: Codable, Sendable {
     public let observedAt: Date
     public let remoteRefs: String
     public let checks: [Check]
+    public let dependencyComparison: DependencyComparisonReport?
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, checkerVersion, repository, head, observedAt, remoteRefs, checks, coverage
+        case schemaVersion, checkerVersion, repository, head, observedAt, remoteRefs, checks, coverage, dependencyComparison
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -48,6 +49,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
         try values.encode(remoteRefs, forKey: .remoteRefs)
         try values.encode(checks, forKey: .checks)
         try values.encode(coverage, forKey: .coverage)
+        try values.encodeIfPresent(dependencyComparison, forKey: .dependencyComparison)
     }
     public var exitCode: Int32 {
         if checks.contains(where: { $0.findings.contains { $0.severity != .information } }) { return 1 }
@@ -55,8 +57,9 @@ public struct RepositoryCheckReport: Codable, Sendable {
     }
 
     public init(_ report: RepositoryInspectionReport, head: String?, checkerVersion: String,
-                skipped: [String] = []) {
+                skipped: [String] = [], dependencyComparison: DependencyComparisonReport? = nil) {
         schemaVersion = 3
+        self.dependencyComparison = dependencyComparison
         coverage = report.coverage
         self.checkerVersion = checkerVersion
         repository = report.snapshot.url.path
@@ -97,6 +100,13 @@ public struct RepositoryCheckReport: Codable, Sendable {
     }
     public var text: String {
         var lines = ["Repository: \(repository)", "HEAD: \(head ?? "unborn")", remoteRefs]
+        if let comparison = dependencyComparison {
+            lines.append("Comparison base: \(comparison.baseCommit); includes working tree; observed \(comparison.checkedAt)")
+            lines.append("Introduced locked versions: \(comparison.introduced.count); minimum age: \(comparison.minimumAgeDays) days")
+            for version in comparison.introduced {
+                lines.append("  \(version.identity): \(version.status)" + (version.eligibleAt.map { " — eligible " + $0 } ?? ""))
+            }
+        }
         for item in coverage { lines.append("Verification \(item.id): \(item.status) — \(item.reason)") }
         for check in checks {
             lines.append("\(check.id): \(check.status)" + (check.reason.map { " — " + $0 } ?? ""))
@@ -109,7 +119,7 @@ public struct RepositoryCheckReport: Codable, Sendable {
 
 public enum RepositoryChecker {
     public static func run(at url: URL, checkIDs: Set<String> = [], remote: Bool = false, fetch: Bool = false,
-                           checkerVersion: String = "development") async throws -> RepositoryCheckReport {
+                           checkerVersion: String = "development", comparisonBase: String? = nil) async throws -> RepositoryCheckReport {
         let standard = RepositoryIssueCatalog.standardChecks + RepositoryIssueCatalog.coverageCompatibilityChecks
         let unknown = checkIDs.subtracting(standard.map(\.id))
         guard unknown.isEmpty else { throw InspectionError.blocked("Unknown check IDs: " + unknown.sorted().joined(separator: ", ")) }
@@ -117,7 +127,14 @@ public enum RepositoryChecker {
         if !remote, !checkIDs.isEmpty, requested.contains(where: \.requiresRemoteAccess) {
             throw InspectionError.blocked("Selected remote checks require --remote.")
         }
-        let selected = requested.filter { remote || !$0.requiresRemoteAccess }
+        if comparisonBase != nil, !remote { throw InspectionError.blocked("Release-age comparisons require --remote.") }
+        if checkIDs.contains(RepositoryReleaseAgeChecks.id), comparisonBase == nil {
+            throw InspectionError.blocked("The release-age check requires an explicit --base COMMIT.")
+        }
+        if comparisonBase != nil, !requested.contains(where: { $0.id == RepositoryReleaseAgeChecks.id }) {
+            throw InspectionError.blocked("--base applies only to dependencies.releaseAge.")
+        }
+        var selected = requested.filter { remote || !$0.requiresRemoteAccess }
         let skipped = requested.filter { !remote && $0.requiresRemoteAccess }.map(\.id)
         let root = url.standardizedFileURL.resolvingSymlinksInPath()
         // Reject subdirectory paths and bare repositories rather than inspecting a misleading root.
@@ -136,11 +153,22 @@ public enum RepositoryChecker {
                 fetchError = "Git remote refresh failed."
             }
         }
+        let capture = DependencyComparisonCapture()
+        if let comparisonBase {
+            let bytes = try GitRunner.run(["rev-parse", "--verify", "--end-of-options", comparisonBase + "^{commit}"], at: root,
+                                          timeout: 10, maximumOutputBytes: 256,
+                                          environmentOverrides: ["GIT_NO_REPLACE_OBJECTS":"1", "GIT_NO_LAZY_FETCH":"1"])
+            let base = String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard CheckSupport.matches(base, #"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"#) else { throw InspectionError.blocked("The selected Git base did not resolve to one commit.") }
+            selected = selected.map { check in
+                check.id == RepositoryReleaseAgeChecks.id ? RepositoryReleaseAgeChecks.checks(base: base, record: { capture.record($0) })[0] : check
+            }
+        }
         var snapshot = try GitRepositoryScanner.scan(root, includeDetails: false)
         snapshot.fetchedAt = fetchedAt
         snapshot.fetchError = fetchError
         let report = await RepositoryIssueCatalog(checks: selected).inspect(snapshot, forceRefresh: true)
-        return RepositoryCheckReport(report, head: head, checkerVersion: checkerVersion, skipped: skipped)
+        return RepositoryCheckReport(report, head: head, checkerVersion: checkerVersion, skipped: skipped, dependencyComparison: capture.value)
     }
 }
 

@@ -58,6 +58,73 @@ class CLITests(unittest.TestCase):
     def check(self, *args):
         return self.cli('check', '--repo', str(self.repo), '--format', 'json', *args)
 
+    def test_release_age_registration_and_explicit_base_requirement(self):
+        listed = self.cli('--list-checks')
+        self.assertIn('dependencies.releaseAge [remote]', listed.stdout)
+        result = self.check('--check', 'dependencies.releaseAge', '--remote')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--base', result.stderr)
+
+    def test_release_age_rejects_missing_remote_duplicate_or_unused_base(self):
+        for arguments in [('--check', 'dependencies.releaseAge', '--base', 'HEAD'),
+                          ('--check', 'files.readme', '--remote', '--base', 'HEAD'),
+                          ('--check', 'dependencies.releaseAge', '--remote', '--base', 'HEAD', '--base', 'HEAD'),
+                          ('--check', 'dependencies.releaseAge', '--remote', '--base', 'not-an-existing-ref')]:
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.check(*arguments).returncode, 2)
+
+    def test_release_age_is_explicitly_skipped_in_a_default_remote_run(self):
+        result = self.check('--remote')
+        self.assertIn(result.returncode, (0, 1, 3))
+        payload = json.loads(result.stdout)
+        check = next(x for x in payload['checks'] if x['id'] == 'dependencies.releaseAge')
+        self.assertEqual(check['status'], 'skipped')
+        self.assertIn('--base', check['reason'])
+        self.assertNotIn('dependencyComparison', payload)
+
+    def test_release_age_empty_external_inventory_records_base_and_hashes_without_writes(self):
+        (self.repo / 'package.json').write_text('{"name":"fixture","version":"1.0.0","packageManager":"npm@11.20.0"}')
+        (self.repo / 'package-lock.json').write_text('{"lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}')
+        self.git('add', '.'); self.git('commit', '-m', 'Empty external graph')
+        base = self.git('rev-parse', 'HEAD').decode().strip()
+        files = [self.repo / '.git' / name for name in ('index', 'HEAD', 'config')]
+        before = [p.read_bytes() for p in files]
+        result = self.check('--remote', '--check', 'dependencies.releaseAge', '--base', base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout); evidence = payload['dependencyComparison']
+        self.assertEqual(evidence['baseCommit'], base)
+        self.assertEqual(evidence['candidateHead'], base)
+        self.assertTrue(evidence['includesWorkingTree'])
+        self.assertEqual(evidence['minimumAgeDays'], 7)
+        self.assertEqual(evidence['introduced'], [])
+        self.assertEqual({x['side'] for x in evidence['inputs']}, {'base', 'candidate'})
+        self.assertTrue(all(len(x['sha256']) == 64 for x in evidence['inputs']))
+        self.assertEqual(before, [p.read_bytes() for p in files])
+
+    def test_release_age_malformed_candidate_lock_is_incomplete_not_clear(self):
+        (self.repo / 'package.json').write_text('{"name":"fixture"}')
+        (self.repo / 'package-lock.json').write_text('{"lockfileVersion":3}')
+        result = self.check('--remote', '--check', 'dependencies.releaseAge', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload['checks'][0]['status'], 'incomplete')
+        self.assertTrue(payload['dependencyComparison']['incompleteReasons'])
+
+    def test_release_age_npm_pnpm_migration_includes_untracked_files_and_unstaged_deletion(self):
+        (self.repo / 'package.json').write_text('{"name":"fixture","packageManager":"npm@11.20.0"}')
+        (self.repo / 'package-lock.json').write_text(json.dumps({'lockfileVersion':3,'packages':{'':{'name':'fixture'},
+            'node_modules/child':{'version':'1.0.0','resolved':'https://registry.npmjs.org/child/-/child-1.0.0.tgz'}}}))
+        self.git('add', '.'); self.git('commit', '-m', 'Locked package')
+        base = self.git('rev-parse', 'HEAD').decode().strip()
+        (self.repo / 'package-lock.json').unlink()
+        (self.repo / 'pnpm-lock.yaml').write_text("lockfileVersion: '9.0'\npackages:\n  child@1.0.0:\n    resolution: {integrity: sha512-fixture}\n")
+        result = self.check('--remote', '--check', 'dependencies.releaseAge', '--base', base)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = json.loads(result.stdout)['dependencyComparison']
+        self.assertEqual(evidence['introduced'], [])
+        self.assertEqual({(x['side'],x['path']) for x in evidence['inputs']},
+                         {('base','package-lock.json'),('candidate','pnpm-lock.yaml'),('candidate','package.json')})
+
     def test_actions_policy_is_catalogued_as_remote_and_requires_opt_in(self):
         listed = self.cli('--list-checks')
         self.assertEqual(listed.returncode, 0, listed.stderr)

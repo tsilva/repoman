@@ -70,6 +70,10 @@ public struct RepositoryInspectionContext: Sendable {
     public func readText(_ relativePath: String) throws -> String {
         try atPath(relativePath) { try files.read(checkedURL(relativePath)) }
     }
+    /// Comparison revalidation bypasses the shared snapshot cache while preserving path/size guards.
+    func readFreshText(_ relativePath: String) throws -> String {
+        try atPath(relativePath) { try InspectionFileCache().read(checkedURL(relativePath)) }
+    }
     func readNotebook(_ relativePath: String) throws -> String {
         try atPath(relativePath) { try files.read(checkedURL(relativePath), maximumBytes: 8_388_608) }
     }
