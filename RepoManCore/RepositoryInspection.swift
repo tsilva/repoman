@@ -5,13 +5,16 @@ import Foundation
 public struct RepositoryInspectionContext: Sendable {
     public let snapshot: RepositorySnapshot
     let allowCachedRemoteMetadata: Bool
+    let allowCachedWebsiteChecks: Bool
     private let files = InspectionFileCache()
     private let git = InspectionGitCache()
     private let parsing = InspectionParsingCache()
     private let ciStatus = InspectionCIStatusCache()
+    let websites = WebsiteInspectionSession()
     private let freshness = InspectionFreshness()
-    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false) {
+    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedWebsiteChecks: Bool = false) {
         self.snapshot = snapshot; self.allowCachedRemoteMetadata = allowCachedRemoteMetadata
+        self.allowCachedWebsiteChecks = allowCachedWebsiteChecks
     }
     func ciStatuses(load: @escaping @Sendable (RepositorySnapshot) async throws -> [CIBranchStatus]) async throws -> [CIBranchStatus] {
         let current = snapshot
@@ -387,7 +390,8 @@ public extension RepositoryIssueCatalog {
         onProgress: (@Sendable (RepositoryInspectionReport) async -> Void)? = nil
     ) async -> RepositoryInspectionReport {
         let activeChecks = checks.filter { !excludingChecks.contains($0.id) }
-        let context = RepositoryInspectionContext(snapshot: snapshot, allowCachedRemoteMetadata: allowCachedRemoteMetadata && !forceRefresh)
+        let context = RepositoryInspectionContext(snapshot: snapshot, allowCachedRemoteMetadata: allowCachedRemoteMetadata && !forceRefresh,
+            allowCachedWebsiteChecks: cache != nil && !forceRefresh)
         let reusable = forceRefresh ? [:] : await cache?.reusableResults(for: snapshot, checks: activeChecks, now: now()) ?? [:]
         var results = reusable.mapValues(\.result)
         var completedAt = reusable.mapValues(\.completedAt)

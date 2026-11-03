@@ -209,14 +209,14 @@ enum CheckSupport {
 /// It handles scalar values, multiline arrays and inline tables, retaining the raw values for review.
 struct InspectionConfig {
     let values: [String: String]
-    static func withoutComment(_ text: String) -> String {
+    static func withoutComment(_ text: String, requiresSeparator: Bool = false) -> String {
         var quote: Character?, escaped = false, result = ""
         for c in text {
             if escaped { result.append(c); escaped = false; continue }
             if c == "\\", quote == "\"" { escaped = true; result.append(c); continue }
             if let q = quote { if c == q { quote = nil } }
             else if c == "\"" || c == "'" { quote = c }
-            else if c == "#" { break }
+            else if c == "#", !requiresSeparator || result.last?.isWhitespace != false { break }
             result.append(c)
         }
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -260,7 +260,7 @@ struct InspectionConfig {
         }
         var values: [String: String] = [:], parents: [(Int, String)] = []
         for raw in source.components(separatedBy: .newlines) {
-            let line = withoutComment(raw)
+            let line = withoutComment(raw, requiresSeparator: true)
             guard !line.isEmpty, line != "---" else { continue }
             let indent = raw.prefix { $0 == " " }.count
             while parents.last.map({ $0.0 >= indent }) == true { parents.removeLast() }

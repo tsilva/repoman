@@ -72,7 +72,7 @@ Runtime checks expand bounded literal quoted CI matrix axes and compare each con
 
 Project-reference checks map literal same-repository Actions checkout paths to local source. Other revisions, external repositories, conditional checkouts and unsupported layouts remain incomplete; known missing references stay visible.
 
-Live website availability, Sentry, Analytics and Cloudflare probes have been retired from RepoMan. Run live-site audits separately; see [website audit migration and domain inventory](docs/website-checks.md).
+**Production website checks** discover `tsilva.eu` domains across accessible Vercel teams, compare them with each repository's `.repoman.yaml` inventory, and inspect live Sentry and Google Analytics collection. The manifest records production URLs, service expectations, verification paths, exception reasons, and dated telemetry observations. Configured SDKs, queued beacons, consent gates and unavailable evidence remain incomplete until successful collection is observed. See [website checks and domain inventory](docs/website-checks.md).
 
 See [the checker and issue-details architecture](docs/issues.md) for extending the workflow.
 

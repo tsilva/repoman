@@ -74,11 +74,83 @@ def domain_valid(domain):
                     for part in host.split(".")))
 
 
+def manifest_domains(source):
+    """Read the documented block mapping without interpreting general YAML."""
+    if "\t" in source:
+        raise ValueError("Unsupported manifest indentation")
+    version = websites = None
+    sites = {}
+    host = None
+    for raw in source.splitlines():
+        line = re.split(r"\s+#", raw, maxsplit=1)[0].rstrip()
+        if line.lstrip().startswith("#"):
+            continue
+        if not line.strip() or line == "---":
+            continue
+        if line.startswith("version:") and version is None:
+            version = line.removeprefix("version:").strip()
+        elif line.startswith("websites:") and websites is None:
+            websites = line.removeprefix("websites:").strip()
+        elif match := re.fullmatch(r"  ([a-z0-9.-]+):", line):
+            host = match[1]
+            if websites != "" or host in sites:
+                raise ValueError("Invalid website mapping")
+            sites[host] = {}
+        elif host and (match := re.fullmatch(
+            r"    (url|checked-on|redirect-to|availability|(?:ga4|sentry)(?:-expectation|-verification-path|-exception-reason)?): +(.+)",
+            line,
+        )):
+            field, value = match.groups()
+            if field in sites[host]:
+                raise ValueError("Duplicate website field")
+            if value.startswith(("\"", "'")):
+                if len(value) < 2 or value[-1] != value[0]:
+                    raise ValueError("Unclosed website field")
+                value = value[1:-1]
+            sites[host][field] = value
+        else:
+            raise ValueError("Unsupported manifest syntax")
+    if version != "1" or (websites != "{}" and not sites):
+        raise ValueError("Missing website inventory")
+    for host, fields in sites.items():
+        if not domain_valid(host) or fields.get("url") not in {f"https://{host}", f"https://{host}/"}:
+            raise ValueError("Invalid website URL")
+        for service in ("ga4", "sentry"):
+            if service in fields and fields[service] not in {"accepted", "observed", "tag-detected", "source-detected", "unverified"}:
+                raise ValueError("Invalid telemetry evidence")
+            expectation = fields.get(f"{service}-expectation", "required")
+            path = fields.get(f"{service}-verification-path", "/")
+            reason = fields.get(f"{service}-exception-reason")
+            if expectation not in {"required", "optional", "disabled"}:
+                raise ValueError("Invalid telemetry expectation")
+            if (len(path) > 256 or not re.fullmatch(r"/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*", path)
+                    or any(segment in {".", ".."} for segment in path.split("/"))):
+                raise ValueError("Invalid telemetry verification path")
+            if (expectation == "required" and reason is not None
+                    or expectation != "required" and (reason is None or not 1 <= len(reason.strip()) <= 240)):
+                raise ValueError("Invalid telemetry exception reason")
+        if "availability" in fields and fields["availability"] not in {"reachable", "unavailable", "unverified"}:
+            raise ValueError("Invalid website availability")
+        if "checked-on" in fields and not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", fields["checked-on"]):
+            raise ValueError("Invalid observation date")
+        if "redirect-to" in fields and fields["redirect-to"] not in {
+            url for other in sites if other != host for url in (f"https://{other}", f"https://{other}/")
+        }:
+            raise ValueError("Invalid website redirect")
+    return list(sites)
+
+
 def compare_metadata(path, expected):
+    manifest = path / ".repoman.yaml"
     metadata = path / ".repo-metadata.toml"
     try:
-        values = tomllib.loads(metadata.read_text()) if metadata.exists() else {}
-        declared = values.get("domains", [])
+        if manifest.exists() or manifest.is_symlink():
+            if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 64 * 1024:
+                return "invalid-metadata", expected
+            declared = manifest_domains(manifest.read_text())
+        else:
+            values = tomllib.loads(metadata.read_text()) if metadata.exists() else {}
+            declared = values.get("domains", [])
         if (not isinstance(declared, list) or len(declared) > 32
                 or not all(isinstance(d, str) and domain_valid(d) for d in declared)
                 or len({d.lower() for d in declared}) != len(declared)):

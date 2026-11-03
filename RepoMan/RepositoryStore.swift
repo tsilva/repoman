@@ -258,7 +258,10 @@ final class RepositoryStore: ObservableObject {
 
     func refreshAll() {
         guard let folder, !isDemo, !isScanning, !isFetching, !isQuittingForUpdate else { return }
-        Task { await scanFolder(folder, fetchRemotes: true, clearFirst: false, forceRefresh: true) }
+        Task {
+            await WebsiteInventoryCache.shared.invalidate()
+            await scanFolder(folder, fetchRemotes: true, clearFirst: false, forceRefresh: true)
+        }
     }
 
     func refreshSelected() {
@@ -270,6 +273,7 @@ final class RepositoryStore: ObservableObject {
                                          didFetch: selectedRepository.remoteURL != nil)
         Task {
             defer { endLoading(selectedRepository.url, token: loadingToken) }
+            await WebsiteInventoryCache.shared.invalidate()
             let result: ScanResult
             result = await Task.detached(priority: .utility) {
                 await Self.scan(selectedRepository.url, includeDetails: true,

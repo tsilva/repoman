@@ -49,6 +49,9 @@
 		5D1D2FEB1EE6432380D73AF3 /* RepositoryDependencyInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1293D649E2C0424B9DF3C12E /* RepositoryDependencyInventory.swift */; };
 		0CECBD07AD8543D593989718 /* RepositoryRegistryEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA95B90FB96B460494BF7D61 /* RepositoryRegistryEvidence.swift */; };
 		C51AD2E4E72D4C089318DA37 /* RepositoryReleaseAgeChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */; };
+		FA1000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1000000000000000000001 /* RepositoryWebsiteChecks.swift */; };
+		FA1000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1000000000000000000002 /* WebsiteBrowserProbe.swift */; };
+		FA1000000000000000000003 /* WebsiteDomainInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1000000000000000000003 /* WebsiteDomainInventory.swift */; };
 		B367B3B42AA14E53BB0C1D21 /* CurrentDependencyInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E63CC31B832B4438A09E312A /* CurrentDependencyInventory.swift */; };
 		AA40B815019343869AA25FDB /* RepositoryVulnerabilityEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A188D221C73471995801D68 /* RepositoryVulnerabilityEvidence.swift */; };
 		C71C807985A94AF3B34B6489 /* RepositoryVulnerabilityChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBE97DC79E5F4898BD561F0A /* RepositoryVulnerabilityChecks.swift */; };
@@ -106,6 +109,9 @@
 		1293D649E2C0424B9DF3C12E /* RepositoryDependencyInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDependencyInventory.swift; sourceTree = "<group>"; };
 		EA95B90FB96B460494BF7D61 /* RepositoryRegistryEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryRegistryEvidence.swift; sourceTree = "<group>"; };
 		2DB8B9AC5EAC45828781C2CB /* RepositoryReleaseAgeChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryReleaseAgeChecks.swift; sourceTree = "<group>"; };
+		FB1000000000000000000001 /* RepositoryWebsiteChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryWebsiteChecks.swift; sourceTree = "<group>"; };
+		FB1000000000000000000002 /* WebsiteBrowserProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebsiteBrowserProbe.swift; sourceTree = "<group>"; };
+		FB1000000000000000000003 /* WebsiteDomainInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebsiteDomainInventory.swift; sourceTree = "<group>"; };
 		E63CC31B832B4438A09E312A /* CurrentDependencyInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentDependencyInventory.swift; sourceTree = "<group>"; };
 		2A188D221C73471995801D68 /* RepositoryVulnerabilityEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryVulnerabilityEvidence.swift; sourceTree = "<group>"; };
 		CBE97DC79E5F4898BD561F0A /* RepositoryVulnerabilityChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryVulnerabilityChecks.swift; sourceTree = "<group>"; };
@@ -189,6 +195,9 @@
 				B10000000000000000000006 /* GitRunner.swift */,
 				B10000000000000000000007 /* GitRepositoryScanner.swift */,
 				B10000000000000000000018 /* RepositoryCIChecks.swift */,
+				FB1000000000000000000003 /* WebsiteDomainInventory.swift */,
+				FB1000000000000000000002 /* WebsiteBrowserProbe.swift */,
+				FB1000000000000000000001 /* RepositoryWebsiteChecks.swift */,
 				B10000000000000000000019 /* GitHubCI.swift */,
 				B10000000000000000000017 /* RepositoryInspection.swift */,
 				B10000000000000000000011 /* RepositoryIssues.swift */,
@@ -347,6 +356,9 @@
 				A10000000000000000000007 /* GitRepositoryScanner.swift in Sources */,
 				A10000000000000000000013 /* RepositoryIssuesView.swift in Sources */,
 				A10000000000000000000018 /* RepositoryCIChecks.swift in Sources */,
+				FA1000000000000000000003 /* WebsiteDomainInventory.swift in Sources */,
+				FA1000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */,
+				FA1000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */,
 				A10000000000000000000019 /* GitHubCI.swift in Sources */,
 				A10000000000000000000017 /* RepositoryInspection.swift in Sources */,
 				A10000000000000000000011 /* RepositoryIssues.swift in Sources */,

@@ -33,6 +33,19 @@ class DomainAuditTests(unittest.TestCase):
                 (root / ".repo-metadata.toml").write_text('domains = ' + value)
                 self.assertEqual(audit.compare_metadata(root, ["app.tsilva.eu"])[0], "invalid-metadata")
 
+    def test_yaml_manifest_takes_precedence_over_legacy_domains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".repo-metadata.toml").write_text('domains = ["legacy.tsilva.eu"]\n')
+            manifest = root / ".repoman.yaml"
+            source = ("version: 1\nwebsites:\n  app.tsilva.eu:\n"
+                      "    url: https://app.tsilva.eu/\n    ga4: tag-detected\n")
+            manifest.write_text(source)
+            self.assertEqual(audit.compare_metadata(root, ["app.tsilva.eu", "legacy.tsilva.eu"]),
+                             ("missing-domains", ["legacy.tsilva.eu"]))
+            manifest.write_text(source.replace("https://app.", "https://other."))
+            self.assertEqual(audit.compare_metadata(root, ["legacy.tsilva.eu"])[0], "invalid-metadata")
+
     def test_older_projects_use_assigned_domains_without_recent_deployments(self):
         projects = [{"id": "old", "name": "old", "link": {"type": "github", "org": "tsilva", "repo": "old"}}]
         responses = {"/v9/projects": projects, "/v9/projects/old/domains": [{"name": "old.tsilva.eu"}]}

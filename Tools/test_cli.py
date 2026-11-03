@@ -167,6 +167,23 @@ class CLITests(unittest.TestCase):
         self.assertEqual({(x['side'],x['path']) for x in evidence['inputs']},
                          {('base','package-lock.json'),('candidate','pnpm-lock.yaml'),('candidate','package.json')})
 
+    def test_website_checks_are_remote_and_local_mode_cannot_visit_sites(self):
+        listed = self.cli('--list-checks')
+        for check_id in ('website.domains', 'website.sentry', 'website.analytics'):
+            self.assertIn(check_id + ' [remote]', listed.stdout)
+            self.assertEqual(self.check('--check', check_id).returncode, 2)
+        result = self.check()
+        checks = [x for x in json.loads(result.stdout)['checks'] if x['id'].startswith('website.')]
+        self.assertEqual(len(checks), 3)
+        self.assertTrue(all(x['status'] == 'skipped' for x in checks))
+
+    def test_remote_website_checks_without_domains_or_project_binding_are_not_applicable(self):
+        result = self.check('--check', 'website.domains', '--check', 'website.sentry', '--check', 'website.analytics', '--remote')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        checks = json.loads(result.stdout)['checks']
+        self.assertEqual(len(checks), 3)
+        self.assertTrue(all(x['status'] == 'not_applicable' for x in checks))
+
     def test_actions_policy_is_catalogued_as_remote_and_requires_opt_in(self):
         listed = self.cli('--list-checks')
         self.assertEqual(listed.returncode, 0, listed.stderr)
