@@ -26,6 +26,7 @@
 		A10000000000000000000017 /* RepositoryInspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* RepositoryInspection.swift */; };
 		A10000000000000000000018 /* RepositoryCIChecks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* RepositoryCIChecks.swift */; };
 		A10000000000000000000019 /* GitHubCI.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* GitHubCI.swift */; };
+		A100000000000000000001B1 /* GitHubRepositoryCounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000000000000000001B1 /* GitHubRepositoryCounts.swift */; };
 		A10000000000000000000080 /* RepositoryDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000080 /* RepositoryDiff.swift */; };
 		A10000000000000000000081 /* RepositoryDiffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000081 /* RepositoryDiffView.swift */; };
 		A20000000000000000000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* SettingsView.swift */; };
@@ -86,6 +87,7 @@
 		B10000000000000000000017 /* RepositoryInspection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryInspection.swift; sourceTree = "<group>"; };
 		B10000000000000000000018 /* RepositoryCIChecks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryCIChecks.swift; sourceTree = "<group>"; };
 		B10000000000000000000019 /* GitHubCI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubCI.swift; sourceTree = "<group>"; };
+		B100000000000000000001B1 /* GitHubRepositoryCounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubRepositoryCounts.swift; sourceTree = "<group>"; };
 		B10000000000000000000080 /* RepositoryDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDiff.swift; sourceTree = "<group>"; };
 		B10000000000000000000081 /* RepositoryDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryDiffView.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -199,6 +201,7 @@
 				FB1000000000000000000002 /* WebsiteBrowserProbe.swift */,
 				FB1000000000000000000001 /* RepositoryWebsiteChecks.swift */,
 				B10000000000000000000019 /* GitHubCI.swift */,
+				B100000000000000000001B1 /* GitHubRepositoryCounts.swift */,
 				B10000000000000000000017 /* RepositoryInspection.swift */,
 				B10000000000000000000011 /* RepositoryIssues.swift */,
 			);
@@ -360,6 +363,7 @@
 				FA1000000000000000000002 /* WebsiteBrowserProbe.swift in Sources */,
 				FA1000000000000000000001 /* RepositoryWebsiteChecks.swift in Sources */,
 				A10000000000000000000019 /* GitHubCI.swift in Sources */,
+				A100000000000000000001B1 /* GitHubRepositoryCounts.swift in Sources */,
 				A10000000000000000000017 /* RepositoryInspection.swift in Sources */,
 				A10000000000000000000011 /* RepositoryIssues.swift in Sources */,
 			);

@@ -396,7 +396,7 @@ struct ContentView: View {
             NativeRepositoryList(
                 rows: repositories.map {
                     RepositoryListRow(repository: $0, isLoading: store.loadingRepositoryIDs.contains($0.id),
-                                      checkProgress: store.repositoryCheckProgress[$0.id])
+                                      checkProgress: store.repositoryCheckProgress[$0.id], githubCounts: store.counts(for: $0))
                 },
                 selectedPath: store.selectedPath,
                 statusCounts: { store.issueStatusCounts(in: $0) },
@@ -794,6 +794,7 @@ private struct RepositoryListRow: Equatable {
     let repository: RepositorySnapshot
     let isLoading: Bool
     let checkProgress: RepositoryCheckProgress?
+    let githubCounts: GitHubRepositoryCounts?
 }
 
 /// NSTableView recycles a small set of independently hosted rows. Scrolling no
@@ -912,7 +913,7 @@ private struct NativeRepositoryList: NSViewRepresentable {
             cell.isSelected = isSelected
             cell.hosting.rootView = AnyView(
                 RepositoryRow(repository: data.repository, statusCounts: counts,
-                              isLoading: data.isLoading, checkProgress: data.checkProgress,
+                              isLoading: data.isLoading, checkProgress: data.checkProgress, githubCounts: data.githubCounts,
                               isSelected: isSelected) { [weak self] in
                     self?.parent.onSelect(data.repository)
                 }
@@ -971,6 +972,7 @@ private struct RepositoryRow: View {
     let statusCounts: [RepositoryIssueStatus: Int]
     let isLoading: Bool
     let checkProgress: RepositoryCheckProgress?
+    let githubCounts: GitHubRepositoryCounts?
     let isSelected: Bool
     let action: () -> Void
 
@@ -979,30 +981,17 @@ private struct RepositoryRow: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
-                    Text(repository.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(repository.name)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    RepositoryIssueStatusBadges(counts: statusCounts)
+                        Text(repository.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(repository.name)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        RepositoryIssueStatusBadges(counts: statusCounts)
                     }
                     if !repository.branch.isEmpty {
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.triangle.branch")
-                                .font(.system(size: 10, weight: .medium))
-                            Text(repository.branch)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .help(repository.branch)
-                            Spacer(minLength: 8)
-                            RepositoryGitStatus(repository: repository)
-                                .padding(.trailing, statusCounts.values.contains(where: { $0 > 0 }) ? 6 : 0)
-                        }
-                        .layoutPriority(-1)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(isSelected ? Theme.primary.opacity(0.85) : Theme.secondary)
+                        branchLine()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1043,6 +1032,34 @@ private struct RepositoryRow: View {
         }
     }
 
+    private func branchLine() -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 10, weight: .medium))
+            Text(repository.branch)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(repository.branch)
+                .layoutPriority(1)
+            if let githubCounts {
+                HStack(spacing: 6) {
+                    Label(githubCounts.stars.formatted(.number.notation(.compactName)), systemImage: "star")
+                    Label(githubCounts.forks.formatted(.number.notation(.compactName)), systemImage: "arrow.triangle.branch")
+                }
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(Theme.secondary)
+                .fixedSize()
+                .help(githubCountsDescription)
+            }
+            Spacer(minLength: 2)
+            RepositoryGitStatus(repository: repository)
+        }
+        .layoutPriority(-1)
+        .font(.system(size: 11.5))
+        .foregroundStyle(isSelected ? Theme.primary.opacity(0.85) : Theme.secondary)
+    }
+
     private var scanningHelp: String {
         checkProgress.map {
             "Scanning for issues: \($0.percentage)%, \($0.completed) of \($0.total) checks completed, \($0.remaining) remaining"
@@ -1054,8 +1071,14 @@ private struct RepositoryRow: View {
             guard let count = statusCounts[status], count > 0 else { return nil }
             return "\(status.title): \(count)"
         }
+        if githubCounts != nil { descriptions.insert(githubCountsDescription, at: 0) }
         if isLoading { descriptions.append(scanningHelp) }
         return descriptions.joined(separator: ", ")
+    }
+
+    private var githubCountsDescription: String {
+        guard let githubCounts else { return "" }
+        return "GitHub stars: \(githubCounts.stars.formatted()), forks: \(githubCounts.forks.formatted())"
     }
 }
 

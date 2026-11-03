@@ -44,6 +44,8 @@ The selected repository has one **Git synchronization** section combining ahead/
 
 Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. A `?` on an ahead/behind count means the remote comparison is provisional. Use your Git tools or the `repo-sync` skill to synchronize repositories; RepoMan does not commit, merge or push.
 
+GitHub star and fork counts appear beside the branch name on each repository row. Install the GitHub CLI and sign in with `gh auth login` to load them, including for private repositories your account can access. RepoMan reuses counts for one hour and refreshes them in batches in the background. The last known counts remain visible offline; rows without a known count omit the badges.
+
 The GitHub toolbar button appears for repositories with a GitHub remote and opens their repository page in your browser. HTTPS and SSH remotes are supported. The folder, terminal and editor toolbar buttons open the selected repository in your own tools. The changes button opens its read-only Git diff. Open **Settings…** from the overflow menu or press **⌘,** to enable or disable checks and change the monitored folder. These preferences do not modify monitored repositories. RepoMan has no model-provider setup or inference calls; use skills such as `optimize-readme` for editorial reviews.
 
 **Routine validation coverage** checks each detected component separately. Optional `.repoman.json` CI policy can require particular validation types and expected published jobs; skipped or missing expected jobs remain distinguishable from executed validation. See [CI policy](docs/additional-checks.md#ci-components-and-expected-jobs).

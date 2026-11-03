@@ -43,6 +43,8 @@ The sidebar uses an `NSTableView` with fixed 52-point rows and independently hos
 
 Inspection progress is published in 100 ms batches. Each batch retains the latest cumulative report for each repository and loading token. Final scan results still apply immediately. Folder changes discard pending batches, and finished loading tokens cannot restore stale progress.
 
+GitHub star and fork counts use a separate cache shared by clones of the same GitHub repository. Known counts appear as soon as the remote is identified. Counts expire after one hour; the app gathers newly discovered remotes briefly and queries up to 50 at a time through the existing GitHub CLI login. One batch runs at a time in the background, independently of inspection and manual Git refresh. Failed lookups keep the last known value and wait ten minutes before retrying.
+
 Run the native UI benchmark on macOS with Xcode installed:
 
 ```sh

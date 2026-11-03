@@ -192,7 +192,8 @@ enum GitHubCLI {
         }
         return URL(fileURLWithPath: path)
     }
-    static func run(_ arguments: [String], executable configured: URL? = nil, timeout: TimeInterval = 15) throws -> Data {
+    static func run(_ arguments: [String], executable configured: URL? = nil, timeout: TimeInterval = 15,
+                    allowPartialOutput: Bool = false) throws -> Data {
         let process = Process()
         process.executableURL = try configured ?? executable()
         process.arguments = arguments
@@ -227,7 +228,7 @@ enum GitHubCLI {
         let data = drain(output.fileHandleForReading)
         process.waitUntilExit(); group.wait(); timer.cancel()
         if state.timedOut { throw InspectionError.blocked("GitHub CI inspection timed out. Try refreshing again.") }
-        guard process.terminationStatus == 0 else {
+        guard process.terminationStatus == 0 || (allowPartialOutput && !data.isEmpty) else {
             let message = String(decoding: state.error.prefix(2048), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw InspectionError.blocked("GitHub CI inspection failed. Check gh authentication, repository access, and API limits. \(message)")
         }

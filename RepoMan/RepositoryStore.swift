@@ -35,6 +35,11 @@ final class RepositoryStore: ObservableObject {
     private var inspectionReports: [String: RepositoryInspectionReport] = [:]
     private nonisolated static let inspectionCache = RepositoryInspectionCache()
     private var scheduledInspectionTask: Task<Void, Never>?
+    private static let countsCacheKey = "githubRepositoryCounts.v1"
+    @Published private var githubCounts: [String: GitHubRepositoryCountsEntry] = [:]
+    private var countsRefreshTask: Task<Void, Never>?
+    private var countsRetryAfter: [String: Date] = [:]
+    private var countsServiceRetryAfter = Date.distantPast
     private var started = false
     private var generation = UUID()
     let issueCatalog = RepositoryIssueCatalog()
@@ -156,15 +161,26 @@ final class RepositoryStore: ObservableObject {
         if isDemo {
             folder = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("repos/tsilva")
             repositories = Self.demoRepositories()
+            githubCounts = Dictionary(uniqueKeysWithValues: repositories.enumerated().compactMap { index, repository in
+                guard let key = GitHubRepositoryCountsQuery.key(for: repository.remoteURL) else { return nil }
+                let counts = GitHubRepositoryCounts(stars: [128, 0, 1_240, 67][index % 4], forks: [12, 0, 81, 4][index % 4])
+                return (key, GitHubRepositoryCountsEntry(counts: counts, fetchedAt: Date()))
+            })
             selectedPath = repositories.first?.id
             if ProcessInfo.processInfo.arguments.contains("--check-progress") { startDemoCheckProgress() }
             return
+        }
+        if let saved = UserDefaults.standard.data(forKey: Self.countsCacheKey),
+           let entries = try? JSONDecoder().decode([String: GitHubRepositoryCountsEntry].self, from: saved) {
+            githubCounts = entries
         }
         scheduledInspectionTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
-                guard let self, let folder = self.folder, !self.isScanning, !self.isFetching, !self.isQuittingForUpdate else { continue }
+                guard let self else { return }
+                self.scheduleCountsRefresh()
+                guard let folder = self.folder, !self.isScanning, !self.isFetching, !self.isQuittingForUpdate else { continue }
                 await self.scanFolder(folder, fetchRemotes: true, clearFirst: false, dueOnly: true)
             }
         }
@@ -175,6 +191,62 @@ final class RepositoryStore: ObservableObject {
             selectedPath = UserDefaults.standard.string(forKey: "selectedRepoPath")
             // Startup restores valid checker results and only runs missing or expired checks.
             Task { await scanFolder(savedFolder, fetchRemotes: true, clearFirst: true) }
+        }
+    }
+
+    func counts(for repository: RepositorySnapshot) -> GitHubRepositoryCounts? {
+        guard let key = GitHubRepositoryCountsQuery.key(for: repository.remoteURL) else { return nil }
+        return githubCounts[key]?.counts
+    }
+
+    private func dueCountsKeys(at now: Date) -> [String] {
+        guard !isQuittingForUpdate, now >= countsServiceRetryAfter else { return [] }
+        let keys = Set(repositories.compactMap { GitHubRepositoryCountsQuery.key(for: $0.remoteURL) })
+        return keys.filter { countsAreDue(for: $0, at: now) }.sorted()
+    }
+
+    private func countsAreDue(for key: String, at now: Date) -> Bool {
+        githubCounts[key]?.isFresh(at: now) != true && now >= (countsRetryAfter[key] ?? .distantPast)
+    }
+
+    private func scheduleCountsRefresh(discoveredKey: String? = nil) {
+        let now = Date()
+        guard !isDemo, !isQuittingForUpdate, countsRefreshTask == nil, now >= countsServiceRetryAfter,
+              discoveredKey.map({ countsAreDue(for: $0, at: now) }) ?? !dueCountsKeys(at: now).isEmpty else { return }
+        countsRefreshTask = Task { [weak self] in
+            // Scans publish repositories incrementally. Let several arrive before
+            // starting a query, and allow at most one request at a time.
+            try? await Task.sleep(for: .seconds(3))
+            guard let self else { return }
+            defer { self.countsRefreshTask = nil }
+            while !Task.isCancelled {
+                let keys = Array(self.dueCountsKeys(at: Date()).prefix(GitHubRepositoryCountsQuery.batchSize))
+                guard !keys.isEmpty else { return }
+                let counts = await Task.detached(priority: .utility) {
+                    try? GitHubRepositoryCountsQuery.load(keys)
+                }.value
+                let now = Date()
+                let retryAfter = now.addingTimeInterval(600)
+                guard let counts else {
+                    // An offline client or an expired login affects the whole batch.
+                    self.countsServiceRetryAfter = retryAfter
+                    return
+                }
+                var updated = self.githubCounts
+                for key in keys {
+                    if let value = counts[key] {
+                        updated[key] = GitHubRepositoryCountsEntry(counts: value, fetchedAt: now)
+                        self.countsRetryAfter.removeValue(forKey: key)
+                    } else {
+                        self.countsRetryAfter[key] = retryAfter
+                    }
+                }
+                guard !counts.isEmpty else { continue }
+                self.githubCounts = updated
+                if let data = try? JSONEncoder().encode(updated) {
+                    UserDefaults.standard.set(data, forKey: Self.countsCacheKey)
+                }
+            }
         }
     }
 
@@ -474,7 +546,9 @@ final class RepositoryStore: ObservableObject {
             errorMessage = "Could not read \(result.url.lastPathComponent): \(result.fetchError ?? "unknown Git error")"
             return
         }
-        if let index = repositories.firstIndex(where: { $0.id == snapshot.id }) {
+        let index = repositories.firstIndex(where: { $0.id == snapshot.id })
+        let previousRemote = index.flatMap { repositories[$0].remoteURL }
+        if let index {
             if preservingFetchState {
                 snapshot.fetchedAt = repositories[index].fetchedAt
                 snapshot.fetchError = repositories[index].fetchError
@@ -495,6 +569,9 @@ final class RepositoryStore: ObservableObject {
         }
         repositories.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         if selectedPath == nil { selectedPath = repositories.first?.id }
+        if snapshot.remoteURL != previousRemote, let key = GitHubRepositoryCountsQuery.key(for: snapshot.remoteURL) {
+            scheduleCountsRefresh(discoveredKey: key)
+        }
     }
 
     private nonisolated static func scan(
