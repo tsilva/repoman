@@ -81,6 +81,7 @@ def manifest_domains(source):
     version = websites = None
     sites = {}
     host = None
+    repository_fields = set()
     for raw in source.splitlines():
         line = re.split(r"\s+#", raw, maxsplit=1)[0].rstrip()
         if line.lstrip().startswith("#"):
@@ -91,6 +92,11 @@ def manifest_domains(source):
             version = line.removeprefix("version:").strip()
         elif line.startswith("websites:") and websites is None:
             websites = line.removeprefix("websites:").strip()
+        elif match := re.match(r"^(tagline|github-url):", line):
+            field = match[1]
+            if field in repository_fields:
+                raise ValueError("Duplicate repository metadata field")
+            repository_fields.add(field)
         elif match := re.fullmatch(r"  ([a-z0-9.-]+):", line):
             host = match[1]
             if websites != "" or host in sites:
@@ -110,7 +116,7 @@ def manifest_domains(source):
             sites[host][field] = value
         else:
             raise ValueError("Unsupported manifest syntax")
-    if version != "1" or (websites != "{}" and not sites):
+    if version != "1" or (websites not in (None, "{}") and not sites):
         raise ValueError("Missing website inventory")
     for host, fields in sites.items():
         if not domain_valid(host) or fields.get("url") not in {f"https://{host}", f"https://{host}/"}:
@@ -137,18 +143,19 @@ def manifest_domains(source):
             url for other in sites if other != host for url in (f"https://{other}", f"https://{other}/")
         }:
             raise ValueError("Invalid website redirect")
-    return list(sites)
+    return list(sites) if websites is not None else None
 
 
 def compare_metadata(path, expected):
     manifest = path / ".repoman.yaml"
     metadata = path / ".repo-metadata.toml"
     try:
+        declared = None
         if manifest.exists() or manifest.is_symlink():
             if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 64 * 1024:
                 return "invalid-metadata", expected
             declared = manifest_domains(manifest.read_text())
-        else:
+        if declared is None:
             values = tomllib.loads(metadata.read_text()) if metadata.exists() else {}
             declared = values.get("domains", [])
         if (not isinstance(declared, list) or len(declared) > 32

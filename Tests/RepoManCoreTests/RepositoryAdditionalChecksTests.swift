@@ -16,8 +16,8 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
 
     func testAdditionalChecksAreRegisteredWithUniqueIDs() {
         let additional = RepositoryDependencyChecks.checks() + RepositoryWorkflowChecks.checks() + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
-        XCTAssertEqual(additional.count, 13)
-        XCTAssertEqual(Set(additional.map(\.id)).count, 13)
+        XCTAssertEqual(additional.count, 15)
+        XCTAssertEqual(Set(additional.map(\.id)).count, additional.count)
         let catalog = RepositoryIssueCatalog()
         for check in additional {
             XCTAssertTrue(catalog.checks.contains { $0.id == check.id })
@@ -448,6 +448,94 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
         let after = await fixed.inspect(snapshot)
         if case .absent = fixed.verify(finding, in: after) {} else { XCTFail("Matching description did not resolve") }
     }
+
+    func testConfiguredTaglineAndWebsiteAreCheckedIndependently() async throws {
+        try write(".repoman.yaml", "version: 1\ntagline: 'Build & ship'\ngithub-url: https://example.com/\n")
+        try write("README.markdown", "Build & ship")
+        let remote = "https://github.com/owner/project.git"
+        let checks = RepositoryMetadataChecks.checks(load: { _ in
+            throw InspectionError.blocked("Unexpected published README read")
+        }, loadAbout: { _ in
+            GitHubRepositoryAbout(description: "Build & ship", homepage: "https://example.com")
+        }).filter { $0.id != "github.privateVisibility" }
+        let catalog = RepositoryIssueCatalog(checks: checks)
+        let initial = await catalog.inspect(try snapshot(remoteURL: remote))
+        XCTAssertEqual(initial.findings().map(\.checkID).sorted(), ["docs.readmeTagline", "github.website"])
+        XCTAssertTrue(initial.findings().contains { $0.subject == "README.markdown" && $0.evidence.contains("(missing)") })
+        XCTAssertTrue(initial.findings().contains { $0.subject == "owner/project" && $0.evidence.contains("https://example.com/") })
+        XCTAssertEqual(initial.status(for: "github.description"), .passed)
+
+        try write("README.markdown", header("Build &amp; ship"))
+        let matching = RepositoryIssueCatalog(checks: RepositoryMetadataChecks.checks(loadAbout: { _ in
+            GitHubRepositoryAbout(description: nil, homepage: "https://example.com/")
+        }).filter { $0.id != "github.privateVisibility" })
+        let report = await matching.inspect(try snapshot(remoteURL: remote))
+        XCTAssertEqual(report.status(for: "docs.readmeTagline"), .passed)
+        XCTAssertEqual(report.status(for: "github.website"), .passed)
+        XCTAssertEqual(report.findings().map(\.checkID), ["github.description"])
+    }
+
+    func testNullGitHubURLRequiresAnEmptyWebsite() async throws {
+        let checkID = "github.website"
+        let current = try snapshot(remoteURL: "https://github.com/owner/project.git")
+        let configuredURL = "https://example.com/"
+        for (homepage, expected): (String?, RepositoryCheckStatus) in [(nil, .passed), ("", .passed), (configuredURL, .findings)] {
+            let checks = RepositoryMetadataChecks.checks(loadAbout: { _ in
+                GitHubRepositoryAbout(description: nil, homepage: homepage)
+            }).filter { $0.id == checkID }
+            let catalog = RepositoryIssueCatalog(checks: checks)
+
+            try write(".repoman.yaml", "version: 1\ngithub-url: null\n")
+            let report = await catalog.inspect(current)
+            XCTAssertEqual(report.status(for: checkID), expected)
+            if expected == .findings {
+                XCTAssertEqual(report.findings().first?.evidence, ".repoman.yaml github-url: (empty)\nGitHub Website: \(configuredURL)")
+            }
+        }
+
+        let checks = RepositoryMetadataChecks.checks(loadAbout: { _ in
+            throw InspectionError.blocked("GitHub could not be reached")
+        }).filter { $0.id == checkID }
+        let catalog = RepositoryIssueCatalog(checks: checks)
+        try write(".repoman.yaml", "version: 1\n")
+        let omitted = await catalog.inspect(current)
+        XCTAssertEqual(omitted.status(for: checkID), .notApplicable)
+
+        try write(".repoman.yaml", "version: 1\ngithub-url: \"null\"\n")
+        let quoted = await catalog.inspect(current)
+        XCTAssertTrue(quoted.unavailableChecks[checkID]?.contains("Invalid github-url") == true)
+    }
+
+    func testMissingAndInvalidConfiguredMetadataHaveSeparateCoverage() async throws {
+        let remote = "https://github.com/owner/project.git"
+        let checks = RepositoryMetadataChecks.checks(loadAbout: { _ in
+            throw InspectionError.blocked("Authentication failed")
+        }).filter { $0.id != "github.privateVisibility" }
+        let catalog = RepositoryIssueCatalog(checks: checks)
+        try write(".repoman.yaml", "version: 1\ntagline: Build and ship\ngithub-url: https://example.com/\n")
+        let missing = await catalog.inspect(try snapshot(remoteURL: remote))
+        XCTAssertEqual(missing.findings().map(\.checkID), ["docs.readmeTagline"])
+        XCTAssertTrue(missing.findings().first?.evidence.contains("No root README") == true)
+        XCTAssertEqual(missing.status(for: "github.description"), .incomplete)
+        XCTAssertEqual(missing.status(for: "github.website"), .incomplete)
+
+        try write(".repoman.yaml", "version: 1\ntagline: [wrong]\ngithub-url: /relative\n")
+        let invalid = await catalog.inspect(try snapshot(remoteURL: remote))
+        for id in ["docs.readmeTagline", "github.description", "github.website"] {
+            XCTAssertEqual(invalid.status(for: id), .incomplete)
+        }
+    }
+
+    func testGitHubAboutLoaderReadsNullableFieldsWithoutDefaultBranch() throws {
+        let repository = try XCTUnwrap(GitHubCI.repository("https://github.com/owner/project.git"))
+        let about = try GitHubRepositoryAbout.load(repository, run: { arguments in
+            XCTAssertEqual(arguments, ["api", "--hostname", "github.com", "repos/owner/project"])
+            return Data(#"{"description":null,"homepage":"https://example.com/"}"#.utf8)
+        })
+        XCTAssertNil(about.description)
+        XCTAssertEqual(about.homepage, "https://example.com/")
+        XCTAssertThrowsError(try GitHubRepositoryAbout.load(repository, run: { _ in Data("{}".utf8) }))
+    }
     func testTaglineMatchesPublishedSyncContractAndRejectsBadMarkers() throws {
         XCTAssertEqual(try GitHubTagline.tagline(header("⚡  Build\n&amp; ship  🚀")), "⚡ Build & ship 🚀")
         XCTAssertEqual(try GitHubTagline.tagline(header("a_b *c*")), "a_b *c*")
@@ -626,9 +714,9 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
 
     private func catalog(_ id: String) -> RepositoryIssueCatalog { RepositoryIssueCatalog(checks: RepositoryIssueCatalog.standardChecks.filter { $0.id == id }) }
     private func inspect(_ id: String) async throws -> RepositoryInspectionReport { await catalog(id).inspect(try snapshot()) }
-    private func snapshot(checkedAt: Date = Date()) throws -> RepositorySnapshot {
+    private func snapshot(checkedAt: Date = Date(), remoteURL: String? = nil) throws -> RepositorySnapshot {
         let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
-        return RepositorySnapshot(url: root, name: "test", branch: "main", upstream: nil, remoteURL: nil, ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [], checkedAt: checkedAt, rootFiles: files)
+        return RepositorySnapshot(url: root, name: "test", branch: "main", upstream: nil, remoteURL: remoteURL, ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [], checkedAt: checkedAt, rootFiles: files)
     }
     private func write(_ path: String, _ text: String) throws {
         let url = root.appendingPathComponent(path)

@@ -136,8 +136,11 @@ final class RepositoryWebsiteChecksTests: XCTestCase {
 
     func testYAMLInventoryTakesPrecedenceAndRejectsMismatchedURL() throws {
         try write(".repo-metadata.toml", "domains = ['legacy.tsilva.eu']")
+        try write(".repoman.yaml", "version: 1\ntagline: 'Ship safely'\ngithub-url: https://example.com/\n")
+        XCTAssertEqual(try WebsiteDomains.load(RepositoryInspectionContext(snapshot: snapshot())), ["legacy.tsilva.eu"])
         let manifest = """
         version: 1
+        tagline: "Ship safely"
         websites:
           site.tsilva.eu:
             url: https://site.tsilva.eu/

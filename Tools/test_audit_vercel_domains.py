@@ -38,7 +38,10 @@ class DomainAuditTests(unittest.TestCase):
             root = Path(directory)
             (root / ".repo-metadata.toml").write_text('domains = ["legacy.tsilva.eu"]\n')
             manifest = root / ".repoman.yaml"
-            source = ("version: 1\nwebsites:\n  app.tsilva.eu:\n"
+            metadata = "version: 1\ntagline: 'Ship safely'\ngithub-url: https://example.com/\n"
+            manifest.write_text(metadata)
+            self.assertEqual(audit.compare_metadata(root, ["legacy.tsilva.eu"]), ("covered", []))
+            source = (metadata + "websites:\n  app.tsilva.eu:\n"
                       "    url: https://app.tsilva.eu/\n    ga4: tag-detected\n")
             manifest.write_text(source)
             self.assertEqual(audit.compare_metadata(root, ["app.tsilva.eu", "legacy.tsilva.eu"]),

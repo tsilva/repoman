@@ -7,12 +7,85 @@ struct PublishedRepositoryMetadata: Sendable {
     let readme: String?
 }
 
+struct GitHubRepositoryAbout: Decodable, Sendable {
+    let description: String?
+    let homepage: String?
+
+    static func load(_ repository: GitHubCI.Repository, run: ([String]) throws -> Data = { try GitHubCLI.run($0) }) throws -> Self {
+        let data = try run(["api", "--hostname", "github.com", "repos/\(repository.owner)/\(repository.name)"])
+        return try JSONDecoder().decode(Self.self, from: data)
+    }
+}
+
+extension GitHubRepositoryAbout {
+    private enum CodingKeys: String, CodingKey { case description, homepage }
+
+    init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        description = try fields.decode(String?.self, forKey: .description)
+        homepage = try fields.decode(String?.self, forKey: .homepage)
+    }
+}
+
+enum RepoManManifest {
+    static let path = ".repoman.yaml"
+
+    static func metadata(_ key: String, in context: RepositoryInspectionContext) throws -> String? {
+        guard try context.exists(path) else { return nil }
+        let values = try context.yaml(path).values
+        guard let raw = values[key] else { return nil }
+        let requirement = key == "tagline" ? "a single-line plain-text tagline of at most 350 characters" : "an absolute HTTP or HTTPS URL without credentials, or unquoted null"
+        let invalid = InspectionError.blocked("Invalid \(key) in \(path). Use \(requirement).")
+        guard values["version"] == "1", !values.keys.contains(where: { $0.hasPrefix(key + ".") }) else { throw invalid }
+        // An empty expected Website is distinct from an absent key.
+        if key == "github-url", raw == "null" { return "" }
+        guard let value = textScalar(raw), !value.isEmpty,
+              value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !value.unicodeScalars.contains(where: CharacterSet.newlines.contains) else { throw invalid }
+        if key == "tagline" {
+            guard value.unicodeScalars.count <= 350 else { throw invalid }
+        } else {
+            guard let url = URLComponents(string: value), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+                  url.host?.isEmpty == false, url.user == nil, url.password == nil,
+                  !value.contains(where: \.isWhitespace) else { throw invalid }
+        }
+        return value
+    }
+
+    private static func textScalar(_ raw: String) -> String? {
+        guard let first = raw.first else { return nil }
+        if raw.hasPrefix("\"") {
+            return try? JSONDecoder().decode(String.self, from: Data(raw.utf8))
+        }
+        if raw.hasPrefix("'") {
+            guard CheckSupport.matches(raw, #"^'(?:[^']|'')*'\z"#) else { return nil }
+            return String(raw.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
+        }
+        guard !raw.contains("\n"), !raw.contains(": "),
+              !"[{>|!&*@`".contains(first), !raw.hasPrefix("- "),
+              !["null", "~"].contains(raw.lowercased()) else { return nil }
+        return raw
+    }
+}
+
 enum RepositoryMetadataChecks {
     typealias Loader = @Sendable (RepositorySnapshot) async throws -> PublishedRepositoryMetadata
     typealias VisibilityLoader = @Sendable (RepositorySnapshot) async throws -> GitHubRepositoryVisibility
-    static func checks(load: Loader? = nil, loadVisibility: VisibilityLoader? = nil) -> [RepositoryCheck] {
+    typealias AboutLoader = @Sendable (GitHubCI.Repository) async throws -> GitHubRepositoryAbout
+    static func checks(load: Loader? = nil, loadVisibility: VisibilityLoader? = nil,
+                       loadAbout: @escaping AboutLoader = { repository in
+                           try await Task.detached(priority: .utility) { try GitHubRepositoryAbout.load(repository) }.value
+                       }) -> [RepositoryCheck] {
         [CheckSupport.check("github.description", "GitHub description drift", .documentation, "text.bubble", inspect: { context, _ in
             guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else { throw InspectionError.notApplicable("No supported GitHub remote.") }
+            let subject = repository.owner + "/" + repository.name
+            if let tagline = try RepoManManifest.metadata("tagline", in: context) {
+                let about = try await context.githubAbout.value { try await loadAbout(repository) }
+                guard about.description != tagline else { return [] }
+                return [CheckSupport.finding(context, "github.description", subject,
+                    "GitHub description drift", ".repoman.yaml tagline: \(tagline)\nGitHub description: \(about.description ?? "(empty)")", .documentation, "text.bubble")]
+            }
             let metadata: PublishedRepositoryMetadata
             if let load { metadata = try await load(context.snapshot) }
             else {
@@ -22,8 +95,30 @@ enum RepositoryMetadataChecks {
             }
             guard let readme = metadata.readme, let tagline = try GitHubTagline.tagline(readme) else { throw InspectionError.notApplicable("The published README has no description-sync tagline contract.") }
             guard (metadata.description ?? "") != tagline else { return [] }
-            return [CheckSupport.finding(context, "github.description", repository.owner + "/" + repository.name,
+            return [CheckSupport.finding(context, "github.description", subject,
                 "GitHub description drift", "Published README on \(metadata.branch) at \(metadata.sha.prefix(8)) declares: \(tagline)\nGitHub description: \(metadata.description ?? "(empty)"). Local and feature-branch README changes are not used.", .documentation, "text.bubble")]
+        }), CheckSupport.check("docs.readmeTagline", "README tagline drift", .documentation, "doc.text", inspect: { context, _ in
+            guard let expected = try RepoManManifest.metadata("tagline", in: context) else {
+                throw InspectionError.notApplicable("No tagline declared in .repoman.yaml.")
+            }
+            let path = GitHubTagline.readmePath(try CheckSupport.rootFiles(context))
+            let actual = try path.flatMap { try GitHubTagline.tagline(context.readText($0), source: "Local") }
+            guard actual != expected else { return [] }
+            let evidence = path.map { "\($0) marked tagline: \(actual ?? "(missing)")" } ?? "No root README found."
+            return [CheckSupport.finding(context, "docs.readmeTagline", path ?? "README.md", "README tagline drift",
+                ".repoman.yaml tagline: \(expected)\n\(evidence)", .documentation, "doc.text")]
+        }), CheckSupport.check("github.website", "GitHub website URL drift", .documentation, "link", inspect: { context, _ in
+            guard let expected = try RepoManManifest.metadata("github-url", in: context) else {
+                throw InspectionError.notApplicable("No github-url declared in .repoman.yaml.")
+            }
+            guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else {
+                throw InspectionError.notApplicable("No supported GitHub remote.")
+            }
+            let about = try await context.githubAbout.value { try await loadAbout(repository) }
+            let actual = about.homepage ?? ""
+            guard actual != expected else { return [] }
+            return [CheckSupport.finding(context, "github.website", repository.owner + "/" + repository.name,
+                "GitHub website URL drift", ".repoman.yaml github-url: \(expected.isEmpty ? "(empty)" : expected)\nGitHub Website: \(actual.isEmpty ? "(empty)" : actual)", .documentation, "link")]
         }), CheckSupport.check("github.privateVisibility", "Private repository visibility", .setup, "lock.shield", inspect: { context, _ in
             guard let repository = GitHubCI.repository(context.snapshot.remoteURL),
                   repository.name.lowercased().hasPrefix("private-") else { throw InspectionError.notApplicable("The private-name visibility policy does not apply to this remote.") }
@@ -108,6 +203,11 @@ actor PublishedMetadataCache {
 }
 
 enum GitHubTagline {
+    static func readmePath(_ names: [String]) -> String? {
+        let readmes = names.filter(RepositoryIssueCatalog.isReadme)
+        return readmes.contains("README.md") ? "README.md" : readmes.min()
+    }
+
     // Discover the published README path without requesting nonexistent files (GitHub treats those as errors).
     static let query = """
     query($owner: String!, $name: String!) {
@@ -146,11 +246,7 @@ enum GitHubTagline {
         guard let entries = response.data?.repository?.defaultBranchRef?.target?.tree?.entries, entries.count <= 200 else {
             throw InspectionError.blocked("Published README discovery is unavailable or exceeds 200 root entries.")
         }
-        let names = entries.filter { $0.type == "blob" && RepositoryIssueCatalog.isReadme($0.name) }.map(\.name).sorted {
-            if ($0 == "README.md") != ($1 == "README.md") { return $0 == "README.md" }
-            return $0 < $1
-        }
-        guard let path = names.first else { return metadata }
+        guard let path = readmePath(entries.filter { $0.type == "blob" }.map(\.name)) else { return metadata }
         // This request reads description and README from the same latest default-branch commit.
         let latest = try decode(run(arguments + ["--raw-field", "query=" + readmeQuery, "--raw-field", "path=" + path]))
         guard latest.readme != nil else { throw InspectionError.blocked("Published README changed or became unreadable during inspection.") }
@@ -172,24 +268,24 @@ enum GitHubTagline {
         }
         return PublishedRepositoryMetadata(description: repository.description, branch: branch.name, sha: target.oid, readme: readme)
     }
-    static func tagline(_ original: String) throws -> String? {
+    static func tagline(_ original: String, source: String = "Published") throws -> String? {
         let start = "<!-- repo-tagline:start -->", end = "<!-- repo-tagline:end -->"
         let fragments = CheckSupport.captures(original, #"<!--\s*repo-tagline\b|repo-tagline\s*:\s*(?:start|end)\s*-->"#)
         guard !fragments.isEmpty else { return nil }
-        let readme = try withoutManagedArchiveNotice(original)
+        let readme = try withoutManagedArchiveNotice(original, source: source)
         guard original.components(separatedBy: start).count == 2, original.components(separatedBy: end).count == 2,
               fragments.count == 2, let a = readme.range(of: start), let b = readme.range(of: end), a.upperBound <= b.lowerBound else {
-            throw InspectionError.blocked("Published README has invalid or duplicate tagline markers.")
+            throw InspectionError.blocked("\(source) README has invalid or duplicate tagline markers.")
         }
         let prefix = String(readme[..<a.lowerBound])
         guard CheckSupport.matches(readme.trimmingCharacters(in: .whitespacesAndNewlines), #"^<p\s+align="center"\s*>"#),
               let headerEnd = readme.range(of: "</p>"), b.upperBound <= headerEnd.lowerBound,
               !prefix.contains("```"), !prefix.contains("~~~") else {
-            throw InspectionError.blocked("Published tagline must be inside the opening centered header and outside code fences.")
+            throw InspectionError.blocked("\(source) tagline must be inside the opening centered header and outside code fences.")
         }
         let block = String(readme[a.upperBound..<b.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let match = CheckSupport.captures(block, #"^<strong>([^<>]*)</strong>$"#).first else {
-            throw InspectionError.blocked("Published tagline must contain one plain-text strong element.")
+            throw InspectionError.blocked("\(source) tagline must contain one plain-text strong element.")
         }
         var text = match[1]
         let entities = ["amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": " "]
@@ -197,7 +293,7 @@ enum GitHubTagline {
         let entityMatches = entityPattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
         for match in entityMatches.reversed() {
             guard let keyRange = Range(match.range(at: 1), in: text), let range = Range(match.range, in: text) else {
-                throw InspectionError.blocked("Invalid entity range in published tagline.")
+                throw InspectionError.blocked("Invalid entity range in \(source.lowercased()) tagline.")
             }
             let key = String(text[keyRange])
             let replacement: String?
@@ -205,16 +301,16 @@ enum GitHubTagline {
                 let number = key.hasPrefix("#x") ? UInt32(key.dropFirst(2), radix: 16) : UInt32(key.dropFirst())
                 replacement = number.flatMap(UnicodeScalar.init).map(String.init)
             } else { replacement = entities[key] }
-            guard let replacement else { throw InspectionError.blocked("Unsupported HTML entity in published tagline.") }
+            guard let replacement else { throw InspectionError.blocked("Unsupported HTML entity in \(source.lowercased()) tagline.") }
             text.replaceSubrange(range, with: replacement)
         }
         text = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
         guard !text.isEmpty, text.unicodeScalars.count <= 350, !text.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
-            throw InspectionError.blocked("Published tagline is empty, contains controls, or exceeds GitHub's 350-character limit.")
+            throw InspectionError.blocked("\(source) tagline is empty, contains controls, or exceeds GitHub's 350-character limit.")
         }
         return text
     }
-    private static func withoutManagedArchiveNotice(_ original: String) throws -> String {
+    private static func withoutManagedArchiveNotice(_ original: String, source: String) throws -> String {
         let fragments = CheckSupport.captures(original, #"<!--\s*archive-repo\b|archive-repo\s*:\s*deprecation-notice\s*:\s*(?:start|end)\s*-->"#)
         guard !fragments.isEmpty else { return original }
         let start = "<!-- archive-repo:deprecation-notice:start -->", end = "<!-- archive-repo:deprecation-notice:end -->"
@@ -222,7 +318,7 @@ enum GitHubTagline {
         guard fragments.count == 2, text.components(separatedBy: start).count == 2,
               text.components(separatedBy: end).count == 2, text.hasPrefix(start + "\n"),
               let close = text.range(of: end) else {
-            throw InspectionError.blocked("Published README has malformed, duplicate or misplaced archive-repo notice markers.")
+            throw InspectionError.blocked("\(source) README has malformed, duplicate or misplaced archive-repo notice markers.")
         }
         let body = String(text[text.index(text.startIndex, offsetBy: start.count + 1)..<close.lowerBound])
         let lines = body.components(separatedBy: "\n")
@@ -231,7 +327,7 @@ enum GitHubTagline {
               lines.last == "", rationale.allSatisfy({ $0 == ">" || $0.hasPrefix("> ") }),
               rationale.contains(where: { !$0.dropFirst().trimmingCharacters(in: .whitespaces).isEmpty }),
               !body.contains("```"), !body.contains("~~~"), text[close.upperBound...].hasPrefix("\n") else {
-            throw InspectionError.blocked("Published README archive-repo notice must be one complete quoted deprecation callout before the opening header.")
+            throw InspectionError.blocked("\(source) README archive-repo notice must be one complete quoted deprecation callout before the opening header.")
         }
         return String(text[close.upperBound...])
     }

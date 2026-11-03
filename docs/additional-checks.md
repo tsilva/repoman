@@ -48,7 +48,9 @@ Component paths must be literal repository-relative paths. Ecosystems are `pytho
 | `github.dependabotAlerts` | Open Dependabot security alerts | Read-only GitHub GraphQL inventory of open alerts on the published dependency graph. One finding per alert; high/critical are blocked, low/moderate need attention. Requires `gh` access and CLI `--remote`. Checks whether alerts are enabled, follows at most ten pages of 100 alerts with a 60-second pagination budget (each in-flight request has its own 15-second bound), detects count changes and nonadvancing cursors. Failures retain known alerts and incomplete coverage; zero alerts requires an enabled, complete inventory. No local dependency audit or exploitability claim. |
 | `git.oldStashes` | Old stashes | Stashes at least 30 days old, showing their commit hash and up to ten affected paths, including untracked paths. Identity uses the commit hash, not the changing stash index. |
 | `git.unfinishedOperation` | Git operation unfinished | Unmerged index entries; merge, rebase/am, cherry-pick, revert or sequencer markers; detached HEAD. Inspection works with Git-managed separate Git directories and linked checkouts. |
-| `github.description` | GitHub description drift | The actual GitHub description compared with the marked README tagline from the latest published default-branch commit. Local or feature-branch README edits do not influence it. Allows one valid leading `archive-repo` deprecation callout; malformed, duplicate, misplaced or fenced notice and tagline markers remain incomplete. |
+| `docs.readmeTagline` | README tagline drift | The local root README's marked tagline must match `tagline` in `.repoman.yaml`. A missing README or marker pair is a finding. |
+| `github.description` | GitHub description drift | The GitHub description must match `tagline` in `.repoman.yaml` when set. Otherwise it is compared with the marked README tagline from the latest published default-branch commit. |
+| `github.website` | GitHub website URL drift | The Website field in GitHub's About panel must exactly match `github-url` in `.repoman.yaml`. An explicit `null` requires an empty Website field. An omitted key leaves the check inapplicable. |
 | `github.privateVisibility` | Private repository visibility | GitHub remote repository names starting with `private-` (case-insensitive) must have `PRIVATE` visibility. `PUBLIC` and `INTERNAL` produce a blocked finding, identified by `owner/repository`. Uses the remote name rather than the local folder name. Other names and non-GitHub remotes are skipped. |
 | `docs.brokenLinks` | Broken local documentation links | Markdown inline/reference links, HTML image/link references, and relative skill references in root AGENTS.md. Checks root README variants, AGENTS.md, tracked SKILL.md files and tracked Markdown under docs/. Resolves paths relative to each document and decodes percent-encoded filenames. Skips external URLs, site-root routes, fragments, inline/fenced/indented code examples and HTML comments. Literal backticked skill paths in AGENTS.md are inspected as instruction references; discovery patterns containing `*` are skipped. Explicit Markdown/HTML link targets remain checked even when they contain `*`. Explicit links into direct sibling Git working trees use existence checks only; no sibling file contents are read. Missing targets are findings; unavailable sibling checkouts and unsafe escapes remain incomplete without discarding other broken links in the document. |
 | `notebooks.hygiene` | Notebook hygiene | Saved error outputs or serialized outputs exceeding 256 KiB in tracked nbformat 4 notebooks. Repository opt-in is required, because teaching notebooks may deliberately contain errors and large outputs. Cells are never executed. |
@@ -122,19 +124,39 @@ SwiftPM support requires a literal top-level `let package = Package(...)` (or `v
 
 Conditional/computed manifests, registry declarations, prerelease version comparisons, dynamic or absolute project paths and unsupported property-list graphs remain incomplete. If a separate external `.xcworkspace` might own an absent project resolution file, RepoMan requests manual workspace review instead of asserting a missing lockfile. Transitive dependency resolution, package trust and compiler compatibility remain the responsibility of normal tooling and CI. These checks never fetch packages or execute Swift/Xcode.
 
-## Published metadata
+## Repository metadata
+
+Add either or both optional fields to the root `.repoman.yaml`. They can coexist with the [website inventory](website-checks.md).
+
+```yaml
+version: 1
+tagline: "Build and ship with confidence"
+github-url: "https://example.com/"
+```
+
+Use a single-line plain-text tagline of up to 350 Unicode code points. Put the same text inside the README's opening centered paragraph.
+
+```html
+<p align="center">
+  <!-- repo-tagline:start -->
+  <strong>Build and ship with confidence</strong>
+  <!-- repo-tagline:end -->
+</p>
+```
+
+RepoMan prefers `README.md` when several recognized root README variants exist. It decodes supported HTML entities and collapses whitespace in the marked tagline before comparing it to the configured text. One valid leading `archive-repo` deprecation callout is allowed. Malformed markers, unreadable files and invalid manifest values leave the affected checks incomplete.
+
+The configured GitHub checks read the About fields together through the installed GitHub CLI and its existing login. An empty Description produces a finding when a tagline is configured. Set `github-url` to an absolute HTTP or HTTPS URL without credentials, or use unquoted `github-url: null` to require an empty Website field. The URL comparison includes the trailing slash, path, query and fragment. For CLI runs, use `--remote` for `github.description` and `github.website`. The local `docs.readmeTagline` check works offline.
 
 The visibility check uses a separate read-only GraphQL query with the existing GitHub CLI login, so it works without a README or published default branch. Background refresh may reuse visibility for ten minutes, keyed by owner/repository. Forced checks read fresh visibility. Missing visibility, authentication failures and API errors remain unavailable. RepoMan never changes visibility; update GitHub settings yourself when required.
 
-The metadata check uses the installed GitHub CLI and its existing login. A read-only GraphQL request discovers the actual root README filename; a second request returns the description and that README together from the latest default-branch commit. All root README variants recognized by RepoMan are supported. Repositories without README files or tagline markers are skipped. It does not copy credentials or change descriptions during refresh.
-
-Tagline validation follows the existing push-sync header contract: exactly one marker pair inside the opening centered paragraph, containing one plain-text `<strong>` element. A logo is an editorial choice and is not required to extract or compare the marked description. Invalid markers or unsupported HTML entities remain unavailable. The normalized tagline must be nonempty and at most 350 Unicode code points. Authentication failures, API errors, binary/unreadable READMEs and missing default branches cannot resolve existing metadata findings. RepoMan never changes descriptions or Actions automation; make those changes in your own tools.
+Without a configured tagline, read-only GraphQL requests discover the published README filename and retrieve that README and the description from the latest default-branch view. Repositories without a published README or tagline markers are outside this fallback check. GitHub API or authentication failures leave remote checks incomplete. All checks are read-only.
 
 ## Inspection bounds
 
 Checks continue to run off the UI actor in batches of at most four, sharing bounded file and Git reads within an inspection. Normal text files are limited to 1 MiB and the shared text cache to 32 MiB. Notebook files allow at most 8 MiB each, 32 MiB total, and 250 tracked notebooks. Git output is capped at 2 MiB, matching tracked paths at 20000 (Git path filters avoid enumerating unrelated source files), manifests at 64, documentation files at 100, and workflow directory entries at 200. Stash inspection permits at most 100 stashes and 20 old stashes. Excesses remain unavailable.
 
-Read-only Git commands disable optional index writes and fsmonitor hooks and external diff/textconv helpers, time out after ten seconds and terminate with a bounded kill fallback. GitHub reads use the existing 15-second timeout and 2 MiB response limit. Inspection findings are cached by the existing refresh reports; changing selection does not rerun these checks. Startup and the minute scheduler run missing or expired checks; manual refresh forces fresh checks. Ordinary refresh reuses GitHub description metadata for at most ten minutes, keyed by the actual remote owner/repository, to limit API traffic across large repository collections. Forced dashboard refresh and CLI inspection bypass that cache. Reports explicitly track cached checks, and cached absence cannot resolve an earlier issue during ordinary refresh.
+Read-only Git commands disable optional index writes and fsmonitor hooks and external diff/textconv helpers, time out after ten seconds and terminate with a bounded kill fallback. GitHub reads use the existing 15-second timeout and 2 MiB response limit. Inspection findings are cached by the existing refresh reports; changing selection does not rerun these checks. Startup and the minute scheduler run missing or expired checks; manual refresh forces fresh checks. Ordinary refresh can reuse the published README and description for at most ten minutes, keyed by the actual remote owner/repository, to limit API traffic across large repository collections. Forced dashboard refresh and CLI inspection bypass that cache. Reports explicitly track cached checks, and cached absence cannot resolve an earlier issue during ordinary refresh.
 
 All-tracked-file checks share the 20000-path bound. Binary/text detection reads at most an 8 KiB sample per uncached file, with a separate shared 32 MiB sampling budget; decoded text still shares the 32 MiB cache. Oversized text, missing tracked files, escaping symlinks and unreadable files remain unavailable. Branch inspection permits at most 64 local branches. Workspace/reference expansion allows at most 256 visits, eight levels and 200 directory entries per read.
 

@@ -251,9 +251,9 @@ enum GitHubCLI {
     }
 }
 
-actor InspectionCIStatusCache {
-    private var task: Task<[CIBranchStatus], Error>?
-    func value(load: @escaping @Sendable () async throws -> [CIBranchStatus]) async throws -> [CIBranchStatus] {
+actor InspectionRemoteValue<Value: Sendable> {
+    private var task: Task<Value, Error>?
+    func value(load: @escaping @Sendable () async throws -> Value) async throws -> Value {
         if let task { return try await task.value }
         let fresh = Task { try await load() }; task = fresh
         return try await fresh.value

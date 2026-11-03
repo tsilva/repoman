@@ -3,7 +3,7 @@ import Foundation
 /// Production sites declared in the repository's root RepoMan manifest.
 /// Deliberately restricted to the user's tsilva.eu zone; metadata cannot choose arbitrary URLs.
 enum WebsiteDomains {
-    static let manifest = ".repoman.yaml"
+    static let manifest = RepoManManifest.path
 
     struct TelemetryPolicy {
         enum Expectation: String { case required, optional, disabled }
@@ -18,7 +18,13 @@ enum WebsiteDomains {
 
     static func inventory(_ context: RepositoryInspectionContext) throws -> [String: [String: TelemetryPolicy]] {
         if try context.exists(manifest) {
-            return try manifestInventory(context.yaml(manifest))
+            let config = try context.yaml(manifest)
+            if config.values["websites"] != nil || config.values.keys.contains(where: { $0.hasPrefix("websites.") }) {
+                return try manifestInventory(config)
+            }
+            guard config.values["version"] == "1" else {
+                throw InspectionError.blocked("Unsupported .repoman.yaml version.")
+            }
         }
         guard try context.exists(".repo-metadata.toml") else { return [:] }
         let config = try InspectionConfig.toml(context.readText(".repo-metadata.toml"), allSections: true)

@@ -9,7 +9,8 @@ public struct RepositoryInspectionContext: Sendable {
     private let files = InspectionFileCache()
     private let git = InspectionGitCache()
     private let parsing = InspectionParsingCache()
-    private let ciStatus = InspectionCIStatusCache()
+    private let ciStatus = InspectionRemoteValue<[CIBranchStatus]>()
+    let githubAbout = InspectionRemoteValue<GitHubRepositoryAbout>()
     let websites = WebsiteInspectionSession()
     private let freshness = InspectionFreshness()
     public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedWebsiteChecks: Bool = false) {
