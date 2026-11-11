@@ -71,7 +71,7 @@ enum RepoManManifest {
 
 enum RepositoryMetadataChecks {
     typealias Loader = @Sendable (RepositorySnapshot) async throws -> PublishedRepositoryMetadata
-    typealias VisibilityLoader = @Sendable (RepositorySnapshot) async throws -> GitHubRepositoryVisibility
+    typealias VisibilityLoader = @Sendable (GitHubCI.Repository) async throws -> GitHubRepositoryVisibility
     typealias AboutLoader = @Sendable (GitHubCI.Repository) async throws -> GitHubRepositoryAbout
     static func checks(load: Loader? = nil, loadVisibility: VisibilityLoader? = nil,
                        loadAbout: @escaping AboutLoader = { repository in
@@ -119,21 +119,70 @@ enum RepositoryMetadataChecks {
             guard actual != expected else { return [] }
             return [CheckSupport.finding(context, "github.website", repository.owner + "/" + repository.name,
                 "GitHub website URL drift", ".repoman.yaml github-url: \(expected.isEmpty ? "(empty)" : expected)\nGitHub Website: \(actual.isEmpty ? "(empty)" : actual)", .documentation, "link")]
-        }), CheckSupport.check("github.privateVisibility", "Private repository visibility", .setup, "lock.shield", inspect: { context, _ in
-            guard let repository = GitHubCI.repository(context.snapshot.remoteURL),
-                  repository.name.lowercased().hasPrefix("private-") else { throw InspectionError.notApplicable("The private-name visibility policy does not apply to this remote.") }
-            let visibility: GitHubRepositoryVisibility
-            if let loadVisibility { visibility = try await loadVisibility(context.snapshot) }
-            else {
-                let result = try await RepositoryVisibilityCache.shared.load(context.snapshot, allowCached: context.allowCachedRemoteMetadata)
-                visibility = result.visibility
-                if result.cached { context.markCached("github.privateVisibility") }
-            }
-            guard visibility != .private else { return [] }
-            let subject = repository.owner + "/" + repository.name
-            return [CheckSupport.finding(context, "github.privateVisibility", subject,
-                "Private-named repository is not private", "\(subject) starts with private- but its GitHub visibility is \(visibility.rawValue.lowercased()). Repositories with this prefix must be private.", .setup, "lock.shield", severity: .blocked)]
+        }), RepositoryCheck(id: "github.privateVisibility", title: "Private repository visibility", category: .setup, symbol: "lock.shield", evaluate: { context in
+            try await privateVisibility(context, load: loadVisibility)
         })]
+    }
+
+    private static func privateVisibility(_ context: RepositoryInspectionContext, load: VisibilityLoader?) async throws -> RepositoryCheckResult {
+        let policy = try RepositoryCheckPolicy.load(context)
+        let localPrivate = context.snapshot.name.lowercased().hasPrefix("private-") ||
+            context.snapshot.url.lastPathComponent.lowercased().hasPrefix("private-")
+        let remotes: [String]
+        do { remotes = try remoteLines(context, ["remote"]) }
+        catch { return .unavailable("Git remote configuration could not be read; private visibility cannot be verified.") }
+        var repositories: [String: GitHubCI.Repository] = [:], reasons: [String] = []
+        for remote in remotes {
+            for direction in ["fetch", "push"] {
+                do {
+                    let urls = try remoteLines(context, ["remote", "get-url", "--all"] + (direction == "push" ? ["--push"] : []) + ["--", remote])
+                    guard !urls.isEmpty else { throw InspectionError.blocked("No remote URL.") }
+                    for url in urls {
+                        guard let repository = GitHubCI.repository(url) else {
+                            if localPrivate { reasons.append("A configured \(direction) destination is not a supported GitHub remote; private visibility cannot be verified.") }
+                            continue
+                        }
+                        guard localPrivate || repository.name.lowercased().hasPrefix("private-") else { continue }
+                        repositories[(repository.owner + "/" + repository.name).lowercased()] = repository
+                    }
+                } catch {
+                    // Remote URLs can contain credentials; do not expose Git's diagnostics.
+                    reasons.append("A configured \(direction) destination could not be read; private visibility cannot be verified.")
+                }
+            }
+        }
+        guard !repositories.isEmpty || !reasons.isEmpty else {
+            return .notApplicable("No configured remotes require the private-name visibility policy.")
+        }
+        var findings: [RepositoryFinding] = []
+        for key in repositories.keys.sorted() {
+            guard let repository = repositories[key] else { continue }
+            let subject = repository.owner + "/" + repository.name
+            do {
+                let visibility: GitHubRepositoryVisibility
+                if let load { visibility = try await load(repository) }
+                else {
+                    let result = try await RepositoryVisibilityCache.shared.load(repository, allowCached: context.allowCachedRemoteMetadata)
+                    visibility = result.visibility
+                    if result.cached { context.markCached("github.privateVisibility") }
+                }
+                if visibility != .private {
+                    let trigger = localPrivate ? "The local folder name starts with private-" : "The GitHub repository name starts with private-"
+                    findings.append(CheckSupport.finding(context, "github.privateVisibility", subject,
+                        "Private-named repository is not private", "\(trigger), but \(subject) has \(visibility.rawValue.lowercased()) GitHub visibility. This destination must be private.", .setup, "lock.shield", severity: .blocked))
+                }
+            } catch {
+                reasons.append("\(subject): GitHub private visibility could not be verified. Check repository access and gh authentication.")
+            }
+        }
+        findings = context.applyingExceptions(findings, policy: policy)
+        return reasons.isEmpty ? .findings(findings) : .partial(findings, Set(reasons).sorted().joined(separator: "\n"))
+    }
+
+    private static func remoteLines(_ context: RepositoryInspectionContext, _ arguments: [String]) throws -> [String] {
+        let data = try context.gitRead(arguments)
+        guard let text = String(data: data, encoding: .utf8) else { throw InspectionError.blocked("Git remote configuration is not UTF-8.") }
+        return text.split(separator: "\n").map(String.init)
     }
 }
 
@@ -145,8 +194,7 @@ enum GitHubRepositoryVisibility: String, Decodable, Sendable {
       repository(owner: $owner, name: $name) { visibility }
     }
     """
-    static func load(_ snapshot: RepositorySnapshot, run: ([String]) throws -> Data = { try GitHubCLI.run($0) }) throws -> Self {
-        guard let repository = GitHubCI.repository(snapshot.remoteURL) else { throw InspectionError.blocked("A GitHub remote is required.") }
+    static func load(_ repository: GitHubCI.Repository, run: ([String]) throws -> Data = { try GitHubCLI.run($0) }) throws -> Self {
         return try decode(run(["api", "graphql", "--hostname", "github.com", "--raw-field", "query=" + query,
             "--raw-field", "owner=" + repository.owner, "--raw-field", "name=" + repository.name]))
     }
@@ -170,14 +218,13 @@ enum GitHubRepositoryVisibility: String, Decodable, Sendable {
 actor RepositoryVisibilityCache {
     static let shared = RepositoryVisibilityCache()
     private var values: [String: (date: Date, visibility: GitHubRepositoryVisibility)] = [:]
-    func load(_ snapshot: RepositorySnapshot, allowCached: Bool, now: Date = Date(),
-              loader: RepositoryMetadataChecks.VisibilityLoader = { snapshot in
-                  try await Task.detached(priority: .utility) { try GitHubRepositoryVisibility.load(snapshot) }.value
+    func load(_ repository: GitHubCI.Repository, allowCached: Bool, now: Date = Date(),
+              loader: RepositoryMetadataChecks.VisibilityLoader = { repository in
+                  try await Task.detached(priority: .utility) { try GitHubRepositoryVisibility.load(repository) }.value
               }) async throws -> (visibility: GitHubRepositoryVisibility, cached: Bool) {
-        guard let repository = GitHubCI.repository(snapshot.remoteURL) else { throw InspectionError.blocked("A GitHub remote is required.") }
-        let key = repository.owner + "/" + repository.name
+        let key = (repository.owner + "/" + repository.name).lowercased()
         if allowCached, let value = values[key], (0..<600).contains(now.timeIntervalSince(value.date)) { return (value.visibility, true) }
-        let visibility = try await loader(snapshot)
+        let visibility = try await loader(repository)
         if values.count >= 500, values[key] == nil, let oldest = values.min(by: { $0.value.date < $1.value.date })?.key { values.removeValue(forKey: oldest) }
         values[key] = (now, visibility)
         return (visibility, false)

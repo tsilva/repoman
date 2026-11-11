@@ -662,7 +662,7 @@ final class RepositoryAdditionalChecksTests: XCTestCase {
             $0.requiresExtendedInspection && !["ci.failing", "ci.coverage", "github.description", "github.privateVisibility"].contains($0.id)
         }
         let report = await RepositoryIssueCatalog(checks:checks).inspect(try snapshot(checkedAt:Date().addingTimeInterval(35 * 86_400)))
-        XCTAssertTrue(report.unavailableChecks.isEmpty)
+        XCTAssertEqual(Set(report.unavailableChecks.keys), ["branding.provenance"])
         XCTAssertTrue(report.findings().contains { $0.checkID == "git.oldStashes" })
         XCTAssertEqual(try Data(contentsOf:index), before)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath:index.path)[.modificationDate] as? Date, modified)

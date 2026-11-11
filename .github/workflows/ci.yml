@@ -35,4 +35,4 @@ jobs:
           CODE_SIGNING_ALLOWED=NO build
 
       - name: Verify the bundled command-line interface
-        run: python3 Tools/test_cli.py DerivedData/Build/Products/Debug/RepoMan.app/Contents/Helpers/repoman
+        run: python3 Tools/test_cli.py DerivedData/Build/Products/Debug.noindex/RepoMan.app/Contents/Helpers/repoman

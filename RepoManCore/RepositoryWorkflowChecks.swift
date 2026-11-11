@@ -94,6 +94,105 @@ enum WorkflowInspection {
     static func block(_ lines: [Line], _ index: Int) -> [Line] {
         Array(lines.dropFirst(index + 1).prefix { $0.indent > lines[index].indent })
     }
+
+    struct LighthouseEvidence {
+        var hosts: Set<String> = []
+        var localBuild = false
+        var unresolvedTarget = false
+    }
+
+    static func lighthouseEvidence(_ lines: [Line]) throws -> LighthouseEvidence {
+        let unsupported = InspectionError.blocked("Unsupported Lighthouse workflow syntax.")
+        var evidence = LighthouseEvidence()
+        guard let trigger = lines.firstIndex(where: { $0.indent == 0 && $0.field == "on" }),
+              let jobsIndex = lines.firstIndex(where: { $0.indent == 0 && $0.field == "jobs" }) else { throw unsupported }
+        let triggerValue = lines[trigger].value
+        guard !triggerValue.hasPrefix("{") else { throw unsupported }
+        let triggerBlock = block(lines, trigger)
+        let events = triggerValue.isEmpty
+            ? fieldIndices(triggerBlock).map { triggerBlock[$0].field }
+            : triggerValue.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).components(separatedBy: ",").compactMap {
+                InspectionConfig.scalar($0.trimmingCharacters(in: .whitespaces))
+            }
+        guard !events.isEmpty else { throw unsupported }
+        // A reusable definition alone is not a workflow entrypoint.
+        guard events.contains(where: { $0 != "workflow_call" }) else { return evidence }
+
+        func disabled(_ fields: [Line]) -> Bool {
+            guard let raw = InspectionConfig.scalar(fields.first(where: { $0.field == "if" })?.value) else { return false }
+            return raw == "false" || CheckSupport.matches(raw, #"^\$\{\{\s*false\s*\}\}$"#)
+        }
+        func recordTargets(_ body: [Line], input: String, localBuild: Bool) throws {
+            guard let with = fieldIndices(body).first(where: { body[$0].field == "with" }) else {
+                evidence.localBuild = evidence.localBuild || localBuild
+                return
+            }
+            guard body[with].value.isEmpty || body[with].value == "{}" else { throw unsupported }
+            let inputs = block(body, with)
+            guard let index = fieldIndices(inputs).first(where: { inputs[$0].field == input }) else {
+                evidence.localBuild = evidence.localBuild || localBuild
+                return
+            }
+            let raw = inputs[index].value
+            let urls = raw.hasPrefix("|") ? block(inputs, index).map(\.text) : [InspectionConfig.scalar(raw) ?? raw]
+            for url in urls {
+                guard !url.isEmpty else { continue }
+                guard !url.contains("$"), let parsed = URLComponents(string: url),
+                      parsed.scheme == "https", parsed.user == nil, parsed.password == nil,
+                      parsed.port == nil || parsed.port == 443, let host = parsed.host else {
+                    evidence.unresolvedTarget = true
+                    continue
+                }
+                evidence.hosts.insert(host.lowercased())
+            }
+        }
+        func uses(_ fields: [Line], _ action: String) -> Bool {
+            guard let reference = InspectionConfig.scalar(fields.first(where: { $0.field == "uses" })?.value),
+                  let at = reference.firstIndex(of: "@"), at < reference.index(before: reference.endIndex) else { return false }
+            return reference[..<at].lowercased() == action
+        }
+        let jobs = block(lines, jobsIndex)
+        for index in fieldIndices(jobs) {
+            guard jobs[index].value.isEmpty else { throw unsupported }
+            let job = block(jobs, index)
+            let fields = fieldIndices(job).map { job[$0] }
+            guard !disabled(fields) else { continue }
+            if uses(fields, "tsilva/.github/.github/workflows/lighthouse-ci.yml") {
+                try recordTargets(job, input: "url", localBuild: false)
+            }
+            guard let steps = fieldIndices(job).first(where: { job[$0].field == "steps" }) else { continue }
+            guard job[steps].value.isEmpty || job[steps].value == "[]",
+                  !fields.contains(where: { $0.text.hasPrefix("- ") }) else { throw unsupported }
+            let stepLines = block(job, steps)
+            for start in fieldIndices(stepLines) {
+                let line = stepLines[start]
+                guard line.text.hasPrefix("- "), !line.text.hasPrefix("- {") else { throw unsupported }
+                let body = [Line(indent: line.indent + 2, text: String(line.text.dropFirst(2)))] + block(stepLines, start)
+                let properties = fieldIndices(body).map { body[$0] }
+                guard !disabled(properties) else { continue }
+                if uses(properties, "treosh/lighthouse-ci-action") {
+                    try recordTargets(body, input: "urls", localBuild: true)
+                }
+                if let run = fieldIndices(body).first(where: { body[$0].field == "run" }) {
+                    let raw = body[run].value
+                    let commands = raw.hasPrefix("|") || raw.hasPrefix(">") ? block(body, run).map(\.text) : [InspectionConfig.scalar(raw) ?? raw]
+                    let autorun = #"^(?:lhci|npx\s+(?:lhci|@lhci/cli)|(?:npm\s+exec\s+--|pnpm\s+exec)\s+lhci)\s+autorun$"#
+                    if let first = commands.first, !raw.hasPrefix(">"), CheckSupport.matches(first, autorun) {
+                        evidence.localBuild = true
+                    } else if commands.contains(where: { CheckSupport.matches($0, autorun) }) {
+                        evidence.unresolvedTarget = true
+                    }
+                }
+            }
+        }
+        return evidence
+    }
+
+    private static func fieldIndices(_ lines: [Line]) -> [Int] {
+        guard let indent = lines.first?.indent else { return [] }
+        return lines.indices.filter { lines[$0].indent == indent }
+    }
+
     private static func failurePolicy(_ lines: [Line], indent: Int) throws -> Bool {
         guard let raw = lines.first(where: { $0.indent == indent && $0.field == "continue-on-error" })?.value else { return false }
         guard ["true", "false"].contains(raw) else { throw InspectionError.blocked("Conditional continue-on-error needs manual review.") }

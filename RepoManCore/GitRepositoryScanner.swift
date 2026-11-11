@@ -65,21 +65,7 @@ public enum GitRepositoryScanner {
             do { return try GitRunner.text(arguments, at: url) }
             catch { inspectionErrors[key] = error.localizedDescription; return "" }
         }
-        let branch = (try? GitRunner.text(["symbolic-ref", "--quiet", "--short", "HEAD"], at: url))
-            ?? (try? GitRunner.text(["rev-parse", "--short", "HEAD"], at: url))
-            ?? "No commits"
-        let upstream = try? GitRunner.text(
-            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], at: url
-        )
-        let divergence = upstream.flatMap { _ -> (Int, Int)? in
-            guard let output = try? GitRunner.text(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], at: url) else {
-                return nil
-            }
-            let values = output.split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
-            return values.count == 2 ? (values[0], values[1]) : nil
-        }
-
-        let status = try GitRunner.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], at: url)
+        let status = try readStatus(at: url)
         var trackedStats = Data()
         var fallbackStagedStats = Data()
         if includeDetails {
@@ -92,7 +78,7 @@ public enum GitRepositoryScanner {
             }
         }
         let changes = workingTreeChanges(
-            status: status,
+            paths: status.paths,
             unstagedStats: trackedStats,
             stagedStats: fallbackStagedStats,
             directory: url,
@@ -108,14 +94,38 @@ public enum GitRepositoryScanner {
             .map { String($0.dropFirst("branch refs/heads/".count)) })
         let linkedWorktrees = Array(allWorktrees.dropFirst()).map { URL(fileURLWithPath: $0).lastPathComponent }
 
-        let branchText = inspect("branches", ["for-each-ref", "--format=%(refname:short)%09%(committerdate:unix)", "refs/heads"])
+        let branchText = inspect("branches", ["for-each-ref", "--format=%(HEAD)%09%(refname:short)%09%(committerdate:unix)", "refs/heads"])
+        let branches = branchText.split(separator: "\n").map { $0.split(separator: "\t", omittingEmptySubsequences: false) }
+        // Git's ref shortening handles collisions with tags and other refs. Detached,
+        // unborn, and nonstandard symbolic HEADs still need the original lookup.
+        let branch = branches.first { $0.count == 3 && $0[0] == "*" }.map { String($0[1]) }
+            ?? (try? GitRunner.text(["symbolic-ref", "--quiet", "--short", "HEAD"], at: url))
+            ?? (try? GitRunner.text(["rev-parse", "--short", "HEAD"], at: url))
+            ?? "No commits"
+        let upstream: String?
+        let divergence: (Int, Int)?
+        if let counts = status.divergence, let tracked = status.upstream {
+            upstream = tracked
+            divergence = counts
+        } else {
+            // A configured upstream may be gone, or Git may be unable to compare it.
+            upstream = status.upstream.flatMap { _ in
+                try? GitRunner.text(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], at: url)
+            }
+            divergence = upstream.flatMap { _ in
+                guard let output = try? GitRunner.text(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], at: url) else {
+                    return nil
+                }
+                let values = output.split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
+                return values.count == 2 ? (values[0], values[1]) : nil
+            }
+        }
         let staleCutoff = now.addingTimeInterval(-90 * 24 * 60 * 60).timeIntervalSince1970
-        let staleBranches = branchText.split(separator: "\n").compactMap { line -> String? in
-            let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
-            guard parts.count == 2,
-                  let timestamp = TimeInterval(parts[1]),
+        let staleBranches = branches.compactMap { parts -> String? in
+            guard parts.count == 3,
+                  let timestamp = TimeInterval(parts[2]),
                   timestamp < staleCutoff else { return nil }
-            let name = String(parts[0])
+            let name = String(parts[1])
             guard name != branch, name != "main", name != "master", !occupiedBranches.contains(name) else {
                 return nil
             }
@@ -130,8 +140,11 @@ public enum GitRepositoryScanner {
         // CI checks also run during summary scans. Use the tracked remote when available.
         let remote = (try? GitRunner.text(["config", "--get", "branch.\(branch).remote"], at: url)) ?? "origin"
         let configuredURL = try? GitRunner.text(["config", "--get", "remote.\(remote).url"], at: url)
-        let remoteNames = (try? GitRunner.text(["remote"], at: url))?.split(separator: "\n").map(String.init) ?? []
-        let remoteURL = configuredURL ?? remoteNames.first.flatMap { try? GitRunner.text(["config", "--get", "remote.\($0).url"], at: url) }
+        let remoteURL = configuredURL ?? {
+            let remotes = try? GitRunner.text(["remote"], at: url)
+            guard let first = remotes?.split(separator: "\n").first else { return nil }
+            return try? GitRunner.text(["config", "--get", "remote.\(first).url"], at: url)
+        }()
 
         return RepositorySnapshot(
             url: url,
@@ -179,8 +192,54 @@ public enum GitRepositoryScanner {
         }
     }
 
+    private struct Status {
+        var upstream: String?
+        var divergence: (Int, Int)?
+        var paths: [(String, WorkingTreeChange.Kind)] = []
+    }
+
+    private static func readStatus(at url: URL) throws -> Status {
+        let data = try GitRunner.run(["status", "--porcelain=v2", "--branch", "--ahead-behind", "-z", "--untracked-files=all"], at: url)
+        let entries = data.split(separator: 0)
+        var status = Status()
+        var index = 0
+        while index < entries.count {
+            let entry = entries[index]
+            index += 1
+            let separators: Int
+            switch entry.first {
+            case UInt8(ascii: "#"):
+                let header = String(decoding: entry, as: UTF8.self)
+                if header.hasPrefix("# branch.upstream ") {
+                    status.upstream = String(header.dropFirst("# branch.upstream ".count))
+                } else if header.hasPrefix("# branch.ab ") {
+                    let counts = header.dropFirst("# branch.ab ".count).split(separator: " ")
+                    if counts.count == 2, let ahead = Int(counts[0]), let behind = Int(counts[1]) {
+                        status.divergence = (ahead, -behind)
+                    }
+                }
+                continue
+            case UInt8(ascii: "1"): separators = 8
+            case UInt8(ascii: "2"): separators = 9
+            case UInt8(ascii: "u"): separators = 10
+            case UInt8(ascii: "?"): separators = 1
+            default: throw GitError.failed("Unexpected Git status record.")
+            }
+            let fields = entry.split(separator: UInt8(ascii: " "), maxSplits: separators, omittingEmptySubsequences: false)
+            guard fields.count == separators + 1, let path = fields.last, !path.isEmpty else {
+                throw GitError.failed("Invalid Git status path.")
+            }
+            status.paths.append((String(decoding: path, as: UTF8.self), separators == 1 ? .untracked : .modified))
+            if separators == 9 {
+                guard index < entries.count else { throw GitError.failed("Git status rename is missing its original path.") }
+                index += 1
+            }
+        }
+        return status
+    }
+
     private static func workingTreeChanges(
-        status: Data,
+        paths: [(String, WorkingTreeChange.Kind)],
         unstagedStats: Data,
         stagedStats: Data,
         directory: URL,
@@ -195,19 +254,8 @@ public enum GitRepositoryScanner {
             }
         }
 
-        let entries = status.split(separator: 0, omittingEmptySubsequences: true)
         var changes: [WorkingTreeChange] = []
-        var index = 0
-        while index < entries.count {
-            let entry = entries[index]
-            defer { index += 1 }
-            guard entry.count >= 4 else { continue }
-            let code = Array(entry.prefix(2))
-            let path = String(decoding: entry.dropFirst(3), as: UTF8.self)
-            if code.contains(UInt8(ascii: "R")) || code.contains(UInt8(ascii: "C")) {
-                index += 1 // The second NUL-terminated path is the original name.
-            }
-            let kind: WorkingTreeChange.Kind = code == [63, 63] ? .untracked : .modified
+        for (path, kind) in paths {
             let lineCounts: (Int?, Int?)
             if kind == .untracked, includeLineCounts {
                 lineCounts = (untrackedLineCount(directory.appendingPathComponent(path)), nil)

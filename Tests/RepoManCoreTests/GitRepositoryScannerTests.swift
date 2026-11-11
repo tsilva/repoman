@@ -113,6 +113,7 @@ final class GitRepositoryScannerTests: XCTestCase {
 
         let snapshot = try GitRepositoryScanner.scan(repo)
         XCTAssertEqual(snapshot.branch, "main")
+        XCTAssertEqual(snapshot.upstream, "origin/main")
         XCTAssertEqual(snapshot.ahead, 1)
         XCTAssertEqual(snapshot.behind, 1)
         XCTAssertEqual(snapshot.worktrees.count, 1)
@@ -165,11 +166,15 @@ final class GitRepositoryScannerTests: XCTestCase {
         try "hello\n".write(to: root.appendingPathComponent("old.txt"), atomically: true, encoding: .utf8)
         try git(["add", "old.txt"], in: root)
         try git(["commit", "-m", "Initial"], in: root)
-        try git(["mv", "old.txt", "new.txt"], in: root)
+        let renamedPath = "new \tname\n.txt"
+        let untrackedPath = " leading space.txt"
+        try git(["mv", "old.txt", renamedPath], in: root)
+        try "untracked\n".write(to: root.appendingPathComponent(untrackedPath), atomically: true, encoding: .utf8)
 
         let snapshot = try GitRepositoryScanner.scan(root)
-        XCTAssertEqual(snapshot.changes.map(\.path), ["new.txt"])
-        XCTAssertEqual(snapshot.changes.first?.kind, .modified)
+        XCTAssertEqual(snapshot.changes.count, 2)
+        XCTAssertEqual(snapshot.changes.first(where: { $0.path == renamedPath })?.kind, .modified)
+        XCTAssertEqual(snapshot.changes.first(where: { $0.path == untrackedPath })?.kind, .untracked)
     }
 
     func testDiscoveryReadsRelativeGitMetadataAndRejectsInvalidPointers() throws {

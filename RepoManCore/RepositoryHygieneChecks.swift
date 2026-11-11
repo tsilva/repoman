@@ -35,8 +35,17 @@ enum RepositoryHygieneChecks {
                 var findings: [RepositoryFinding] = []
                 let unmerged = try context.gitRead(["ls-files", "--unmerged", "-z"])
                 if !unmerged.isEmpty { findings.append(CheckSupport.finding(context, "git.unfinishedOperation", "conflicts", "Unmerged files", "The index contains unresolved merge entries. Preserve both sides while reviewing conflicts.", .git, "exclamationmark.triangle", severity: .blocked)) }
-                for (marker, name) in [("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase or am"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("sequencer", "sequencer")] {
-                    let path = String(decoding: try context.gitRead(["rev-parse", "--git-path", marker]), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                let operations = [("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase or am"),
+                                  ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("sequencer", "sequencer")]
+                let arguments = operations.flatMap { marker, _ in ["--git-path", marker] }
+                let output = try context.gitRead(["rev-parse"] + arguments)
+                let paths = String(decoding: output, as: UTF8.self).split(separator: "\n")
+                for (index, operation) in operations.enumerated() {
+                    let (marker, name) = operation
+                    // If a Git directory has a newline in its name, resolve each path separately.
+                    let resolved = paths.count == operations.count ? String(paths[index])
+                        : String(decoding: try context.gitRead(["rev-parse", "--git-path", marker]), as: UTF8.self)
+                    let path = resolved.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !path.isEmpty else { throw InspectionError.blocked("Git returned an empty operation marker path.") }
                     let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : context.snapshot.url.appendingPathComponent(path)
                     do {
@@ -52,7 +61,7 @@ enum RepositoryHygieneChecks {
                 try documentationFindings(context, path: path)
             }),
             CheckSupport.check("notebooks.hygiene", "Notebook hygiene", .documentation, "book.closed", inspect: { context, policy in
-                guard policy.notebooks.enabled else { throw InspectionError.skipped("Notebook hygiene is disabled by repository policy (notebooks.enabled).") }
+                guard policy.notebooks.enabled else { throw InspectionError.skipped("Notebook hygiene is disabled (notebooks.enabled defaults to false; set it to true to enable this check).") }
                 let paths = try context.trackedPaths(matching: [":(glob)**/*.ipynb"])
                 guard !paths.isEmpty else { throw InspectionError.notApplicable("No tracked notebooks were found.") }
                 guard paths.count <= 250 else { throw InspectionError.blocked("More than 250 notebooks need inspection.") }
@@ -124,7 +133,7 @@ enum RepositoryHygieneChecks {
         let remainder = failedTargets > reasons.count ? "\n\(failedTargets - reasons.count) additional targets could not be inspected." : ""
         return .partial(findings, path + ": " + reasons.joined(separator: "\n") + remainder)
     }
-    private static func markdownProse(_ source: String) -> String {
+    static func markdownProse(_ source: String) -> String {
         var fence: String?, result: [String] = []
         for raw in source.components(separatedBy: .newlines) {
             let trimmed = raw.trimmingCharacters(in: .whitespaces)

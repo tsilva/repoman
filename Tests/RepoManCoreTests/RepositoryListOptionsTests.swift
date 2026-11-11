@@ -51,7 +51,7 @@ final class RepositoryListOptionsTests: XCTestCase {
             snapshot("alpha", ahead: 2, behind: 2, changes: 2, staleBranches: 2, worktrees: 2),
             snapshot("many", ahead: 10, behind: 10, changes: 10, staleBranches: 10, worktrees: 10)
         ]
-        for sort in RepositorySort.allCases where sort != .name && sort != .lastActivity {
+        for sort in [RepositorySort.toPush, .toPull, .changedFiles, .staleBranches, .worktrees] {
             XCTAssertEqual(
                 sort.repositories(repositories, ascending: false).map(\.name),
                 ["many", "alpha", "beta", "zero"], sort.rawValue
@@ -61,6 +61,34 @@ final class RepositoryListOptionsTests: XCTestCase {
                 ["zero", "alpha", "beta", "many"], sort.rawValue
             )
         }
+    }
+
+    func testTrafficSortsKeepMissingCountsAfterZero() {
+        let repositories = [snapshot("unknown"), snapshot("zero"), snapshot("popular")]
+        let counts = ["zero": 0, "popular": 80]
+        for sort in [RepositorySort.activeUsersSevenDays, .activeUsersRealtime] {
+            XCTAssertEqual(sort.repositories(repositories, activeUsers: { counts[$0.name] }).map(\.name),
+                           ["zero", "popular", "unknown"])
+            XCTAssertEqual(sort.repositories(repositories, ascending: false, activeUsers: { counts[$0.name] }).map(\.name),
+                           ["popular", "zero", "unknown"])
+        }
+    }
+
+    func testGitHubSortsUseTheirOwnCountsAndKeepUnknownAfterZero() {
+        let repositories = [
+            snapshot("unknown"), snapshot("zero"), snapshot("more-stars"),
+            snapshot("more-forks"), snapshot("also-stars")
+        ]
+        let counts = ["zero": (0, 0), "more-stars": (7, 1), "more-forks": (2, 8), "also-stars": (7, 2)]
+
+        XCTAssertEqual(RepositorySort.stars.repositories(repositories, githubCounts: { counts[$0.name] }).map(\.name),
+                       ["zero", "more-forks", "also-stars", "more-stars", "unknown"])
+        XCTAssertEqual(RepositorySort.stars.repositories(repositories, ascending: false, githubCounts: { counts[$0.name] }).map(\.name),
+                       ["also-stars", "more-stars", "more-forks", "zero", "unknown"])
+        XCTAssertEqual(RepositorySort.forks.repositories(repositories, githubCounts: { counts[$0.name] }).map(\.name),
+                       ["zero", "more-stars", "also-stars", "more-forks", "unknown"])
+        XCTAssertEqual(RepositorySort.forks.repositories(repositories, ascending: false, githubCounts: { counts[$0.name] }).map(\.name),
+                       ["more-forks", "also-stars", "more-stars", "zero", "unknown"])
     }
 
     func testUnknownDivergenceSortsAfterKnownValuesInEitherDirection() {

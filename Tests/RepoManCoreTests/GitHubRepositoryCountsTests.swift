@@ -47,8 +47,8 @@ final class GitHubRepositoryCountsTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 10_000)
         let entry = GitHubRepositoryCountsEntry(counts: .init(stars: 12, forks: 3), fetchedAt: now)
         let restored = try JSONDecoder().decode(GitHubRepositoryCountsEntry.self, from: JSONEncoder().encode(entry))
-        XCTAssertTrue(restored.isFresh(at: now.addingTimeInterval(3599)))
-        XCTAssertFalse(restored.isFresh(at: now.addingTimeInterval(3600)))
+        XCTAssertTrue(restored.isFresh(at: now.addingTimeInterval(86_399)))
+        XCTAssertFalse(restored.isFresh(at: now.addingTimeInterval(86_400)))
         XCTAssertEqual(restored.counts, entry.counts)
     }
 

@@ -22,6 +22,9 @@ final class WebsiteDomainInventoryTests: XCTestCase {
                 return try json(["projects":[["id":"prj_cli"]], "pagination":["next":NSNull()]])
             case "/v9/projects/prj_old/domains?production=true&limit=100":
                 return try json(["domains":[["name":"SITE.tsilva.eu"], ["name":"site.vercel.app"],
+                    ["name":"preview.vercel.app", "gitBranch":"feature"],
+                    ["name":"staging.vercel.app", "customEnvironmentId":"env_staging"],
+                    ["name":"unverified.vercel.app", "verified":false],
                     ["name":"preview.tsilva.eu", "gitBranch":"feature"],
                     ["name":"staging.tsilva.eu", "customEnvironmentId":"env_staging"]]])
             case "/v9/projects/prj_cli/domains?production=true&limit=100":
@@ -32,6 +35,7 @@ final class WebsiteDomainInventoryTests: XCTestCase {
         XCTAssertEqual(projects.count, 2)
         XCTAssertEqual(projects[0].repository, "fixture/site")
         XCTAssertEqual(projects[0].domains, ["site.tsilva.eu"])
+        XCTAssertEqual(projects[0].productionAliases, ["site.vercel.app"])
         XCTAssertNil(projects[1].repository)
         XCTAssertEqual(projects[1].domains, ["cli.tsilva.eu"])
         XCTAssertTrue(visited.contains { $0.contains("team-b") })

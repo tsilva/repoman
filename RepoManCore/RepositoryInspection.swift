@@ -12,10 +12,13 @@ public struct RepositoryInspectionContext: Sendable {
     private let ciStatus = InspectionRemoteValue<[CIBranchStatus]>()
     let githubAbout = InspectionRemoteValue<GitHubRepositoryAbout>()
     let websites = WebsiteInspectionSession()
+    let searchConsole: SearchConsoleSitemapInventory
     private let freshness = InspectionFreshness()
-    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedWebsiteChecks: Bool = false) {
+    public init(snapshot: RepositorySnapshot, allowCachedRemoteMetadata: Bool = false, allowCachedWebsiteChecks: Bool = false,
+                searchConsole: SearchConsoleSitemapInventory = SearchConsoleSitemapInventory()) {
         self.snapshot = snapshot; self.allowCachedRemoteMetadata = allowCachedRemoteMetadata
         self.allowCachedWebsiteChecks = allowCachedWebsiteChecks
+        self.searchConsole = searchConsole
     }
     func ciStatuses(load: @escaping @Sendable (RepositorySnapshot) async throws -> [CIBranchStatus]) async throws -> [CIBranchStatus] {
         let current = snapshot
@@ -80,6 +83,27 @@ public struct RepositoryInspectionContext: Sendable {
     }
     func readNotebook(_ relativePath: String) throws -> String {
         try atPath(relativePath) { try files.read(checkedURL(relativePath), maximumBytes: 8_388_608) }
+    }
+    func readBrandingFile(_ relativePath: String, maximumBytes: Int) throws -> Data {
+        try atPath(relativePath) {
+            let root = snapshot.url.standardizedFileURL.resolvingSymlinksInPath()
+            let url = try checkedURL(relativePath)
+            guard url == root.appendingPathComponent(relativePath).standardizedFileURL else {
+                throw InspectionError.blocked("Branding files must not use symbolic links.")
+            }
+            let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+            guard descriptor >= 0 else { throw InspectionError.blocked("Branding file could not be opened.") }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            defer { try? handle.close() }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+                  info.st_size > 0, info.st_size <= maximumBytes else {
+                throw InspectionError.blocked("Expected a nonempty regular branding file within the size limit.")
+            }
+            let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+            guard data.count == info.st_size else { throw InspectionError.blocked("Branding file changed during inspection.") }
+            return data
+        }
     }
     /// Size checks never open large files. Directories (including submodules) are skipped.
     func regularFileSize(_ relativePath: String) throws -> Int? {
@@ -387,12 +411,13 @@ public extension RepositoryIssueCatalog {
         cache: RepositoryInspectionCache? = nil,
         forceRefresh: Bool = false,
         excludingChecks: Set<String> = [],
+        searchConsole: SearchConsoleSitemapInventory = SearchConsoleSitemapInventory(),
         now: @escaping @Sendable () -> Date = { Date() },
         onProgress: (@Sendable (RepositoryInspectionReport) async -> Void)? = nil
     ) async -> RepositoryInspectionReport {
         let activeChecks = checks.filter { !excludingChecks.contains($0.id) }
         let context = RepositoryInspectionContext(snapshot: snapshot, allowCachedRemoteMetadata: allowCachedRemoteMetadata && !forceRefresh,
-            allowCachedWebsiteChecks: cache != nil && !forceRefresh)
+            allowCachedWebsiteChecks: cache != nil && !forceRefresh, searchConsole: searchConsole)
         let reusable = forceRefresh ? [:] : await cache?.reusableResults(for: snapshot, checks: activeChecks, now: now()) ?? [:]
         var results = reusable.mapValues(\.result)
         var completedAt = reusable.mapValues(\.completedAt)

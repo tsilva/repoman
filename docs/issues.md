@@ -10,7 +10,7 @@ The detail panel groups Git push/pull/divergence and upstream information in one
 - `RepositoryInspectionContext` bounds file and Git reads to one repository. Shared caches avoid duplicate reads within an inspection.
 - `RepositoryInspectionRunner` evaluates up to four checks concurrently and publishes each completed result immediately.
 - `RepositoryInspectionReport` records findings, partial results and unavailable reasons. Incomplete checks remain unknown and cannot establish that a finding is absent.
-- `RepositoryInspectionCache` persists results and their original completion times. Startup and the minute scheduler run missing or expired checks; explicit refresh bypasses reuse. See [scanning performance](scanning-performance.md).
+- `RepositoryInspectionCache` persists results and their original completion times. Startup shows reusable results from earlier issue scans. Click the **Scan issues** magnifying glass in a repository’s issue list to fetch its remote refs and run its enabled checks. See [scanning performance](scanning-performance.md).
 - `RepositoryStore` owns snapshots, check progress, preferences, current reports. It never loads or resumes legacy `repair-tasks.json` files.
 - `RepositoryIssuesView` sorts the flat findings by check category and catalog check order, then renders the selected instance's evidence. Repository badges distinguish actionable issues, coverage limits, and information.
 - `RepositoryChecker` exposes fresh catalog inspection to the CLI; `RepositoryCheckReport` serializes its results. The app calls the same catalog directly.
@@ -62,6 +62,6 @@ Exit 0 means the applicable selected checks completed without actionable finding
 
 Copy maintenance task includes the finding, original check completion time (or explicitly unknown time), and a shell-quoted verification command using the bundled executable. It only copies text. Skill invocation and any repair remain user-directed.
 
-The existing `dependabot-cleanup` skill optionally consumes dependency reports when a local checkout and CLI are already available. Its existing package-age, compatibility, exact-revision CI, merge and publication requirements remain authoritative. There is no shared daemon, imported run history or general skill executor.
+The existing `private-skills_dependabot-cleanup` skill optionally consumes dependency reports when a local checkout and CLI are already available. Its existing package-age, compatibility, exact-revision CI, merge and publication requirements remain authoritative. There is no shared daemon, imported run history or general skill executor.
 
 Service access metadata and local privacy checks are local-only and never inject credentials. The `github.dependabotAlerts` check uses the existing GitHub CLI login under the remote-access gate; known alerts survive incomplete pagination. Its results describe the published dependency graph rather than the mutable checkout. See [additional checks](additional-checks.md) for schema recognition and inventory bounds.

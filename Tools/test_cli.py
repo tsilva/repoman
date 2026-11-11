@@ -1,9 +1,11 @@
 """Exercise the built CLI against isolated local fixtures; no network or installs."""
 import ast
 import contextlib
+import hashlib
 import io
 import json
 import re
+import struct
 import textwrap
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 
 BINARY = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else Path('.build/debug/repoman').resolve()
 
@@ -57,6 +60,128 @@ class CLITests(unittest.TestCase):
 
     def check(self, *args):
         return self.cli('check', '--repo', str(self.repo), '--format', 'json', *args)
+
+    def test_branding_skips_private_and_sandbox_repository_names(self):
+        ids = ('--check', 'branding.assets', '--check', 'branding.provenance')
+        self.git('remote', 'add', 'origin', 'https://github.com/fixture/Private-example.git')
+        result = self.check(*ids)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual([row['status'] for row in json.loads(result.stdout)['checks']], ['skipped', 'skipped'])
+
+        self.git('remote', 'set-url', 'origin', 'https://github.com/fixture/sandboxing.git')
+        result = self.check(*ids)
+        self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+        self.assertEqual([row['status'] for row in json.loads(result.stdout)['checks']], ['findings', 'incomplete'])
+
+        sandbox = self.repo.with_name('sandbox-example')
+        self.repo.rename(sandbox)
+        self.repo = sandbox
+        result = self.check(*ids)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual([row['status'] for row in json.loads(result.stdout)['checks']], ['skipped', 'skipped'])
+
+    def test_branding_profiles_lineage_and_changed_fingerprints(self):
+        def png(width, height, credentials=False):
+            def chunk(kind, data):
+                return (struct.pack('>I', len(data)) + kind + data
+                        + struct.pack('>I', zlib.crc32(kind + data)))
+            header = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+            metadata = chunk(b'caBX', b'fixture metadata') if credentials else b''
+            return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header)
+                    + metadata
+                    + chunk(b'IDAT', zlib.compress(bytes((width + 1) * height)))
+                    + chunk(b'IEND', b''))
+
+        def write(path, data):
+            target = self.repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            self.git('add', path)
+            return hashlib.sha256(data).hexdigest()
+
+        def check(exit_code):
+            result = self.check('--check', 'branding.assets', '--check', 'branding.provenance')
+            self.assertEqual(result.returncode, exit_code, result.stderr + result.stdout)
+            return {check['id']: check for check in json.loads(result.stdout)['checks']}
+
+        write('index.html', b'<html></html>')
+        write('Demo.xcodeproj/project.pbxproj', b'productType = "com.apple.product-type.application";')
+        initial = check(1)
+        self.assertEqual({row['subject'] for row in initial['branding.assets']['findings']},
+                         {'readme-logo', 'favicon', 'social-preview', 'apple-icon'})
+        self.assertEqual(initial['branding.provenance']['status'], 'incomplete')
+
+        def logo_title():
+            return next(row['title'] for row in check(1)['branding.assets']['findings']
+                        if row['subject'] == 'readme-logo')
+
+        self.assertEqual(logo_title(), 'README logo is missing')
+        logo = self.repo / 'logo.png'
+        logo.write_bytes(png(16, 16))
+        self.assertEqual(logo_title(), 'README logo is untracked')
+        write('logo.png', b'not a PNG')
+        self.assertEqual(logo_title(), 'README logo is invalid')
+        logo.unlink()
+        self.assertEqual(logo_title(), 'README logo is missing')
+
+        write('README.md', b'![Logo][brand]\n\n[brand]: ./logo.png\n')
+        source_path = 'image-assets/sources/logo-source.png'
+        source = {'path': source_path, 'sha256': write(source_path, png(64, 64, credentials=True)),
+                  'model': 'gpt-image-2.5-sunburst-2026-09-08', 'generatedAt': '2026-09-08T10:00:00Z',
+                  'evidence': 'Fixture generation receipt'}
+        paths = [('readme-logo', 'logo.png', png(16, 16)),
+                 ('favicon', 'public/favicon.svg', b'<svg xmlns="http://www.w3.org/2000/svg"/>'),
+                 ('social-preview', 'public/og-image.png', png(1200, 630)),
+                 ('apple-icon', 'App/Assets.xcassets/AppIcon.appiconset/icon.png', png(64, 64))]
+        exports = [{'role': role, 'path': path, 'sha256': write(path, data), 'source': source_path}
+                   for role, path, data in paths]
+        legacy = check(3)['branding.provenance']
+        self.assertIn(source['sha256'], legacy['reason'])
+        self.assertIn('signature and model unverified', legacy['reason'])
+        record = {'version': 1, 'profiles': [], 'sources': [source], 'exports': exports}
+        record_path = 'image-assets/provenance.json'
+        write(record_path, json.dumps(record).encode())
+        self.assertEqual({row['status'] for row in check(0).values()}, {'passed'})
+        self.git('remote', 'add', 'origin', 'https://github.com/fixture/branding.git')
+        readme = self.repo / 'README.md'
+        readme.write_text('<img src="https://raw.githubusercontent.com/fixture/branding/main/logo.png">')
+        self.assertEqual(check(0)['branding.assets']['status'], 'passed')
+        readme.write_text('<img src="https://raw.githubusercontent.com/fixture/another/main/logo.png">')
+        self.assertEqual(check(1)['branding.assets']['findings'][0]['subject'], 'readme-reference')
+        readme.write_text('![Logo](logo.png)')
+
+        source['model'] = 'gpt-image'
+        write(record_path, json.dumps(record).encode())
+        self.assertEqual(check(3)['branding.provenance']['status'], 'incomplete')
+
+        source['model'] = 'gpt-image-2'
+        write(record_path, json.dumps(record).encode())
+        (self.repo / 'logo.png').write_bytes(png(32, 32))
+        (self.repo / 'README.md').write_text('<!-- ![Logo](logo.png) -->\n![Logo](Logo.png)\n')
+        findings = check(1)
+        self.assertEqual({row['subject'] for row in findings['branding.assets']['findings']}, {'readme-reference'})
+        self.assertEqual({row['subject'] for row in findings['branding.provenance']['findings']},
+                         {'logo.png', source_path})
+
+        exports[0]['path'] = '../outside.png'
+        write(record_path, json.dumps(record).encode())
+        self.assertEqual(check(1)['branding.provenance']['status'], 'incomplete')
+
+    def test_skill_naming_validates_current_untracked_skills_without_writes(self):
+        (self.repo / '.repo-metadata.toml').write_text('short-name = "fixture"\n')
+        skill = self.repo / '.codex/skills/fixture_capture/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('---\nname: fixture_capture\ndescription: Example\n---\n')
+        before = (self.repo / '.git/index').read_bytes()
+        result = self.check('--check', 'skills.naming')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(json.loads(result.stdout)['checks'][0]['status'], 'passed')
+        skill.write_text('---\nname: old-name\ndescription: Example\n---\n')
+        result = self.check('--check', 'skills.naming')
+        self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+        self.assertEqual(json.loads(result.stdout)['checks'][0]['findings'][0]['subject'],
+                         '.codex/skills/fixture_capture/SKILL.md#name')
+        self.assertEqual((self.repo / '.git/index').read_bytes(), before)
 
     def test_vulnerabilities_require_remote_opt_in_but_no_comparison_base(self):
         self.assertIn('dependencies.vulnerabilities [remote]', self.cli('--list-checks').stdout)
@@ -169,19 +294,22 @@ class CLITests(unittest.TestCase):
 
     def test_website_checks_are_remote_and_local_mode_cannot_visit_sites(self):
         listed = self.cli('--list-checks')
-        for check_id in ('website.domains', 'website.sentry', 'website.analytics'):
+        for check_id in ('website.domains', 'website.sentry', 'website.analytics', 'website.sitemap', 'website.sitemapSubmission',
+                         'website.lighthouseCI'):
             self.assertIn(check_id + ' [remote]', listed.stdout)
             self.assertEqual(self.check('--check', check_id).returncode, 2)
         result = self.check()
         checks = [x for x in json.loads(result.stdout)['checks'] if x['id'].startswith('website.')]
-        self.assertEqual(len(checks), 3)
+        self.assertEqual(len(checks), 6)
         self.assertTrue(all(x['status'] == 'skipped' for x in checks))
 
     def test_remote_website_checks_without_domains_or_project_binding_are_not_applicable(self):
-        result = self.check('--check', 'website.domains', '--check', 'website.sentry', '--check', 'website.analytics', '--remote')
+        result = self.check('--check', 'website.domains', '--check', 'website.sentry', '--check', 'website.analytics',
+                            '--check', 'website.sitemap', '--check', 'website.sitemapSubmission',
+                            '--check', 'website.lighthouseCI', '--remote')
         self.assertEqual(result.returncode, 0, result.stderr)
         checks = json.loads(result.stdout)['checks']
-        self.assertEqual(len(checks), 3)
+        self.assertEqual(len(checks), 6)
         self.assertTrue(all(x['status'] == 'not_applicable' for x in checks))
 
     def test_actions_policy_is_catalogued_as_remote_and_requires_opt_in(self):
@@ -292,8 +420,10 @@ empty = []
         before = [p.read_bytes() for p in paths]
         report = self.check()
         self.assertEqual(report.returncode, 3, report.stderr)
-        remote = [c for c in json.loads(report.stdout)['checks'] if c['id'] == 'github.description']
-        self.assertEqual(remote[0]['status'], 'skipped')
+        checks = {c['id']: c for c in json.loads(report.stdout)['checks']}
+        self.assertEqual(checks['github.description']['status'], 'skipped')
+        self.assertEqual(checks['branding.assets']['status'], 'skipped')
+        self.assertEqual(checks['branding.provenance']['status'], 'skipped')
         self.assertEqual([p.read_bytes() for p in paths], before)
         self.assertFalse(marker.exists())
         self.assertFalse((self.repo / '.git/FETCH_HEAD').exists())

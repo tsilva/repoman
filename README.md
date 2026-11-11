@@ -38,13 +38,15 @@ The RepoMan logo and wordmark sit in the top bar beside the window controls, abo
 
 Click **Choose Folder…** and select the parent folder containing your repositories. Search, filter, or sort to find repositories needing attention. Select a repository to see its flat **Issues** list, ordered by check category and then check. Every finding appears directly, including repeated files or subjects. Select a finding to read its title, full evidence, subject, check ID and category. Available CI and issue links open in your browser. **Copy maintenance task** copies the evidence and a fresh verification command for use in Codex.
 
-Issue rows show current detector results. Incomplete checks remain visibly unknown, separate from confirmed findings. Queued and running checks appear while inspection is in progress; passed checks are hidden. Refresh after fixing something externally to check the result again. The app has no repair presets, selection checkboxes, conversations, agent execution or automatic repair recovery. Earlier conversation files remain on disk but are no longer loaded or resumed.
+Issue rows show current detector results. Incomplete checks remain visibly unknown, separate from confirmed findings. Queued and running checks appear while inspection is in progress; passed checks are hidden. Click the magnifying glass in the repository’s issue list after fixing something externally to check the result again. A spinner replaces the icon during the scan. Issue inspection has no repair presets, selection checkboxes, conversations, agent execution or automatic repair recovery. Earlier conversation files remain on disk but are no longer loaded or resumed.
+
+Choose **Inboxes** beside **Repositories** and **Traffic** to see repository todos together. **All repositories** groups tasks by repository; selecting a repository narrows the view. Search task titles and notes, switch between open and all tasks, and select a task to read its context beside the list. Checkbox changes save directly to the source `INBOX.md`, with **Undo** and conflict detection. **Open source** opens the inbox in its default editor. Missing inboxes are not created, and unavailable sources remain visible. The existing Traffic view and GA4 user counts remain available. See [inbox behavior and editing safeguards](docs/inboxes.md).
 
 The selected repository has one **Git synchronization** section combining ahead/behind counts, freshness and upstream findings. Individual CLI check IDs remain unchanged.
 
-Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. A `?` on an ahead/behind count means the remote comparison is provisional. Use your Git tools or the `repo-sync` skill to synchronize repositories; RepoMan does not commit, merge or push.
+Git activity appears beneath each repository's issue badges as **↓** commits to pull, **↑** commits to push, and **●** changed files. Zero counts stay hidden. A `?` on an ahead/behind count means the remote comparison is provisional. Use your Git tools or the `private-skills_repo-sync` skill to synchronize repositories; RepoMan does not commit, merge or push.
 
-GitHub star and fork counts appear beside the branch name on each repository row. Install the GitHub CLI and sign in with `gh auth login` to load them, including for private repositories your account can access. RepoMan reuses counts for one hour and refreshes them in batches in the background. The last known counts remain visible offline; rows without a known count omit the badges.
+GitHub star and fork counts appear on each repository row. The sidebar hides the branch name for repositories on `main`. Choose **Stars** or **Forks** in the sort menu to order by that count. Repositories without a known count stay at the end in either direction. Install the GitHub CLI and sign in with `gh auth login` to load them, including for private repositories your account can access. RepoMan saves counts across launches and refreshes them in background batches once they are a day old. The last known counts appear as soon as each repository is identified, even offline; rows without a known count omit the badges.
 
 The GitHub toolbar button appears for repositories with a GitHub remote and opens their repository page in your browser. HTTPS and SSH remotes are supported. The folder, terminal and editor toolbar buttons open the selected repository in your own tools. The changes button opens its read-only Git diff. Open **Settings…** from the overflow menu or press **⌘,** to enable or disable checks and change the monitored folder. These preferences do not modify monitored repositories. RepoMan has no model-provider setup or inference calls; use skills such as `optimize-readme` for editorial reviews.
 
@@ -64,7 +66,11 @@ Go coverage requires an installed native Go tool and a cached graph. Only select
 
 Service-access checks validate root `.access.toml` and `.access.local.toml` metadata, plus local-file privacy (ignored, untracked, current owner, mode 0600), without contacting a credential provider or printing values. Legacy `.keyenv.toml` and `.infisical.json` files are not access inventories; general tracked-file safety checks still apply to them. Repositories without access metadata are not required to create an empty inventory. Unsupported TOML forms remain incomplete. **Open Dependabot security alerts** reads GitHub’s published dependency graph using the existing `gh` login, with bounded pagination. Disabled alerts, missing access, incomplete responses and pagination limits remain incomplete; known alerts are retained. This does not assess exploitability or uncommitted dependency changes. The CLI requires `--remote` for this check.
 
-Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, repository metadata drift, and opt-in notebook hygiene. GitHub repositories whose names start with `private-` (case-insensitive) must have private visibility; public and internal visibility are flagged. The app only reads visibility; change repository settings in GitHub yourself. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
+**Repository branding** checks the tracked README logo and the extra favicon, social preview, and app icon roles required by the project type. It compares source and export SHA-256 fingerprints and flags unknown or outdated recorded ImageGen provenance. Both checks skip repositories named with the `private-` or `sandbox-` prefix. See the [branding policy and record format](docs/branding-checks.md).
+
+**Skill naming rules** checks local custom skills for the owning repository prefix (`<repo>_<skill>`), one underscore, lowercase hyphenated names, the 64-character limit, matching directory/frontmatter/discovery names, and optional default-prompt invocations. Reusable skills require the prefix too. It reads current local files without executing skills; external skill contents and provider/vendor roots are excluded. Long repository names without a verified short label remain incomplete rather than receiving an invented abbreviation.
+
+Additional checks cover dependency safeguards, lockfile and runtime consistency, Actions security, unpublished branches and upstream tracking, potential tracked secrets, oversized files, submodule/LFS checkout integrity, leftover merge markers, broken project and documentation references, tracked generated files, old stashes, unfinished Git operations, repository metadata drift, and opt-in notebook hygiene. When a local folder name starts with `private-` (case-insensitive), every configured fetch and push destination must have private GitHub visibility. GitHub destinations whose repository names start with `private-` are also checked, regardless of the local folder name. Public and internal visibility are flagged; unsupported destinations remain incomplete. The app only reads visibility; change repository settings in GitHub yourself. See [additional checks and per-repository exceptions](docs/additional-checks.md) for `.repoman.json` configuration.
 
 The pnpm lockfile-drift check accounts for unambiguous root/workspace overrides, dependency-spec references and supported pnpm 10 version-qualified overrides, while retaining genuine declaration or override-metadata drift. Cases requiring resolver evaluation remain incomplete. The uv check recognizes equivalent minor-version upper bounds serialized with `python_full_version`, while keeping changed bounds and non-equivalent markers actionable. Dependency safeguards read uv constraints from the owning project or workspace’s `pyproject.toml`, independently of the settings selected through `uv.toml`.
 
@@ -74,7 +80,7 @@ Runtime checks expand bounded literal quoted CI matrix axes and compare each con
 
 Project-reference checks map literal same-repository Actions checkout paths to local source. Other revisions, external repositories, conditional checkouts and unsupported layouts remain incomplete; known missing references stay visible.
 
-**Production website checks** discover `tsilva.eu` domains across accessible Vercel teams, compare them with each repository's `.repoman.yaml` inventory, and inspect live Sentry and Google Analytics collection. The manifest records production URLs, service expectations, verification paths, exception reasons, and dated telemetry observations. Configured SDKs, queued beacons, consent gates and unavailable evidence remain incomplete until successful collection is observed. See [website checks and domain inventory](docs/website-checks.md).
+**Production website checks** flag public Vercel projects without a production `tsilva.eu` domain and check live Sentry and Google Analytics collection on their assigned production URLs, including `vercel.app` aliases. RepoMan compares assigned `tsilva.eu` domains with each repository's `.repoman.yaml` inventory and checks `/sitemap.xml` on those domains for public GitHub repositories. With a read-only Search Console reader configured, it also checks submission under `sc-domain:tsilva.eu`. The macOS app can display and sort by [seven-day and 30-minute GA4 active users](docs/website-checks.md#google-analytics-traffic-in-the-macos-app) for repositories with configured readers. Its **Traffic** tab compares website traffic over 7, 30, or 90 days with portfolio totals, daily trends, sortable site metrics, and source and landing-page breakdowns. An optional Mac-side installer renews approved GA4 access automatically. See [website checks and domain inventory](docs/website-checks.md).
 
 See [the checker and issue-details architecture](docs/issues.md) for extending the workflow.
 
@@ -83,6 +89,7 @@ See [the checker and issue-details architecture](docs/issues.md) for extending t
 In Codex, `$repoman_build-release` or `/repoman_build-release` builds, verifies, and publishes a
 GitHub Release. Request a local build explicitly to keep the artifacts local.
 The shell helper below builds local artifacts without publishing.
+Xcode puts the app in a `.noindex` build folder so Spotlight and Alfred skip the build copies.
 
 ```bash
 swift test  # run shared checker and Git integration tests
@@ -93,7 +100,7 @@ xcodebuild -project RepoMan.xcodeproj -scheme RepoMan \
   -configuration Debug -derivedDataPath DerivedData build
 
 # Show illustrative data for design review
-open DerivedData/Build/Products/Debug/RepoMan.app --args --demo
+open DerivedData/Build/Products/Debug.noindex/RepoMan.app --args --demo
 
 # Check native toolbar alignment while resizing and capture the complete window
 bash Tools/verify-window-resizing.sh --screenshot "$PWD/.build/native-window.png"
@@ -102,7 +109,7 @@ bash Tools/verify-window-resizing.sh --screenshot "$PWD/.build/native-window.png
 swiftc -parse-as-library RepoManCore/AppUpdate.swift \
   RepoManCore/AppUpdateInstaller.swift Tools/VerifyAppUpdate.swift \
   -o .build/verify-app-update
-.build/verify-app-update DerivedData/Build/Products/Debug/RepoMan.app
+.build/verify-app-update DerivedData/Build/Products/Debug.noindex/RepoMan.app
 
 # Test and package an Apple Silicon DMG with a SHA-256 checksum
 bash .codex/skills/repoman_build-release/scripts/build-release.sh
@@ -111,10 +118,10 @@ bash .codex/skills/repoman_build-release/scripts/build-release.sh
 ## Notes
 
 - Discovery scans visible direct child repositories with a `.git` directory or file. Linked worktrees are excluded from the repository list and shown under their primary repository. Nested folders are not scanned.
-- RepoMan remembers your folder, selected repository, filter, sort mode and direction, ignored checks, and disabled checks. Checker results and completion times persist under `~/Library/Application Support/RepoMan/inspection-cache.json`. Legacy `repair-tasks.json` files are left untouched and never read.
+- RepoMan remembers your folder, selected repository, filter, sort mode and direction, ignored checks, and disabled checks. On launch it shows local Git status, saved stars and forks, configured active-user counts, and reusable results from earlier issue scans. Checker results and completion times persist under `~/Library/Application Support/RepoMan/inspection-cache.json`. Legacy `repair-tasks.json` files are left untouched and never read.
 - While a repository is being checked, a spinner replaces its issue counter. Each repository returns to its issue count as soon as its check finishes.
-- Startup restores valid checker results and runs missing or expired checks. Every minute the scheduler checks for expired results. Choosing a folder checks its repositories; **Refresh** forces checks for the selected repository and **Refresh All** forces all repositories. Fetch updates configured remote-tracking refs without an upstream and may prune deleted remote-tracking branches.
-- Refresh fetches remote-tracking refs without merging, pulling, pushing, or changing working files. Git commands have timeouts and disable credential prompts. Failed fetches keep local status visible, but remote counts may be outdated.
+- Startup, folder changes, background updates, and **Refresh Overview** update the repository overview. Click the **Scan issues** magnifying glass in a repository’s issue list to fetch its remote-tracking refs and run its enabled issue checks.
+- An issue scan fetches remote-tracking refs without merging, pulling, pushing, or changing working files. Git commands have timeouts and disable credential prompts. Failed fetches keep local status visible, but remote counts may be outdated.
 - Git counts require a known upstream comparison for push/pull. Routine changes and push/pull counts remain status information rather than actionable issue badges. Stale branches have no commits in 90 days, excluding `main`, `master`, and branches checked out in any worktree. Linked worktrees exclude the primary worktree and appear under Information, separately from actionable issue counts. Coverage limits remain visible as unknown results.
 - External Git tools can change a checkout during inspection. Findings are observations, not writer clearance or authorization to publish changes.
 - The screenshots and `--demo` mode use illustrative data. Demo mode uses illustrative data and does not inspect real repositories.
@@ -123,13 +130,13 @@ bash .codex/skills/repoman_build-release/scripts/build-release.sh
 
 ## Architecture
 
-The diagram shows discovery and refresh. The [checks and issue-details guide](docs/issues.md) explains detection, evidence, scheduling and the shared CLI.
+The diagram shows discovery and refresh. The [checks and issue-details guide](docs/issues.md) explains detection, evidence, scheduling and the shared CLI. The [scanning performance guide](docs/scanning-performance.md) explains phase timings and benchmarks.
 
 ![RepoMan refresh architecture: folder discovery, refresh coordination, Git scanning, and the dashboard](docs/architecture.png)
 
 ## Shared CLI
 
-Use `$repo-maintenance` from the global `private-skills` collection in Codex for an iterative maintenance pass over selected repositories. The shared skill validates findings, proposes fixes and reruns checks after authorized repairs. The skill assesses checker quality first, repairs confirmed checker problems within the authorized scope, and reruns before recommending repository repairs. Ambiguous policy changes or expanded scope require a user decision. This workflow is maintained in `private-skills`.
+Use `$private-skills_repo-maintenance` from the global `private-skills` collection in Codex for an iterative maintenance pass over selected repositories. The shared skill validates findings, proposes fixes and reruns checks after authorized repairs. The skill assesses checker quality first, repairs confirmed checker problems within the authorized scope, and reruns before recommending repository repairs. Ambiguous policy changes or expanded scope require a user decision. This workflow is maintained in `private-skills`.
 
 The [repository checks workflow](.github/workflows/ci.yml) runs Swift tests, CLI integration tests and an app build on pushes to `main`. It does not publish releases.
 

@@ -1,25 +1,98 @@
 import Foundation
 
+/// Owned by one refresh so successful and failed reads are both shared by all repositories.
+public actor SearchConsoleSitemapInventory {
+    typealias Reader = @Sendable () async throws -> Set<String>
+    private var task: Task<Set<String>, Error>?
+
+    public init() {}
+
+    func load(_ reader: @escaping Reader) async throws -> Set<String> {
+        if let task { return try await task.value }
+        let task = Task { try await reader() }
+        self.task = task
+        return try await task.value
+    }
+
+    static let endpoint = "https://www.googleapis.com/webmasters/v3/sites/sc-domain%3Atsilva.eu/sitemaps"
+
+    static func read() async throws -> Set<String> {
+        let path = ProcessInfo.processInfo.environment["REPOMAN_SEARCH_CONSOLE_READER"]
+            ?? UserDefaults.standard.string(forKey: "searchConsoleReaderPath")
+        guard let path, path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path),
+              (try? URL(fileURLWithPath: path).resolvingSymlinksInPath()
+                .resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            throw ReadError.readerUnavailable
+        }
+        let response: Data
+        do {
+            response = try await Task.detached(priority: .utility) {
+                try GitHubCLI.run([endpoint], executable: URL(fileURLWithPath: path), timeout: 15)
+            }.value
+        } catch {
+            throw ReadError.requestFailed
+        }
+        return try decode(response)
+    }
+
+    static func decode(_ data: Data) throws -> Set<String> {
+        guard let response = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let status = response["status"] as? Int else { throw ReadError.invalidResponse }
+        guard status == 200 else { throw ReadError.requestFailed }
+        guard let body = response["body"] as? [String: Any], body.keys.allSatisfy({ $0 == "sitemap" }) else {
+            throw ReadError.invalidResponse
+        }
+        guard let entries = body["sitemap"] else { return [] }
+        guard let sitemaps = entries as? [[String: Any]] else { throw ReadError.invalidResponse }
+        return try Set(sitemaps.map { sitemap in
+            guard let path = sitemap["path"] as? String,
+                  let url = URLComponents(string: path), ["http", "https"].contains(url.scheme ?? ""),
+                  let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else {
+                throw ReadError.invalidResponse
+            }
+            return path
+        })
+    }
+
+    enum ReadError: LocalizedError {
+        case readerUnavailable, requestFailed, invalidResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .readerUnavailable: "Search Console access is unverified. Configure an approved read-only Search Console reader."
+            case .requestFailed: "Search Console could not list sitemaps for sc-domain:tsilva.eu. Check reader authentication, property access, and connectivity."
+            case .invalidResponse: "Search Console returned an invalid sitemap inventory. Submission could not be verified."
+            }
+        }
+    }
+}
+
 typealias WebsiteInventoryLoader = @Sendable () async throws -> [WebsiteProject]
 
 struct WebsiteProject: Sendable {
     let id: String
     let repository: String?
     let domains: [String]
+    var productionAliases: [String] = []
 }
 
 struct WebsiteDomainResolution: Sendable {
     let domains: [String]
     let reason: String?
     var cached = false
+    var projectsWithoutDomain: [WebsiteProject] = []
 
     static func load(_ context: RepositoryInspectionContext, declared: [String], loader: WebsiteInventoryLoader?) async throws -> Self {
         let github = GitHubCI.repository(context.snapshot.remoteURL).map { ($0.owner + "/" + $0.name).lowercased() }
-        var linkedID: String?
+        let manifestID = try WebsiteDomains.projectID(context)
+        var linkedID = manifestID
         if try context.exists(".vercel/project.json") {
             let link = try context.jsonObject(".vercel/project.json")
             guard let id = link["projectId"] as? String, WebsiteDomainInventory.identifier(id) else {
                 throw InspectionError.blocked("Invalid Vercel project link; production domain coverage is unknown.")
+            }
+            guard manifestID == nil || manifestID == id else {
+                throw InspectionError.blocked("RepoMan and the local Vercel link name different projects.")
             }
             linkedID = id
         }
@@ -39,9 +112,14 @@ struct WebsiteDomainResolution: Sendable {
                 if let repository = $0.repository { return repository == github }
                 return linkedID != nil && $0.id == linkedID
             }
-            let domains = Set(declared).union(matched.flatMap(\.domains)).sorted()
+            let missingDomain = matched.filter { $0.domains.isEmpty && !$0.productionAliases.isEmpty }
+            let domains = Set(declared).union(matched.flatMap(\.domains))
+                .union(missingDomain.flatMap(\.productionAliases)).sorted()
             guard domains.count <= 32 else { throw InspectionError.blocked("More than 32 production domains mapped to this repository.") }
-            return Self(domains: domains, reason: nil, cached: cached)
+            let reason = linkedID != nil && !matched.contains(where: { $0.id == linkedID })
+                ? "The configured Vercel project was not matched in the accessible production inventory."
+                : nil
+            return Self(domains: domains, reason: reason, cached: cached, projectsWithoutDomain: missingDomain)
         } catch {
             return Self(domains: declared, reason: "Vercel production-domain inventory is unavailable. Install the Vercel CLI, sign in, and check access to all intended teams. Declared domains are still inspected; full coverage remains unverified.")
         }
@@ -130,18 +208,25 @@ enum WebsiteDomainInventory {
                     } else { repository = "unsupported-provider" }
                 }
                 let assigned = try pages("/v9/projects/" + id + "/domains?production=true", key: "domains", scope: scope)
-                var domains: Set<String> = []
+                var domains: Set<String> = [], productionAliases: Set<String> = []
                 for domain in assigned {
                     guard let name = domain["name"] as? String else { throw InspectionError.blocked("Invalid Vercel domain response.") }
                     let host = name.lowercased()
-                    guard host == "tsilva.eu" || host.hasSuffix(".tsilva.eu") else { continue }
-                    guard WebsiteDomains.valid(host) else { throw InspectionError.blocked("Invalid production domain hostname.") }
                     // Branch and custom-environment domains are outside Production.
                     if let branch = domain["gitBranch"], !(branch is NSNull) { continue }
                     if let environment = domain["customEnvironmentId"], !(environment is NSNull) { continue }
-                    domains.insert(host)
+                    if domain["verified"] as? Bool == false { continue }
+                    if WebsiteDomains.valid(host) {
+                        domains.insert(host)
+                    } else if WebsiteDomains.validVercelAlias(host) ||
+                                (domain["verified"] as? Bool == true && WebsiteDomains.validProductionHost(host)) {
+                        productionAliases.insert(host)
+                    } else if host == "tsilva.eu" || host.hasSuffix(".tsilva.eu") || host.hasSuffix(".vercel.app") {
+                        throw InspectionError.blocked("Invalid production domain hostname.")
+                    }
                 }
-                result.append(WebsiteProject(id: id, repository: repository, domains: domains.sorted()))
+                result.append(WebsiteProject(id: id, repository: repository, domains: domains.sorted(),
+                                             productionAliases: productionAliases.sorted()))
             }
         }
         return result

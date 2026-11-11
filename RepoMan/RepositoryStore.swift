@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import OSLog
 
 @MainActor
 final class RepositoryStore: ObservableObject {
@@ -34,12 +35,25 @@ final class RepositoryStore: ObservableObject {
 
     private var inspectionReports: [String: RepositoryInspectionReport] = [:]
     private nonisolated static let inspectionCache = RepositoryInspectionCache()
-    private var scheduledInspectionTask: Task<Void, Never>?
+    private var scheduledOverviewTask: Task<Void, Never>?
     private static let countsCacheKey = "githubRepositoryCounts.v1"
     @Published private var githubCounts: [String: GitHubRepositoryCountsEntry] = [:]
     private var countsRefreshTask: Task<Void, Never>?
     private var countsRetryAfter: [String: Date] = [:]
     private var countsServiceRetryAfter = Date.distantPast
+    static let analyticsConfigurationURL = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Application Support/RepoMan/analytics.json")
+    @Published private(set) var analyticsConfigurationError = false
+    @Published private var trafficByRepository: [String: [GA4TrafficWindow: GA4TrafficReading]] = [:]
+    private struct TrafficCacheEntry {
+        let count: Int?
+        let observedAt: Date?
+        let retryAt: Date
+        let failed: Bool
+    }
+    private var trafficCache: [GA4TrafficQuery: TrafficCacheEntry] = [:]
+    private var trafficRefreshTask: Task<Void, Never>?
+    private var scheduledTrafficTask: Task<Void, Never>?
     private var started = false
     private var generation = UUID()
     let issueCatalog = RepositoryIssueCatalog()
@@ -70,7 +84,7 @@ final class RepositoryStore: ObservableObject {
         guard !repository.branch.isEmpty else { return [] }
         let disabled = disabledChecks.union(ignoredChecks[repository.id] ?? []).union(RepositoryIssueCatalog.activityCheckIDs)
         let findings = inspectionReports[repository.id]?.findings(disabledChecks: disabled)
-            ?? issueCatalog.findings(in: repository, disabledChecks: disabled)
+            ?? (isDemo ? issueCatalog.findings(in: repository, disabledChecks: disabled) : [])
         let items = RepositoryIssueListItem.items(findings: findings)
         let incomplete = inspectionReports[repository.id].map { issueCatalog.incompleteItems(in: $0, disabledChecks: disabled) } ?? []
         return items + incomplete
@@ -148,7 +162,7 @@ final class RepositoryStore: ObservableObject {
         generation = UUID()
         isScanning = false
         isFetching = false
-        Task { await scanFolder(folder, fetchRemotes: false, clearFirst: false) }
+        Task { await refreshOverview(in: folder) }
     }
 
     func issueStatusCounts(in repository: RepositorySnapshot) -> [RepositoryIssueStatus: Int] {
@@ -166,6 +180,13 @@ final class RepositoryStore: ObservableObject {
                 let counts = GitHubRepositoryCounts(stars: [128, 0, 1_240, 67][index % 4], forks: [12, 0, 81, 4][index % 4])
                 return (key, GitHubRepositoryCountsEntry(counts: counts, fetchedAt: Date()))
             })
+            for (index, repository) in repositories.enumerated() {
+                guard let key = GA4TrafficConfiguration.repositoryKey(for: repository.remoteURL) else { continue }
+                trafficByRepository[key] = [
+                    .sevenDays: GA4TrafficReading(count: [436, 0, 1280, 92][index % 4], observedAt: Date(), isStale: false),
+                    .realtime: GA4TrafficReading(count: [8, 0, 24, 2][index % 4], observedAt: Date(), isStale: false)
+                ]
+            }
             selectedPath = repositories.first?.id
             if ProcessInfo.processInfo.arguments.contains("--check-progress") { startDemoCheckProgress() }
             return
@@ -174,14 +195,21 @@ final class RepositoryStore: ObservableObject {
            let entries = try? JSONDecoder().decode([String: GitHubRepositoryCountsEntry].self, from: saved) {
             githubCounts = entries
         }
-        scheduledInspectionTask = Task { [weak self] in
+        scheduledOverviewTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
                 self.scheduleCountsRefresh()
                 guard let folder = self.folder, !self.isScanning, !self.isFetching, !self.isQuittingForUpdate else { continue }
-                await self.scanFolder(folder, fetchRemotes: true, clearFirst: false, dueOnly: true)
+                await self.refreshOverview(in: folder)
+            }
+        }
+        scheduledTrafficTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled, let self, !self.isQuittingForUpdate else { return }
+                self.refreshTraffic()
             }
         }
         if let savedPath = UserDefaults.standard.string(forKey: "monitoredFolder"),
@@ -189,14 +217,85 @@ final class RepositoryStore: ObservableObject {
             let savedFolder = URL(fileURLWithPath: savedPath, isDirectory: true)
             folder = savedFolder
             selectedPath = UserDefaults.standard.string(forKey: "selectedRepoPath")
-            // Startup restores valid checker results and only runs missing or expired checks.
-            Task { await scanFolder(savedFolder, fetchRemotes: true, clearFirst: true) }
+            Task { await refreshOverview(in: savedFolder, clearFirst: true) }
         }
     }
 
     func counts(for repository: RepositorySnapshot) -> GitHubRepositoryCounts? {
         guard let key = GitHubRepositoryCountsQuery.key(for: repository.remoteURL) else { return nil }
         return githubCounts[key]?.counts
+    }
+
+    func traffic(for repository: RepositorySnapshot) -> [GA4TrafficWindow: GA4TrafficReading]? {
+        guard let key = GA4TrafficConfiguration.repositoryKey(for: repository.remoteURL) else { return nil }
+        return trafficByRepository[key]
+    }
+
+    private func refreshTraffic(force: Bool = false) {
+        guard !isDemo, !isQuittingForUpdate, trafficRefreshTask == nil, !repositories.isEmpty else { return }
+        let keys = Set(repositories.compactMap { GA4TrafficConfiguration.repositoryKey(for: $0.remoteURL) })
+        guard !keys.isEmpty else { return }
+        let url = Self.analyticsConfigurationURL
+        trafficRefreshTask = Task {
+            defer { trafficRefreshTask = nil }
+            let result = await Task.detached(priority: .utility) {
+                Result { try GA4TrafficConfiguration.load(from: url) }
+            }.value
+            guard !isQuittingForUpdate else { return }
+            let config = try? result.get()
+            let configurationFailed: Bool
+            if case .failure = result { configurationFailed = true }
+            else { configurationFailed = false }
+            if analyticsConfigurationError != configurationFailed {
+                analyticsConfigurationError = configurationFailed
+            }
+            let configuredKeys = keys.filter { config?.repositories[$0] != nil }
+            let bindings = Dictionary(uniqueKeysWithValues: configuredKeys.map { key in
+                (key, Dictionary(uniqueKeysWithValues: GA4TrafficWindow.allCases.compactMap { window in
+                    config?.query(for: key, window: window).map { (window, $0) }
+                }))
+            })
+            let queries = Set(bindings.values.flatMap(\.values))
+            trafficCache = trafficCache.filter { queries.contains($0.key) }
+            publishTraffic(bindings)
+            let now = Date()
+            let due = queries.filter { force || (trafficCache[$0]?.retryAt ?? .distantPast) <= now }
+                .sorted { ($0.window.refreshInterval, $0.propertyId) < ($1.window.refreshInterval, $1.propertyId) }
+            await withTaskGroup(of: (GA4TrafficQuery, Int?).self) { group in
+                var pending = due.makeIterator()
+                for _ in 0..<4 {
+                    guard let query = pending.next() else { break }
+                    group.addTask(priority: .utility) { (query, try? query.load()) }
+                }
+                for await (query, count) in group {
+                    guard !isQuittingForUpdate else { group.cancelAll(); continue }
+                    let now = Date()
+                    let previous = trafficCache[query]
+                    trafficCache[query] = TrafficCacheEntry(count: count ?? previous?.count,
+                        observedAt: count == nil ? previous?.observedAt : now,
+                        retryAt: now.addingTimeInterval(count == nil ? 300 : query.window.refreshInterval),
+                        failed: count == nil)
+                    publishTraffic(bindings)
+                    if let next = pending.next() {
+                        group.addTask(priority: .utility) { (next, try? next.load()) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func publishTraffic(_ bindings: [String: [GA4TrafficWindow: GA4TrafficQuery]]) {
+        let now = Date()
+        let readings = bindings.mapValues { windows in
+            Dictionary(uniqueKeysWithValues: GA4TrafficWindow.allCases.map { window in
+                guard let query = windows[window], let entry = trafficCache[query], let observedAt = entry.observedAt else {
+                    return (window, GA4TrafficReading.unavailable)
+                }
+                return (window, GA4TrafficReading(count: entry.count, observedAt: observedAt,
+                    isStale: entry.failed || now.timeIntervalSince(observedAt) >= window.refreshInterval))
+            })
+        }
+        if readings != trafficByRepository { trafficByRepository = readings }
     }
 
     private func dueCountsKeys(at now: Date) -> [String] {
@@ -271,7 +370,7 @@ final class RepositoryStore: ObservableObject {
             UserDefaults.standard.set(url.path, forKey: "monitoredFolder")
             selectedPath = nil
             UserDefaults.standard.removeObject(forKey: "selectedRepoPath")
-            Task { await scanFolder(url, fetchRemotes: true, clearFirst: true) }
+            Task { await refreshOverview(in: url, clearFirst: true) }
         }
     }
 
@@ -328,28 +427,29 @@ final class RepositoryStore: ObservableObject {
         }
     }
 
-    func refreshAll() {
-        guard let folder, !isDemo, !isScanning, !isFetching, !isQuittingForUpdate else { return }
-        Task {
-            await WebsiteInventoryCache.shared.invalidate()
-            await scanFolder(folder, fetchRemotes: true, clearFirst: false, forceRefresh: true)
-        }
+    func hasIssueResults(for repository: RepositorySnapshot) -> Bool {
+        isDemo || !(inspectionReports[repository.id]?.results.isEmpty ?? true)
     }
 
-    func refreshSelected() {
-        guard let selectedRepository, !isDemo, !isFetching, !isScanning, !isQuittingForUpdate else { return }
+    func refreshAll() {
+        guard let folder, !isDemo, !isScanning, !isFetching, !isQuittingForUpdate else { return }
+        refreshTraffic(force: true)
+        Task { await refreshOverview(in: folder) }
+    }
+
+    func scanIssues(for repository: RepositorySnapshot) {
+        guard !repository.branch.isEmpty, !isDemo, !isFetching, !isScanning, !isQuittingForUpdate else { return }
         let currentGeneration = generation
         isFetching = true
-        let loadingToken = beginLoading([selectedRepository.url])
+        let loadingToken = beginLoading([repository.url])
         let onProgress = progressHandler(generation: currentGeneration, token: loadingToken, preservingFetchState: false,
-                                         didFetch: selectedRepository.remoteURL != nil)
+                                         didFetch: repository.remoteURL != nil)
         Task {
-            defer { endLoading(selectedRepository.url, token: loadingToken) }
+            defer { endLoading(repository.url, token: loadingToken) }
             await WebsiteInventoryCache.shared.invalidate()
             let result: ScanResult
             result = await Task.detached(priority: .utility) {
-                await Self.scan(selectedRepository.url, includeDetails: true,
-                                fetchRemotes: true, forceRefresh: true, onProgress: onProgress)
+                await Self.inspect(repository.url, onProgress: onProgress)
             }.value
             guard generation == currentGeneration else { return }
             apply(result, preservingFetchState: false)
@@ -455,13 +555,10 @@ final class RepositoryStore: ObservableObject {
         updateCheckProgress(for: path)
     }
 
-    private func endLoading(token: UUID) {
-        for path in Array(repositoryLoads.keys) { endLoading(URL(fileURLWithPath: path), token: token) }
-    }
-
-    private func scanFolder(_ url: URL, fetchRemotes: Bool, clearFirst: Bool,
-                            forceRefresh: Bool = false, dueOnly: Bool = false) async {
-        guard !isScanning else { return }
+    private func refreshOverview(in url: URL, clearFirst: Bool = false) async {
+        guard !isScanning, !isFetching, !isQuittingForUpdate, folder == url else { return }
+        let started = ContinuousClock.now
+        defer { ScanTiming.record("overview", since: started) }
         discardPendingProgress()
         generation = UUID()
         let currentGeneration = generation
@@ -473,22 +570,18 @@ final class RepositoryStore: ObservableObject {
         checkProgressByLoad = [:]
         checksByLoad = [:]
         repositoryCheckProgress = [:]
-        let loadingToken = beginLoading(dueOnly ? [] : repositories.map(\.url))
-        defer { endLoading(token: loadingToken) }
 
         let exclusions = excludedRepositoryPaths
         let discovery = await Task.detached(priority: .utility) {
-            Result { try GitRepositoryScanner.repositories(in: url, excludingPaths: exclusions) }
+            Result { try ScanTiming.measure("discovery") {
+                try GitRepositoryScanner.repositories(in: url, excludingPaths: exclusions)
+            } }
         }.value
         guard generation == currentGeneration else { return }
         let urls: [URL]
         switch discovery {
         case .success(let found):
-            urls = dueOnly ? found.filter { path in
-                guard let report = inspectionReports[path.path] else { return true }
-                let excluded = disabledChecks.union(ignoredChecks[path.path] ?? [])
-                return issueCatalog.checks.contains { !excluded.contains($0.id) && $0.isDue(result: report.results[$0.id], completedAt: report.completedAt[$0.id]) }
-            } : found
+            urls = found
         case .failure(let error):
             errorMessage = error.localizedDescription
             isScanning = false
@@ -496,46 +589,59 @@ final class RepositoryStore: ObservableObject {
         }
 
         let paths = Set(urls.map(\.path))
-        if !dueOnly { repositories.removeAll { !paths.contains($0.url.path) } }
-        if urls.isEmpty {
-            if !dueOnly { selectedPath = nil }
-            isScanning = false
-            return
-        }
-
-        beginLoading(urls, token: loadingToken)
+        repositories.removeAll { !paths.contains($0.id) }
+        inspectionReports = inspectionReports.filter { paths.contains($0.key) }
         let existing = Set(repositories.map(\.id))
         repositories += urls.filter { !existing.contains($0.path) }.map { repoURL in
             RepositorySnapshot(url: repoURL, name: repoURL.lastPathComponent, branch: "", upstream: nil, remoteURL: nil,
                 ahead: nil, behind: nil, changes: [], staleBranches: [], worktrees: [], commits: [], detailsLoaded: false)
         }
         repositories.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        if selectedPath == nil { selectedPath = repositories.first?.id }
-        let onProgress = progressHandler(generation: currentGeneration, token: loadingToken, preservingFetchState: true)
+        if !repositories.contains(where: { $0.id == selectedPath }) { selectedPath = repositories.first?.id }
+
         await withTaskGroup(of: ScanResult.self) { group in
             var pending = urls.makeIterator()
-            @MainActor func enqueue(_ repoURL: URL) {
-                let selected = selectedPath
+            @MainActor func enqueue(_ url: URL) {
+                let includeDetails = url.path == selectedPath
                 group.addTask(priority: .utility) {
-                    await Self.scan(repoURL, includeDetails: repoURL.path == selected,
-                                    fetchRemotes: fetchRemotes, forceRefresh: forceRefresh,
-                                    onProgress: onProgress)
+                    do {
+                        let snapshot = try ScanTiming.measure("snapshot") {
+                            try GitRepositoryScanner.scan(url, includeDetails: includeDetails)
+                        }
+                        return ScanResult(url: url, snapshot: snapshot, fetchError: nil, didFetch: false)
+                    } catch {
+                        return ScanResult(url: url, snapshot: nil, fetchError: error.localizedDescription, didFetch: false)
+                    }
                 }
             }
-            for _ in 0..<4 { if let repoURL = pending.next() { enqueue(repoURL) } }
+            for _ in 0..<4 { if let url = pending.next() { enqueue(url) } }
             for await result in group {
-                guard generation == currentGeneration else { group.cancelAll(); continue }
-                if let repoURL = pending.next() { enqueue(repoURL) }
-                apply(result, preservingFetchState: !result.didFetch)
-                endLoading(result.url, token: loadingToken)
+                guard generation == currentGeneration else { group.cancelAll(); break }
+                if let url = pending.next() { enqueue(url) }
+                var overview = result
+                if let snapshot = result.snapshot {
+                    let previous = inspectionReports[snapshot.id]?.snapshot
+                    if previous?.branch != snapshot.branch || previous?.upstream != snapshot.upstream
+                        || previous?.remoteURL != snapshot.remoteURL {
+                        let excluded = disabledChecks.union(ignoredChecks[snapshot.id] ?? [])
+                        let checks = issueCatalog.checks.filter { !excluded.contains($0.id) }
+                        let reusable = await Self.inspectionCache.reusableResults(for: snapshot, checks: checks)
+                        guard generation == currentGeneration else { group.cancelAll(); break }
+                        inspectionReports.removeValue(forKey: snapshot.id)
+                        if !reusable.isEmpty {
+                            overview.report = RepositoryInspectionReport(snapshot: snapshot, results: reusable.mapValues(\.result),
+                                checkOrder: checks.map(\.id).filter { reusable[$0] != nil },
+                                cachedChecks: Set(reusable.keys), completedAt: reusable.mapValues(\.completedAt))
+                        }
+                    }
+                }
+                apply(overview, preservingFetchState: true)
             }
         }
         guard generation == currentGeneration else { return }
-        if selectedPath == nil || !repositories.contains(where: { $0.id == selectedPath }) {
-            selectedPath = repositories.first?.id
-        }
+        if !repositories.contains(where: { $0.id == selectedPath }) { selectedPath = repositories.first?.id }
         isScanning = false
-        if let error = await Self.inspectionCache.persistenceError { errorMessage = error }
+        refreshTraffic()
     }
 
     private func apply(_ result: ScanResult, preservingFetchState: Bool) {
@@ -574,31 +680,33 @@ final class RepositoryStore: ObservableObject {
         }
     }
 
-    private nonisolated static func scan(
-        _ url: URL, includeDetails: Bool,
-        fetchRemotes: Bool = false, forceRefresh: Bool = false,
-        onProgress: (@Sendable (RepositoryInspectionReport) async -> Void)? = nil
+    private nonisolated static func inspect(
+        _ url: URL,
+        onProgress: @escaping @Sendable (RepositoryInspectionReport) async -> Void
     ) async -> ScanResult {
         var didFetch = false
         var fetchError: String?
         do {
-            var snapshot = try GitRepositoryScanner.scan(url, includeDetails: includeDetails)
+            var snapshot = try ScanTiming.measure("snapshot") {
+                try GitRepositoryScanner.scan(url)
+            }
             let catalog = RepositoryIssueCatalog()
-            let remoteChecks = catalog.checks.filter { ["git.pull", "git.push", "git.diverged", "inspection.remote"].contains($0.id) }
-            let reusable = await inspectionCache.reusableResults(for: snapshot, checks: remoteChecks)
-            if fetchRemotes, snapshot.remoteURL != nil, forceRefresh || reusable.count < remoteChecks.count {
+            if snapshot.remoteURL != nil {
                 didFetch = true
-                do { try GitRepositoryScanner.fetch(url) }
+                do { try ScanTiming.measure("fetch") { try GitRepositoryScanner.fetch(url) } }
                 catch { fetchError = error.localizedDescription }
-                snapshot = try GitRepositoryScanner.scan(url, includeDetails: includeDetails)
+                snapshot = try ScanTiming.measure("post-fetch snapshot") {
+                    try GitRepositoryScanner.scan(url)
+                }
                 snapshot.fetchError = fetchError
                 snapshot.fetchedAt = fetchError == nil ? Date() : nil
             }
-            // Scheduling owns freshness; even forced checks bypass underlying metadata caches.
             let disabled = Set(UserDefaults.standard.stringArray(forKey: "disabledRepositoryChecks") ?? [])
             let ignored = UserDefaults.standard.dictionary(forKey: "ignoredRepositoryChecks") as? [String: [String]] ?? [:]
-            let report = await catalog.inspect(snapshot, cache: inspectionCache, forceRefresh: forceRefresh,
+            let inspectionStarted = ContinuousClock.now
+            let report = await catalog.inspect(snapshot, cache: inspectionCache, forceRefresh: true,
                 excludingChecks: disabled.union(ignored[snapshot.id] ?? []), onProgress: onProgress)
+            ScanTiming.record("inspection", since: inspectionStarted)
             return ScanResult(url: url, snapshot: snapshot, fetchError: fetchError, didFetch: didFetch, report: report)
         } catch {
             return ScanResult(url: url, snapshot: nil, fetchError: error.localizedDescription, didFetch: didFetch)
@@ -665,6 +773,25 @@ final class RepositoryStore: ObservableObject {
                 rootFiles: name == "repoman" ? ["Package.swift", "README.md"] : (name == "notebook2md" ? ["pyproject.toml"] : ["package.json", "LICENSE"])
             )
         }
+    }
+}
+
+private enum ScanTiming {
+    private static let logger = Logger(subsystem: "com.tsilva.repoman", category: "Scanning")
+    @TaskLocal static var observer: (@Sendable (String, Duration) -> Void)?
+
+    static func measure<T>(_ phase: String, work: () throws -> T) rethrows -> T {
+        let started = ContinuousClock.now
+        defer { record(phase, since: started) }
+        return try work()
+    }
+
+    static func record(_ phase: String, since started: ContinuousClock.Instant) {
+        let elapsed = started.duration(to: .now)
+        observer?(phase, elapsed)
+        let parts = elapsed.components
+        let milliseconds = Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1e15
+        logger.debug("\(phase, privacy: .public) took \(milliseconds, format: .fixed(precision: 2), privacy: .public) ms")
     }
 }
 

@@ -300,7 +300,7 @@ public struct RepositoryIssueCatalog: Sendable {
         },
 
     ] + RepositoryCIChecks.checks() + RepositoryDependencyChecks.checks() + RepositoryWorkflowChecks.checks()
-        + RepositoryHygieneChecks.checks() + RepositoryMetadataChecks.checks()
+        + RepositoryHygieneChecks.checks() + RepositoryBrandingChecks.checks() + RepositorySkillChecks.checks() + RepositoryMetadataChecks.checks()
         + RepositoryGitHealthChecks.checks() + RepositoryContentChecks.checks() + RepositoryLockfileChecks.checks()
         + RepositoryRuntimeChecks.checks() + RepositoryWorkflowSecurityChecks.checks() + RepositoryProjectReferenceChecks.checks()
         + RepositoryAccessChecks.checks() + RepositoryDependabotChecks.checks() + RepositorySwiftChecks.checks() + RepositoryActionsPolicyChecks.checks() + RepositoryReleaseAgeChecks.checks() + RepositoryVulnerabilityChecks.checks() + RepositoryWebsiteChecks.checks()

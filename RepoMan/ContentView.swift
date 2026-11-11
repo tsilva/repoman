@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+private enum RepositoryOverview: String, CaseIterable {
+    case repositories = "Repositories", traffic = "Traffic", inboxes = "Inboxes"
+}
+
 /// Read-only Git activity survives independently of synchronization tools.
 struct RepositoryGitStatus: View {
     let repository: RepositorySnapshot
@@ -30,6 +34,11 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var search = ""
     @State private var showsRepositoryChanges = false
+    @StateObject private var websiteTraffic = WebsiteTrafficStore()
+    @StateObject private var inboxes = RepositoryInboxStore()
+    @State private var overview: RepositoryOverview = ProcessInfo.processInfo.arguments.contains("--inboxes") ? .inboxes
+        : (ProcessInfo.processInfo.arguments.contains("--traffic") ? .traffic : .repositories)
+    private var showsTraffic: Bool { overview == .traffic }
     @AppStorage("repositoryFilter") private var repositoryFilter: RepositoryFilter = .all
     @AppStorage("repositorySort") private var repositorySort: RepositorySort = .name
     @AppStorage("repositorySortAscending") private var sortAscending = true
@@ -38,6 +47,11 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
 
     @State private var toolbarLeadingInset: CGFloat = 96
+
+    init(initialTraffic: Bool? = nil, inboxes: RepositoryInboxStore? = nil) {
+        _inboxes = StateObject(wrappedValue: inboxes ?? RepositoryInboxStore())
+        if let initialTraffic { _overview = State(initialValue: initialTraffic ? .traffic : .repositories) }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -78,28 +92,79 @@ struct ContentView: View {
                 }
             }
             .toolbar {
-                // Keep the native hosting view attached throughout window resize animations.
                 ToolbarItem(id: "repository-topbar", placement: .navigation) {
-                    topBar(sidebarWidth: visibleSidebarWidth)
-                        // AppKit changes the space for window controls in fullscreen.
-                        .frame(width: max(0, geometry.size.width - toolbarLeadingInset - 8))
+                    if overview != .repositories {
+                        trafficNavigationBar(sidebarWidth: visibleSidebarWidth)
+                    } else {
+                        topBar(sidebarWidth: visibleSidebarWidth)
+                    }
+                }
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarSpacer(.flexible)
+                ToolbarItem(id: "repository-actions", placement: .primaryAction) {
+                    topBar(sidebarWidth: visibleSidebarWidth, actionsOnly: true)
                 }
                 .sharedBackgroundVisibility(.hidden)
             }
         }
         .font(.system(size: 12))
+        .toolbar(removing: .title)
         .containerBackground(.clear, for: .window)
         .toolbarBackground(Theme.topBar.opacity(reduceTransparency ? 1 : 0.98), for: .windowToolbar)
         .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        .focusedSceneValue(\.websiteTrafficRefresh, showsTraffic ? {
+            Task { await websiteTraffic.refresh(demo: store.isDemo, force: true) }
+        } : nil)
         .onAppear { store.start() }
+        .onChange(of: store.repositories.map(\.id)) { _, ids in
+            if let selected = inboxes.repositoryID, !ids.contains(selected) { inboxes.repositoryID = nil }
+        }
         .alert("RepoMan Update", isPresented: Binding(get: { updater.errorMessage != nil },
                                                      set: { if !$0 { updater.errorMessage = nil } })) {
             Button("OK", role: .cancel) { updater.errorMessage = nil }
         } message: { Text(updater.errorMessage ?? "") }
     }
 
-    private func topBar(sidebarWidth: CGFloat) -> some View {
+    private func trafficNavigationBar(sidebarWidth: CGFloat) -> some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(nsImage: Self.brandIcon ?? NSApplication.shared.applicationIconImage)
+                    .resizable().interpolation(.high).frame(width: 24, height: 24)
+                Text("RepoMan").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.primary)
+                if sidebarVisible { Spacer(minLength: 0) }
+            }
+            .frame(width: sidebarVisible ? max(120, sidebarWidth - toolbarLeadingInset + 9) : 120)
+            ToolbarActionButton(symbol: "sidebar.left", title: sidebarVisible ? "Hide sidebar" : "Show sidebar") {
+                sidebarVisible.toggle()
+            }
+            overviewModePicker
+        }
+        .frame(height: 36)
+    }
+
+    private var overviewModePicker: some View {
+        HStack(spacing: 2) {
+                    ForEach(RepositoryOverview.allCases, id: \.self) { mode in
+                        Button { overview = mode } label: {
+                            Text(mode.rawValue)
+                                .font(.system(size: 12, weight: overview == mode ? .medium : .regular))
+                                .foregroundStyle(overview == mode ? Theme.primary : Theme.secondary)
+                                .frame(width: mode == .repositories ? 94 : 72, height: 26)
+                                .background(overview == mode ? Theme.selection : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+                        .accessibilityAddTraits(overview == mode ? [.isSelected] : [])
+                        .accessibilityIdentifier("overview-\(mode.rawValue.lowercased())")
+            }
+        }
+        .padding(2).overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.border))
+        .accessibilityIdentifier("overview-mode-picker")
+    }
+
+    private func topBar(sidebarWidth: CGFloat, actionsOnly: Bool = false) -> some View {
         HStack(spacing: 0) {
+            if !actionsOnly {
             HStack(spacing: 8) {
                 Image(nsImage: Self.brandIcon ?? NSApplication.shared.applicationIconImage)
                     .resizable().interpolation(.high)
@@ -116,8 +181,10 @@ struct ContentView: View {
             .accessibilityIdentifier("repoman-titlebar-brand")
             .frame(width: sidebarVisible ? max(0, sidebarWidth - toolbarLeadingInset) : 120)
             .padding(.trailing, sidebarVisible ? 9 : 12)
+            }
 
             HStack(spacing: 12) {
+                if !actionsOnly {
                 ToolbarActionButton(
                     symbol: "sidebar.left",
                     title: sidebarVisible ? "Hide sidebar" : "Show sidebar"
@@ -125,17 +192,18 @@ struct ContentView: View {
                     sidebarVisible.toggle()
                 }
                 .accessibilityValue(sidebarVisible ? "Visible" : "Hidden")
-                if let repository = store.selectedRepository {
+                overviewModePicker
+                if overview == .repositories, let repository = store.selectedRepository {
                     Text(repository.name)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(repository.name)
-                        .frame(width: min(260, ceil((repository.name as NSString).size(
+                        .frame(maxWidth: min(180, ceil((repository.name as NSString).size(
                             withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]
                         ).width)), alignment: .leading)
-                        .layoutPriority(1)
+                        .layoutPriority(0)
                     if !repository.branch.isEmpty {
                         Text("/")
                             .font(.system(size: 13))
@@ -143,19 +211,28 @@ struct ContentView: View {
                             .accessibilityHidden(true)
                         branchMenu(repository)
                     }
-                } else {
+                } else if overview == .repositories {
                     Text("RepoMan")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.primary)
                 }
-                Spacer(minLength: 16)
+                }
+                if actionsOnly {
                 if !sidebarVisible { AppUpdateButton() }
+                if showsTraffic {
+                    ToolbarActionButton(symbol: "arrow.clockwise", title: "Refresh website traffic", isRotating: websiteTraffic.isRefreshing) {
+                        Task { await websiteTraffic.refresh(demo: store.isDemo, force: true) }
+                    }
+                    .disabled(websiteTraffic.isRefreshing)
+                    .accessibilityIdentifier("refresh-website-traffic-button")
+                } else if overview == .inboxes {
+                    ToolbarActionButton(symbol: "arrow.clockwise", title: "Refresh inboxes", isRotating: inboxes.isRefreshing) {
+                        Task { await inboxes.refresh(repositories: store.repositories, demo: store.isDemo, force: true) }
+                    }
+                    .disabled(inboxes.isRefreshing || inboxes.isSaving)
+                    .accessibilityIdentifier("refresh-inboxes-button")
+                } else {
                 if let repository = store.selectedRepository {
-                    let isChecking = store.loadingRepositoryIDs.contains(repository.id)
-                    ToolbarActionButton(symbol: "arrow.clockwise", title: "Refresh selected repository issues",
-                        isRotating: isChecking) { store.refreshSelected() }
-                        .disabled(store.isScanning || store.isFetching || isChecking)
-                        .accessibilityIdentifier("refresh-repository-issues-button")
                     if let github = GitHubCI.repository(repository.remoteURL),
                        let url = URL(string: "https://github.com/\(github.owner)/\(github.name)") {
                         ToolbarActionButton(asset: "GitHub", title: "Open on GitHub") {
@@ -192,8 +269,10 @@ struct ContentView: View {
                 ToolbarIconMenu(symbol: "ellipsis", title: "Repository options", value: "") {
                     repositoryOptions
                 }
+                }
+                }
             }
-            .padding(.leading, sidebarVisible ? 24 : 0)
+            .padding(.leading, !actionsOnly && sidebarVisible ? 24 : 0)
         }
         .frame(height: 36)
     }
@@ -242,7 +321,7 @@ struct ContentView: View {
             }
             ToolbarActionButton(
                 symbol: "arrow.clockwise",
-                title: "Refresh all repositories",
+                title: "Refresh repository overview",
                 isRotating: store.isFetching || store.isScanning
             ) {
                 store.refreshAll()
@@ -274,9 +353,10 @@ struct ContentView: View {
         .foregroundStyle(Theme.primary)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.trailing, hasBranches ? 3 : 0)
-        .frame(width: min(180, ceil((repository.branch as NSString).size(
+        .frame(maxWidth: min(120, ceil((repository.branch as NSString).size(
             withAttributes: [.font: NSFont.systemFont(ofSize: 12)]
-        ).width) + (hasBranches ? 46 : 22)), height: 28, alignment: .leading)
+        ).width) + (hasBranches ? 46 : 22)), alignment: .leading)
+        .frame(height: 28)
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Current branch")
@@ -295,7 +375,15 @@ struct ContentView: View {
             store.repositories,
             filter: .all,
             search: search,
-            ascending: sortAscending
+            ascending: sortAscending,
+            githubCounts: { repository in
+                store.counts(for: repository).map { ($0.stars, $0.forks) }
+            },
+            activeUsers: { repository in
+                guard let window = repositorySort.trafficWindow,
+                      let reading = store.traffic(for: repository)?[window], !reading.isStale else { return nil }
+                return reading.count
+            }
         ).filter {
             repositoryFilter != .needsAttention || store.loadingRepositoryIDs.contains($0.id)
                 || store.issues(in: $0).contains { $0.status != .information }
@@ -334,6 +422,22 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 24)
                     .padding(.bottom, 8)
+            }
+
+            if overview == .inboxes {
+                Button { inboxes.repositoryID = nil } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "tray.full")
+                        Text("All repositories").fontWeight(.medium)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14).frame(height: 36)
+                    .background(inboxes.repositoryID == nil ? Theme.selection : .clear, in: RoundedRectangle(cornerRadius: 5))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.primary)
+                .padding(.horizontal, 14).padding(.bottom, 6)
+                .accessibilityIdentifier("inbox-all-repositories")
             }
 
             repositoryList
@@ -396,11 +500,15 @@ struct ContentView: View {
             NativeRepositoryList(
                 rows: repositories.map {
                     RepositoryListRow(repository: $0, isLoading: store.loadingRepositoryIDs.contains($0.id),
-                                      checkProgress: store.repositoryCheckProgress[$0.id], githubCounts: store.counts(for: $0))
+                                      checkProgress: store.repositoryCheckProgress[$0.id], githubCounts: store.counts(for: $0),
+                                      traffic: store.traffic(for: $0))
                 },
-                selectedPath: store.selectedPath,
+                selectedPath: overview == .inboxes ? inboxes.repositoryID : store.selectedPath,
                 statusCounts: { store.issueStatusCounts(in: $0) },
-                onSelect: { store.select($0) }
+                onSelect: {
+                    if overview == .inboxes { inboxes.repositoryID = $0.id }
+                    else { store.select($0); overview = .repositories }
+                }
             )
         } else {
             DashboardScrollView {
@@ -441,7 +549,7 @@ struct ContentView: View {
     @ViewBuilder
     private var repositoryOptions: some View {
         Button("Choose Folder…", systemImage: "folder.badge.plus") { store.chooseFolder() }
-        Button("Refresh All", systemImage: "arrow.clockwise") { store.refreshAll() }
+        Button("Refresh Overview", systemImage: "arrow.clockwise") { store.refreshAll() }
             .disabled(store.folder == nil || store.isScanning || store.isFetching)
         SettingsLink {
             Label("Settings…", systemImage: "gearshape")
@@ -466,7 +574,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let repository = store.selectedRepository {
+        if overview == .inboxes {
+            RepositoryInboxesView(inboxes: inboxes, repositories: store.repositories,
+                                  repositoryID: inboxes.repositoryID, isDemo: store.isDemo)
+        } else if showsTraffic {
+            WebsiteTrafficView(traffic: websiteTraffic, isDemo: store.isDemo)
+        } else if let repository = store.selectedRepository {
             if repository.branch.isEmpty {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -795,6 +908,7 @@ private struct RepositoryListRow: Equatable {
     let isLoading: Bool
     let checkProgress: RepositoryCheckProgress?
     let githubCounts: GitHubRepositoryCounts?
+    let traffic: [GA4TrafficWindow: GA4TrafficReading]?
 }
 
 /// NSTableView recycles a small set of independently hosted rows. Scrolling no
@@ -914,6 +1028,7 @@ private struct NativeRepositoryList: NSViewRepresentable {
             cell.hosting.rootView = AnyView(
                 RepositoryRow(repository: data.repository, statusCounts: counts,
                               isLoading: data.isLoading, checkProgress: data.checkProgress, githubCounts: data.githubCounts,
+                              traffic: data.traffic,
                               isSelected: isSelected) { [weak self] in
                     self?.parent.onSelect(data.repository)
                 }
@@ -973,6 +1088,7 @@ private struct RepositoryRow: View {
     let isLoading: Bool
     let checkProgress: RepositoryCheckProgress?
     let githubCounts: GitHubRepositoryCounts?
+    let traffic: [GA4TrafficWindow: GA4TrafficReading]?
     let isSelected: Bool
     let action: () -> Void
 
@@ -991,7 +1107,15 @@ private struct RepositoryRow: View {
                         RepositoryIssueStatusBadges(counts: statusCounts)
                     }
                     if !repository.branch.isEmpty {
-                        branchLine()
+                        if let traffic {
+                            ViewThatFits(in: .horizontal) {
+                                branchLine(traffic: traffic)
+                                branchLine(traffic: traffic, compactTraffic: true)
+                                branchLine()
+                            }
+                        } else {
+                            branchLine()
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1032,15 +1156,17 @@ private struct RepositoryRow: View {
         }
     }
 
-    private func branchLine() -> some View {
+    private func branchLine(traffic: [GA4TrafficWindow: GA4TrafficReading]? = nil, compactTraffic: Bool = false) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 10, weight: .medium))
-            Text(repository.branch)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help(repository.branch)
-                .layoutPriority(1)
+            if repository.branch != "main" {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 10, weight: .medium))
+                Text(repository.branch)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(repository.branch)
+                    .layoutPriority(1)
+            }
             if let githubCounts {
                 HStack(spacing: 6) {
                     Label(githubCounts.stars.formatted(.number.notation(.compactName)), systemImage: "star")
@@ -1051,6 +1177,19 @@ private struct RepositoryRow: View {
                 .foregroundStyle(Theme.secondary)
                 .fixedSize()
                 .help(githubCountsDescription)
+            }
+            if let traffic {
+                HStack(spacing: 5) {
+                    Image(systemName: "person.2")
+                    if !compactTraffic {
+                        Text(trafficLabel(.sevenDays, in: traffic))
+                        Text(trafficLabel(.realtime, in: traffic))
+                    }
+                }
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .fixedSize()
+                .help(trafficDescription)
             }
             Spacer(minLength: 2)
             RepositoryGitStatus(repository: repository)
@@ -1072,6 +1211,7 @@ private struct RepositoryRow: View {
             return "\(status.title): \(count)"
         }
         if githubCounts != nil { descriptions.insert(githubCountsDescription, at: 0) }
+        if traffic != nil { descriptions.insert(trafficDescription, at: 0) }
         if isLoading { descriptions.append(scanningHelp) }
         return descriptions.joined(separator: ", ")
     }
@@ -1079,6 +1219,24 @@ private struct RepositoryRow: View {
     private var githubCountsDescription: String {
         guard let githubCounts else { return "" }
         return "GitHub stars: \(githubCounts.stars.formatted()), forks: \(githubCounts.forks.formatted())"
+    }
+
+    private func trafficLabel(_ window: GA4TrafficWindow, in traffic: [GA4TrafficWindow: GA4TrafficReading]) -> String {
+        let reading = traffic[window]
+        let count = reading?.count.map { $0.formatted(.number.notation(.compactName)) } ?? "—"
+        let prefix = reading?.isStale == true ? "~" : ""
+        return "\(prefix)\(count) \(window == .sevenDays ? "7d" : "30m")"
+    }
+
+    private var trafficDescription: String {
+        GA4TrafficWindow.allCases.map { window in
+            let period = window == .sevenDays ? "last seven complete days" : "last 30 minutes"
+            guard let reading = traffic?[window], let count = reading.count, let observedAt = reading.observedAt else {
+                return "GA4 active users in the \(period) unavailable"
+            }
+            let fetchedAt = observedAt.formatted(date: .abbreviated, time: .shortened)
+            return "\(count.formatted()) GA4 active users in the \(period). \(reading.isStale ? "Stale. " : "")Fetched \(fetchedAt)."
+        }.joined(separator: "\n")
     }
 }
 

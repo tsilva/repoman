@@ -52,10 +52,15 @@ def local_repositories(root):
             if repository:
                 repositories.setdefault(repository, []).append(path)
             link = path / ".vercel/project.json"
-            if link.exists():
-                project_id = json.loads(link.read_text()).get("projectId")
-                if project_id:
-                    links.setdefault(project_id, []).append(path)
+            project_id = json.loads(link.read_text()).get("projectId") if link.exists() else None
+            manifest = path / ".repoman.yaml"
+            if manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_size <= 64 * 1024:
+                _, manifest_id = read_manifest(manifest.read_text())
+                if project_id and manifest_id and project_id != manifest_id:
+                    continue
+                project_id = project_id or manifest_id
+            if project_id:
+                links.setdefault(project_id, []).append(path)
         except (RuntimeError, ValueError, OSError):
             continue
     return repositories, links
@@ -74,11 +79,11 @@ def domain_valid(domain):
                     for part in host.split(".")))
 
 
-def manifest_domains(source):
+def read_manifest(source):
     """Read the documented block mapping without interpreting general YAML."""
     if "\t" in source:
         raise ValueError("Unsupported manifest indentation")
-    version = websites = None
+    version = websites = project_id = None
     sites = {}
     host = None
     repository_fields = set()
@@ -90,6 +95,10 @@ def manifest_domains(source):
             continue
         if line.startswith("version:") and version is None:
             version = line.removeprefix("version:").strip()
+        elif line.startswith("vercel-project-id:") and project_id is None:
+            project_id = line.removeprefix("vercel-project-id:").strip().strip("\"'")
+            if not re.fullmatch(r"prj_[A-Za-z0-9]{1,124}", project_id):
+                raise ValueError("Invalid Vercel project ID")
         elif line.startswith("websites:") and websites is None:
             websites = line.removeprefix("websites:").strip()
         elif match := re.match(r"^(tagline|github-url):", line):
@@ -143,7 +152,11 @@ def manifest_domains(source):
             url for other in sites if other != host for url in (f"https://{other}", f"https://{other}/")
         }:
             raise ValueError("Invalid website redirect")
-    return list(sites) if websites is not None else None
+    return (list(sites) if websites is not None else None), project_id
+
+
+def manifest_domains(source):
+    return read_manifest(source)[0]
 
 
 def compare_metadata(path, expected):

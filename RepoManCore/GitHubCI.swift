@@ -25,7 +25,7 @@ struct CICheckStatus: Sendable {
 }
 
 enum GitHubCI {
-    struct Repository: Equatable { let owner: String; let name: String }
+    struct Repository: Equatable, Sendable { let owner: String; let name: String }
 
     static func repository(_ remote: String?) -> Repository? {
         guard let remote else { return nil }
@@ -193,17 +193,19 @@ enum GitHubCLI {
         return URL(fileURLWithPath: path)
     }
     static func run(_ arguments: [String], executable configured: URL? = nil, timeout: TimeInterval = 15,
-                    allowPartialOutput: Bool = false) throws -> Data {
+                    allowPartialOutput: Bool = false, standardInput: FileHandle? = nil,
+                    environment suppliedEnvironment: [String: String]? = nil) throws -> Data {
         let process = Process()
         process.executableURL = try configured ?? executable()
         process.arguments = arguments
         // Do not let the selected repository's gh configuration or hooks affect inspection.
         process.currentDirectoryURL = FileManager.default.temporaryDirectory
-        var environment = ProcessInfo.processInfo.environment
+        var environment = suppliedEnvironment ?? ProcessInfo.processInfo.environment
         environment["GH_PROMPT_DISABLED"] = "1"
         environment["GH_PAGER"] = "cat"
         environment["GH_DEBUG"] = nil
         process.environment = environment
+        if let standardInput { process.standardInput = standardInput }
         let output = Pipe(), errors = Pipe()
         process.standardOutput = output; process.standardError = errors
         try process.run()

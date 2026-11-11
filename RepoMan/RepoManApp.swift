@@ -6,6 +6,8 @@ struct RepoManApp: App {
     @NSApplicationDelegateAdaptor(RepoManAppDelegate.self) private var appDelegate
     @StateObject private var store = RepositoryStore()
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.websiteTrafficRefresh) private var websiteTrafficRefresh
+    @FocusedValue(\.inboxRefresh) private var inboxRefresh
 
     var body: some Scene {
         WindowGroup("RepoMan") {
@@ -35,9 +37,12 @@ struct RepoManApp: App {
             CommandMenu("Repositories") {
                 Button("Choose Folder…") { store.chooseFolder() }
                     .keyboardShortcut("o")
-                Button("Refresh All") { store.refreshAll() }
+                Button(inboxRefresh != nil ? "Refresh Inboxes" : (websiteTrafficRefresh == nil ? "Refresh Overview" : "Refresh Website Traffic")) {
+                    if let inboxRefresh { inboxRefresh() }
+                    else if let websiteTrafficRefresh { websiteTrafficRefresh() } else { store.refreshAll() }
+                }
                     .keyboardShortcut("r")
-                    .disabled(store.folder == nil || store.isScanning || store.isFetching)
+                    .disabled(inboxRefresh == nil && websiteTrafficRefresh == nil && (store.folder == nil || store.isScanning || store.isFetching))
             }
         }
 

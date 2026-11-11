@@ -5,9 +5,9 @@ description: Prepare, monitor, and verify RepoMan macOS releases built and publi
 
 # Build Release
 
-Read and apply the shared `$release-workflow` skill at
-`/Users/tsilva/.codex/skills/release-workflow/SKILL.md`. It owns common preflight,
-publication safeguards, `$push` integration, monitoring, and verification. This
+Read and apply the shared `$private-skills_release-workflow` skill at
+`/Users/tsilva/.codex/skills/private-skills/private-skills_release-workflow/SKILL.md`. It owns common preflight,
+publication safeguards, `$private-skills_push` integration, monitoring, and verification. This
 adapter owns RepoMan's commands, version policy, and artifact requirements.
 
 A bare `$repoman_build-release` or `/repoman_build-release` requests publication. All release
@@ -40,11 +40,11 @@ absent locally and remotely; failed network checks do not establish absence.
 
 If the selected version differs, update only `MARKETING_VERSION` in both
 configurations of `RepoMan.xcodeproj/project.pbxproj`. Commit and push only those
-intended metadata changes using `$push`. Read the version again and require a
+intended metadata changes using `$private-skills_push`. Read the version again and require a
 clean synchronized checkout at the exact full release SHA. No Xcode, Swift,
 signing, or packaging commands run locally during this preparation.
 
-Create the annotated tag at that SHA and apply `$push` to push only the exact
+Create the annotated tag at that SHA and apply `$private-skills_push` to push only the exact
 tag to the verified destination:
 
 ```bash

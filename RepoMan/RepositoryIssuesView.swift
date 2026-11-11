@@ -127,16 +127,45 @@ struct RepositoryIssuesView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Panel {
-                Text("Inspection results").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    Text("Inspection results").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.primary)
+                    Spacer()
+                    if let repository {
+                        Button {
+                            store.scanIssues(for: repository)
+                        } label: {
+                            Group {
+                                if isChecking {
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "magnifyingglass")
+                                }
+                            }
+                            .frame(width: 16, height: 16)
+                            .accessibilityHidden(true)
+                        }
+                        .buttonStyle(RepositoryButtonStyle())
+                        .disabled(store.isDemo || store.isScanning || store.isFetching || store.isQuittingForUpdate)
+                        .help(isChecking ? "Scanning for issues" : "Scan issues")
+                        .accessibilityLabel(isChecking ? "Scanning for issues" : "Scan issues")
+                        .accessibilityIdentifier("scan-repository-issues-button")
+                    }
+                }
             } content: {
                 DashboardScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         synchronizationSection
                         if allIssues.isEmpty && !isChecking {
                             VStack(spacing: 12) {
-                                Image(systemName: "checkmark.circle").font(.system(size: 25)).foregroundStyle(Theme.green)
-                                Text("No issues from available checks").foregroundStyle(Theme.secondary)
+                                if let repository, !store.hasIssueResults(for: repository) {
+                                    Image(systemName: "magnifyingglass").font(.system(size: 25)).foregroundStyle(Theme.secondary)
+                                    Text("Scan issues to check this repository.").foregroundStyle(Theme.secondary)
+                                } else {
+                                    Image(systemName: "checkmark.circle").font(.system(size: 25)).foregroundStyle(Theme.green)
+                                    Text("No issues from available checks").foregroundStyle(Theme.secondary)
+                                }
                                 if let repository, !(store.ignoredChecks[repository.id] ?? []).isEmpty {
                                     Button("Restore ignored checks") { store.restoreChecks(for: repository) }.buttonStyle(RepositoryButtonStyle())
                                 }

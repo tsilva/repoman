@@ -83,7 +83,7 @@ if name == 'xcodebuild':
     if args == ['-version']:
         print('Xcode 27.0'); sys.exit(0)
     derived = pathlib.Path(args[args.index('-derivedDataPath') + 1])
-    app = derived / 'Build/Products/Release/RepoMan.app/Contents'
+    app = derived / 'Build/Products/Release.noindex/RepoMan.app/Contents'
     (app / 'MacOS').mkdir(parents=True)
     (app / 'Resources').mkdir()
     (app / 'Info.plist').write_text('mock plist')

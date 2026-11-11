@@ -11,7 +11,7 @@ struct GitHubRepositoryCountsEntry: Codable, Sendable {
 
     func isFresh(at date: Date) -> Bool {
         let age = date.timeIntervalSince(fetchedAt)
-        return age >= 0 && age < 3600
+        return age >= 0 && age < 86_400
     }
 }
 

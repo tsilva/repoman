@@ -39,7 +39,7 @@ final class RepositoryCIChecksTests: XCTestCase {
     }
 
     func testValidationCommandsOnRoutineEventsProvideCoverage() {
-        let commands = ["uv run pytest", "uv run --frozen --group dev pytest", "pnpm exec tsc --noEmit", "bunx --no-install tsc --noEmit", "bun x --no-install tsc --noEmit", "pnpm run typecheck", "npm test", "swift test", "xcodebuild -scheme App build",
+        let commands = ["uv run pytest", "uv run --frozen --group dev pytest", "uv run --locked --no-config --exclude-newer '7 days' pytest -q", "uv run --exclude-newer=\"7 days\" ruff check .", "pnpm exec tsc --noEmit", "bunx --no-install tsc --noEmit", "bun x --no-install tsc --noEmit", "pnpm run typecheck", "npm test", "swift test", "xcodebuild -scheme App build",
             "cargo clippy", "go test ./...", "python -m unittest", "ruff check .", "pnpm lint && pnpm build", "make test", "bash tools/check.sh"]
         for command in commands {
             XCTAssertEqual(WorkflowCoverage.analyze("""
@@ -85,6 +85,8 @@ final class RepositoryCIChecksTests: XCTestCase {
                   pip install -r requirements.txt
                   pip install -r requirements.txt # && pytest
         """), .missing)
+        XCTAssertEqual(WorkflowCoverage.analyze("on: push\njobs:\n  test:\n    steps:\n      - run: uv run --exclude-newer '7 days' echo pytest"), .unknown)
+        XCTAssertEqual(WorkflowCoverage.analyze("on: push\njobs:\n  test:\n    steps:\n      - run: uv run --exclude-newer pytest"), .unknown)
     }
 
     func testCustomExecutionAndUnsupportedYAMLStayUnknown() {

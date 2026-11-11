@@ -203,6 +203,21 @@ struct SettingsView: View {
                 }
                 .padding(18)
             }
+            settingsGroup("Google Analytics") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Show seven-day and 30-minute active users for repositories mapped in the local GA4 configuration.")
+                        .foregroundStyle(Theme.secondary)
+                    Text(RepositoryStore.analyticsConfigurationURL.abbreviatedPath)
+                        .font(.system(size: 13, design: .monospaced))
+                        .textSelection(.enabled)
+                    if store.analyticsConfigurationError {
+                        Text("The GA4 configuration could not be read. Check that the file is valid JSON.")
+                            .foregroundStyle(Theme.amber)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+            }
         }
     }
 
@@ -212,7 +227,7 @@ struct SettingsView: View {
     }
 
     private var matchesGeneral: Bool {
-        matches("General App updates GitHub version Check for Updates Update Restart Repositories Monitored folder Visible Git repositories directly inside this folder Path blacklist excluded paths folders symlinks .archived "
+        matches("General App updates GitHub version Check for Updates Update Restart Repositories Monitored folder Visible Git repositories directly inside this folder Path blacklist excluded paths folders symlinks .archived Google Analytics GA4 active users "
                 + (store.folder?.path ?? "") + " " + store.excludedRepositoryPaths.joined(separator: " "))
     }
 
@@ -360,11 +375,16 @@ private extension RepositoryCheck {
         case "github.dependabotAlerts": "GitHub reports open dependency security alerts. This checks the published dependency graph, not local changes or exploitability; requires GitHub access."
         case "github.description": "The GitHub description must match the tagline in .repoman.yaml. Without a configured tagline, this check uses the marked tagline in the published default-branch README."
         case "github.website": "The Website field in GitHub's About panel must match github-url in .repoman.yaml. Set github-url to null to require an empty field."
-        case "github.privateVisibility": "A GitHub repository whose name starts with private- must have private visibility. Public and internal repositories with this prefix need attention."
+        case "github.privateVisibility": "If the local folder name starts with private-, every configured fetch and push destination must be a private GitHub repository. GitHub names starting with private- are also checked. Unsupported destinations remain incomplete."
         case "docs.brokenLinks": "Documentation links or agent skill references point to local files that cannot be found. External websites are not checked."
+        case "branding.assets": "Checks the tracked README logo and the favicon, social preview, or app icon required by the repository type."
+        case "branding.provenance": "Checks source and export SHA-256 fingerprints against the recorded ImageGen history. Missing model evidence leaves the result incomplete."
         case "docs.readmeTagline": "The marked tagline in the local README must match the tagline in .repoman.yaml."
         case "notebooks.hygiene": "Jupyter notebooks contain saved errors or more than 256 KiB of output by default. Enable this per repository in .repoman.json; cells are never run."
-        case "website.domains": "Finds production tsilva.eu domains in accessible Vercel teams and checks that root metadata declares them. Requires an authenticated Vercel CLI. Discovered domains are checked even when metadata is missing."
+        case "website.domains": "Flags public Vercel projects without a production tsilva.eu domain and assigned tsilva.eu domains missing from repository metadata. Requires an authenticated Vercel CLI."
+        case "website.sitemap": "Checks for a sitemap.xml on production tsilva.eu domains mapped to public GitHub repositories."
+        case "website.sitemapSubmission": "Checks whether verified production sitemap URLs are submitted under sc-domain:tsilva.eu in Google Search Console."
+        case "website.lighthouseCI": "Checks the checkout's GitHub Actions workflows for Lighthouse CI coverage of mapped production tsilva.eu sites."
         case "website.sentry": "Observes the live Sentry client and ordinary collection responses. SDK configuration alone, consent gates, silent clients and unavailable evidence remain incomplete. No synthetic error is sent."
         case "website.analytics": "Observes the live Google Analytics tag and ordinary collection responses. Tag configuration alone, queued beacons and consent gates remain incomplete. No synthetic event is sent."
         case "ci.failing": "Automated GitHub checks, such as builds or tests, have failed on published commits."

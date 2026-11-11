@@ -79,7 +79,7 @@ xcodebuild \
   MARKETING_VERSION="$version" \
   build
 
-app_path="$work_dir/DerivedData/Build/Products/Release/RepoMan.app"
+app_path="$work_dir/DerivedData/Build/Products/Release.noindex/RepoMan.app"
 info_plist="$app_path/Contents/Info.plist"
 binary_path="$app_path/Contents/MacOS/RepoMan"
 [[ -f "$binary_path" ]] || { printf 'Release app was not built.\n' >&2; exit 1; }
