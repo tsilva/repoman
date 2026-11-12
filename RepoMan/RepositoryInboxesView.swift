@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct InboxRefreshKey: FocusedValueKey { typealias Value = () -> Void }
 extension FocusedValues {
@@ -14,6 +15,9 @@ struct RepositoryInboxesView: View {
     let repositories: [RepositorySnapshot]
     let repositoryID: String?
     let isDemo: Bool
+    @State private var draggedTask: InboxTaskDrag?
+    @State private var dropTarget: InboxTaskDropTarget?
+    @State private var rowHeights: [String: CGFloat] = [:]
 
     private func key(_ task: RepositoryInboxTask, _ entry: RepositoryInboxStore.Entry) -> String { "\(entry.id):\(task.id)" }
 
@@ -28,22 +32,10 @@ struct RepositoryInboxesView: View {
         }
     }
 
-    private var selection: (RepositoryInboxStore.Entry, RepositoryInboxTask)? {
-        let candidates = scoped.flatMap { entry in tasks(entry).map { (entry, $0) } }
-        return candidates.first { key($0.1, $0.0) == inboxes.selectedTaskID }
-            ?? (isDemo && inboxes.selectedTaskID == nil ? candidates.first { $0.1.title == "Clarify empty graph state" } : nil)
-            ?? candidates.first
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header.padding(24)
-            GeometryReader { geometry in
-                HStack(spacing: 16) {
-                    taskList.frame(width: max(320, (geometry.size.width - 16) * 0.51))
-                    taskDetails.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
+            taskList.frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 24).padding(.bottom, 20)
             footer
         }
@@ -137,63 +129,106 @@ struct RepositoryInboxesView: View {
     }
 
     private func taskRow(_ task: RepositoryInboxTask, _ entry: RepositoryInboxStore.Entry) -> some View {
-        HStack(alignment: .top, spacing: 9) {
+        let taskKey = key(task, entry)
+        let summary = Self.taskSummary(task.title)
+        let hasContext = summary != task.title || !task.notes.isEmpty
+        let expanded = inboxes.expandedTaskIDs.contains(taskKey)
+        return VStack(alignment: .leading, spacing: 12) {
+          HStack(alignment: .top, spacing: 9) {
             Button {
-                inboxes.selectedTaskID = key(task, entry)
                 Task { await inboxes.setComplete(!task.isComplete, task: task, entry: entry) }
             } label: {
                 Image(systemName: task.isComplete ? "checkmark.square.fill" : "square")
                     .font(.system(size: 15)).foregroundStyle(task.isComplete ? Theme.green : Theme.secondary)
             }
             .buttonStyle(.plain).disabled(inboxes.isSaving || !entry.editable)
-            .accessibilityLabel(task.isComplete ? "Reopen \(task.title)" : "Complete \(task.title)")
+            .accessibilityLabel(task.isComplete ? "Reopen \(summary)" : "Complete \(summary)")
             .accessibilityIdentifier("inbox-toggle-\(entry.name)-\(task.lineNumber)")
-            Button { inboxes.selectedTaskID = key(task, entry) } label: {
-                Text(inline(task.title)).strikethrough(task.isComplete)
+            if hasContext {
+                Button {
+                    if expanded { inboxes.expandedTaskIDs.remove(taskKey) }
+                    else { inboxes.expandedTaskIDs.insert(taskKey) }
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(inline(summary)).strikethrough(task.isComplete)
+                            .foregroundStyle(task.isComplete ? Theme.secondary : Theme.primary)
+                            .multilineTextAlignment(.leading).lineLimit(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10)).foregroundStyle(Theme.secondary).padding(.top, 3)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(summary)")
+                .accessibilityIdentifier("inbox-expand-\(entry.name)-\(task.lineNumber)")
+                .help(expanded ? "Hide task context" : "Show the full task and notes")
+            } else {
+                Text(inline(summary)).strikethrough(task.isComplete)
                     .foregroundStyle(task.isComplete ? Theme.secondary : Theme.primary)
                     .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .textSelection(.enabled)
             }
-            .buttonStyle(.plain).accessibilityIdentifier("inbox-select-\(entry.name)-\(task.lineNumber)")
+            if entry.editable, (entry.document?.tasks.count ?? 0) > 1 {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                    .frame(width: 20, height: 20).contentShape(Rectangle())
+                    .help("Drag to reorder this todo")
+                    .accessibilityLabel("Reorder \(summary)")
+                    .accessibilityIdentifier("inbox-drag-\(entry.name)-\(task.lineNumber)")
+                    .onDrag {
+                        guard !inboxes.isSaving, let document = entry.document else { return NSItemProvider() }
+                        let drag = InboxTaskDrag(repositoryID: entry.id, revision: document.revision, task: task)
+                        draggedTask = drag
+                        return NSItemProvider(object: drag.token as NSString)
+                    } preview: {
+                        Text(summary).font(.system(size: 13)).lineLimit(2).padding(10)
+                            .background(Theme.panel, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .accessibilityAction(named: "Move up") { moveAdjacent(task, entry, down: false) }
+                    .accessibilityAction(named: "Move down") { moveAdjacent(task, entry, down: true) }
+            }
+          }
+          if expanded {
+            VStack(alignment: .leading, spacing: 12) {
+                if summary != task.title { Text(inline(task.title)).lineSpacing(4) }
+                if !task.notes.isEmpty { notes(task.notes) }
+            }
+            .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 24)
+          }
         }
         .padding(.horizontal, 10).padding(.vertical, 9)
-        .background(selection.map { key($0.1, $0.0) == key(task, entry) } == true ? Theme.selection : .clear,
-                    in: RoundedRectangle(cornerRadius: 3))
-    }
-
-    private var taskDetails: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if let (entry, task) = selection {
-                Text("\(entry.name) / INBOX.md").font(.system(size: 11)).foregroundStyle(Theme.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        Text(inline(task.title)).font(.system(size: 18, weight: .semibold))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if !task.notes.isEmpty {
-                            notes(task.notes)
-                        } else { Text("No additional notes.").foregroundStyle(Theme.secondary) }
-                        if !entry.editable {
-                            Label(RepositoryInboxError.readOnly.localizedDescription, systemImage: "lock")
-                                .font(.system(size: 11)).foregroundStyle(Theme.amber)
-                        }
-                    }
-                    .textSelection(.enabled)
-                }
-                Spacer(minLength: 0)
-                Button { openSource(entry) } label: { Label("Open source", systemImage: "arrow.up.right.square") }
-                    .buttonStyle(.plain).foregroundStyle(Theme.blue).disabled(isDemo)
-                    .help("Open INBOX.md in its default editor")
-            } else {
-                Spacer()
-                Text("Select a task to read its notes.").foregroundStyle(Theme.secondary)
-                    .frame(maxWidth: .infinity)
-                Spacer()
+        .contentShape(Rectangle())
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { rowHeights[taskKey] = $0 }
+        .overlay(alignment: dropTarget?.after == true ? .bottom : .top) {
+            if dropTarget?.key == taskKey {
+                Rectangle().fill(Theme.blue).frame(height: 2).allowsHitTesting(false)
             }
         }
-        .padding(22).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.border))
-        .accessibilityIdentifier("inbox-task-details")
+        .onDrop(of: [InboxTaskDrag.type], delegate: InboxTaskDropDelegate(
+            inboxes: inboxes, entry: entry, task: task, key: taskKey,
+            height: rowHeights[taskKey] ?? 36, draggedTask: $draggedTask, target: $dropTarget))
+    }
+
+    private func moveAdjacent(_ task: RepositoryInboxTask, _ entry: RepositoryInboxStore.Entry, down: Bool) {
+        let visible = tasks(entry)
+        guard let index = visible.firstIndex(of: task), visible.indices.contains(index + (down ? 1 : -1)) else { return }
+        let neighbor = visible[index + (down ? 1 : -1)]
+        Task { await inboxes.move(task, relativeTo: neighbor, after: down, entry: entry) }
+    }
+
+    /// Presentation only: a checkbox still represents the complete source item.
+    static func taskSummary(_ title: String) -> String {
+        guard title.count > 240 else { return title }
+        var firstSentence = title
+        title.enumerateSubstrings(in: title.startIndex..<title.endIndex, options: .bySentences) { sentence, _, _, stop in
+            if let sentence { firstSentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines) }
+            stop = true
+        }
+        guard firstSentence.count > 240 else { return firstSentence }
+        return String(firstSentence.prefix(237)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 
     private var footer: some View {
@@ -247,5 +282,71 @@ struct RepositoryInboxesView: View {
     private func openSource(_ entry: RepositoryInboxStore.Entry) {
         guard !isDemo, let document = entry.document else { return }
         NSWorkspace.shared.open(document.url)
+    }
+}
+
+private struct InboxTaskDrag {
+    static let type = UTType.utf8PlainText
+    let token = UUID().uuidString
+    let repositoryID: String
+    let revision: String
+    let task: RepositoryInboxTask
+}
+
+private struct InboxTaskDropTarget {
+    let key: String
+    let after: Bool
+}
+
+@MainActor
+private struct InboxTaskDropDelegate: DropDelegate {
+    let inboxes: RepositoryInboxStore
+    let entry: RepositoryInboxStore.Entry
+    let task: RepositoryInboxTask
+    let key: String
+    let height: CGFloat
+    @Binding var draggedTask: InboxTaskDrag?
+    @Binding var target: InboxTaskDropTarget?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard !inboxes.isSaving, entry.editable, let drag = draggedTask,
+              drag.repositoryID == entry.id, let document = entry.document,
+              drag.revision == document.revision,
+              inboxes.entries.contains(where: { $0.id == entry.id && $0.document?.revision == drag.revision }),
+              (try? document.taskOrder(moving: drag.task, relativeTo: task, after: false)) != nil else { return false }
+        return info.hasItemsConforming(to: [InboxTaskDrag.type])
+    }
+
+    func dropEntered(info: DropInfo) { updateTarget(info) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard validateDrop(info: info) else { return DropProposal(operation: .forbidden) }
+        updateTarget(info)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if target?.key == key { target = nil }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard validateDrop(info: info), let drag = draggedTask,
+              let provider = info.itemProviders(for: [InboxTaskDrag.type]).first else { return false }
+        let after = info.location.y > height / 2
+        target = nil
+        draggedTask = nil
+        // Only this session's opaque token is accepted; external drops never change an inbox.
+        provider.loadDataRepresentation(forTypeIdentifier: InboxTaskDrag.type.identifier) { data, _ in
+            guard let data, String(data: data, encoding: .utf8) == drag.token else { return }
+            Task { @MainActor in
+                await inboxes.move(drag.task, relativeTo: task, after: after, entry: entry)
+            }
+        }
+        return true
+    }
+
+    private func updateTarget(_ info: DropInfo) {
+        guard validateDrop(info: info) else { return }
+        target = InboxTaskDropTarget(key: key, after: info.location.y > height / 2)
     }
 }

@@ -16,10 +16,21 @@ final class WebsiteTrafficTests: XCTestCase {
             XCTAssertEqual(previous["dateRanges"] as? [[String: String]],
                            [["startDate": "\(period.rawValue * 2)daysAgo", "endDate": "\(period.rawValue + 1)daysAgo"]])
             XCTAssertEqual(daily["dimensions"] as? [[String: String]], [["name": "date"]])
-            let filter = try XCTUnwrap((current["dimensionFilter"] as? [String: Any])?["filter"] as? [String: Any])
-            XCTAssertEqual(filter["fieldName"] as? String, "hostName")
-            XCTAssertEqual(filter["stringFilter"] as? [String: AnyHashable],
-                           ["matchType": "EXACT", "value": "site.example", "caseSensitive": false])
+            for report in [current, previous, daily] {
+                let expression = try XCTUnwrap(report["dimensionFilter"] as? [String: Any])
+                let group = try XCTUnwrap(expression["andGroup"] as? [String: Any])
+                let expressions = try XCTUnwrap(group["expressions"] as? [[String: Any]])
+                XCTAssertEqual(expressions.count, 2)
+                let filter = try XCTUnwrap(expressions[0]["filter"] as? [String: Any])
+                XCTAssertEqual(filter["fieldName"] as? String, "hostName")
+                XCTAssertEqual(filter["stringFilter"] as? [String: AnyHashable],
+                               ["matchType": "EXACT", "value": "site.example", "caseSensitive": false])
+                let negated = try XCTUnwrap(expressions[1]["notExpression"] as? [String: Any])
+                let country = try XCTUnwrap(negated["filter"] as? [String: Any])
+                XCTAssertEqual(country["fieldName"] as? String, "countryId")
+                XCTAssertEqual(country["stringFilter"] as? [String: AnyHashable],
+                               ["matchType": "EXACT", "value": "PT", "caseSensitive": false])
+            }
         }
     }
 
@@ -101,7 +112,11 @@ final class WebsiteTrafficTests: XCTestCase {
         import json,sys
         assert sys.argv[1:] == ['--request-json', '123']
         body=json.load(sys.stdin)
-        assert body['dimensionFilter']['filter']['stringFilter']['value']=='site.example'
+        filters=body['dimensionFilter']['andGroup']['expressions']
+        assert len(filters)==2
+        assert filters[0]['filter']['fieldName']=='hostName'
+        assert filters[0]['filter']['stringFilter']['value']=='site.example'
+        assert filters[1]=={'notExpression':{'filter':{'fieldName':'countryId','stringFilter':{'matchType':'EXACT','value':'PT','caseSensitive':False}}}}
         dims=body.get('dimensions',[])
         if dims[0]['name']=='hostName':
             result={'metricHeaders':body['metrics'],'dimensionHeaders':dims,'rows':[{'dimensionValues':[{'value':'site.example'}],'metricValues':[{'value':str(n)} for n in [42,100,220,60]]}],'rowCount':1}
@@ -124,6 +139,7 @@ final class WebsiteTrafficTests: XCTestCase {
         let breakdown = try query.breakdown(period: .month, dimension: "sessionDefaultChannelGroup")
         XCTAssertEqual(breakdown.first?.0, "Direct")
         XCTAssertEqual(breakdown.first?.1, 12)
+        XCTAssertEqual(try query.breakdown(period: .month, dimension: "landingPagePlusQueryString").first?.1, 12)
         XCTAssertThrowsError(try query.breakdown(period: .month, dimension: "unreviewed"))
     }
 

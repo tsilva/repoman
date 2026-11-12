@@ -71,11 +71,39 @@ final class GA4TrafficTests: XCTestCase {
         XCTAssertThrowsError(try decode(#""rowCount":0,"dimensionHeaders":[{"name":"date"}]"#))
     }
 
+    func testPortugalIsExcludedForScopedAndPropertyWideReportsInBothWindows() throws {
+        for window in GA4TrafficWindow.allCases {
+            for values in [[], ["456"]] {
+                let report = try request(GA4TrafficQuery(reader: "/reader", propertyId: "123",
+                                                       window: window, filterValues: values))
+                let expression = try XCTUnwrap(report["dimensionFilter"] as? [String: Any])
+                let exclusion: [String: Any]
+                if values.isEmpty {
+                    exclusion = expression
+                    XCTAssertNil(expression["andGroup"])
+                } else {
+                    let group = try XCTUnwrap(expression["andGroup"] as? [String: Any])
+                    let expressions = try XCTUnwrap(group["expressions"] as? [[String: Any]])
+                    XCTAssertEqual(expressions.count, 2)
+                    exclusion = expressions[1]
+                }
+                let negated = try XCTUnwrap(exclusion["notExpression"] as? [String: Any])
+                let filter = try XCTUnwrap(negated["filter"] as? [String: Any])
+                XCTAssertEqual(filter["fieldName"] as? String, "countryId")
+                XCTAssertEqual(filter["stringFilter"] as? [String: AnyHashable],
+                               ["matchType": "EXACT", "value": "PT", "caseSensitive": false])
+            }
+        }
+    }
+
     private func request(_ query: GA4TrafficQuery) throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: query.request()) as? [String: Any])
     }
 
     private func filter(_ request: [String: Any]) throws -> [String: Any] {
-        try XCTUnwrap((request["dimensionFilter"] as? [String: Any])?["filter"] as? [String: Any])
+        let expression = try XCTUnwrap(request["dimensionFilter"] as? [String: Any])
+        let group = try XCTUnwrap(expression["andGroup"] as? [String: Any])
+        let expressions = try XCTUnwrap(group["expressions"] as? [[String: Any]])
+        return try XCTUnwrap(expressions.first?["filter"] as? [String: Any])
     }
 }

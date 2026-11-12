@@ -216,6 +216,24 @@ sys.exit(91)  # Never allow a real native build or disk-image operation.
                 self.assertFalse(any(x[0] == 'hdiutil' for x in self.commands()))
                 del self.env['STUB_' + field]
 
+    def test_development_build_marker_is_explicit_and_preserves_release_configuration(self):
+        self.env['STUB_ARCH'] = 'x86_64'  # Stop after compilation, before native packaging.
+        marker = 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REPOMAN_DEVELOPMENT'
+        for development in [False, True]:
+            with self.subTest(development=development):
+                if self.log.exists(): self.log.unlink()
+                flags = ['--development'] if development else []
+                result = subprocess.run(['bash', str(self.repo / SCRIPTS / 'build-release.sh'),
+                                         *flags, '--version', '0.1.1', '--output-dir',
+                                         str(self.base / ('development' if development else 'production'))],
+                                        cwd=self.repo, env=self.env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                build = next(args for args in self.commands()
+                             if args[0] == 'xcodebuild' and '-derivedDataPath' in args)
+                self.assertEqual(build[build.index('-configuration') + 1], 'Release')
+                self.assertEqual(marker in build, development)
+                self.assertFalse(any(args[0] == 'hdiutil' for args in self.commands()))
+
     def test_stale_artifact_directory_is_rejected(self):
         artifacts = self.base / 'artifacts'; artifacts.mkdir()
         (artifacts / 'stale.dmg').write_bytes(b'stale')

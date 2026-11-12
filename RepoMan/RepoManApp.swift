@@ -72,7 +72,7 @@ struct RepoManApp: App {
 private final class RepoManAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppUpdateController.acknowledgeRelaunch()
-        #if DEBUG
+        #if DEBUG || REPOMAN_DEVELOPMENT
         NSApplication.shared.dockTile.badgeLabel = "DEV"
         #endif
 

@@ -18,6 +18,9 @@ public struct RepositoryInbox: Sendable, Equatable {
     public let tasks: [RepositoryInboxTask]
     public let revision: String
     fileprivate let source: Data
+    /// Complete item contents, excluding the trailing line endings belonging to each slot.
+    fileprivate let taskRanges: [Range<Int>]
+    private let taskGroups: [Int]
 
     /// Parses Todos only; Notes, fenced examples and HTML comments are not tasks.
     public init(repositoryURL: URL, source: Data) throws {
@@ -27,7 +30,10 @@ public struct RepositoryInbox: Sendable, Equatable {
         self.repositoryURL = repositoryURL.standardizedFileURL
         self.source = source
         revision = Self.hash(source)
-        tasks = Self.parse(text)
+        let parsed = Self.parse(text)
+        tasks = parsed.tasks
+        taskRanges = parsed.ranges
+        taskGroups = parsed.groups
     }
 
     public static let maximumBytes = 1_048_576
@@ -39,13 +45,71 @@ public struct RepositoryInbox: Sendable, Equatable {
         return try RepositoryInbox(repositoryURL: repositoryURL, source: updated)
     }
 
+    /// Original task identities in the requested order. Hidden tasks retain their relative order.
+    public func taskOrder(moving task: RepositoryInboxTask, relativeTo target: RepositoryInboxTask,
+                          after: Bool) throws -> [RepositoryInboxTask] {
+        guard let from = tasks.firstIndex(of: task), let to = tasks.firstIndex(of: target) else {
+            throw RepositoryInboxError.changed
+        }
+        guard taskGroups[from] == taskGroups[to] else { throw RepositoryInboxError.differentSection }
+        guard from != to else { return tasks }
+        var order = tasks
+        order.remove(at: from)
+        let destination = order.firstIndex(of: target)!
+        order.insert(task, at: destination + (after ? 1 : 0))
+        return order
+    }
+
+    /// Moves item contents with their notes, preserving headings and every slot's line endings.
+    public func moving(_ task: RepositoryInboxTask, relativeTo target: RepositoryInboxTask,
+                       after: Bool) throws -> RepositoryInbox {
+        let order = try taskOrder(moving: task, relativeTo: target, after: after)
+        let contents = Dictionary(uniqueKeysWithValues: zip(tasks, taskRanges).map { ($0.0.id, source.subdata(in: $0.1)) })
+        var updated = Data()
+        var offset = 0
+        for (slot, item) in zip(taskRanges, order) {
+            updated.append(source.subdata(in: offset..<slot.lowerBound))
+            updated.append(contents[item.id]!)
+            offset = slot.upperBound
+        }
+        updated.append(source.subdata(in: offset..<source.count))
+        let result = try RepositoryInbox(repositoryURL: repositoryURL, source: updated)
+        // Reject unusual Markdown whose interpretation changes when moved (for example an open fence).
+        guard result.tasks.count == order.count,
+              zip(result.tasks, order).allSatisfy({ $0.title == $1.title && $0.notes == $1.notes && $0.isComplete == $1.isComplete }) else {
+            throw RepositoryInboxError.unsupportedMove
+        }
+        return result
+    }
+
+    /// Only a permutation of complete task blocks is a valid reorder undo.
+    fileprivate func isReordering(of other: RepositoryInbox) -> Bool {
+        guard repositoryURL == other.repositoryURL, taskGroups == other.taskGroups,
+              source.count == other.source.count else { return false }
+        func parts(_ document: RepositoryInbox) -> (fixed: [Data], items: [Int: [Data: Int]]) {
+            var fixed: [Data] = [], items: [Int: [Data: Int]] = [:], offset = 0
+            for (index, range) in document.taskRanges.enumerated() {
+                fixed.append(document.source.subdata(in: offset..<range.lowerBound))
+                items[document.taskGroups[index], default: [:]][document.source.subdata(in: range), default: 0] += 1
+                offset = range.upperBound
+            }
+            fixed.append(document.source.subdata(in: offset..<document.source.count))
+            return (fixed, items)
+        }
+        let left = parts(self), right = parts(other)
+        return left.fixed == right.fixed && left.items == right.items
+    }
+
     fileprivate static func hash(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func parse(_ text: String) -> [RepositoryInboxTask] {
+    private static func parse(_ text: String) -> (tasks: [RepositoryInboxTask], ranges: [Range<Int>], groups: [Int]) {
         let pattern = try! NSRegularExpression(pattern: #"^([ \t]*)(?:[-+*]|[0-9]+[.)])[ \t]+\[([ xX])\][ \t]+(.+?)\r?$"#)
         var result: [RepositoryInboxTask] = []
+        let bytes = Array(text.utf8)
+        var ranges: [Range<Int>] = [], groups: [Int] = []
+        var itemStart = 0, group = 0
         var current: (title: String, complete: Bool, line: Int, offset: Int)?
         var notes: [String] = []
         var inTodos = false
@@ -55,6 +119,10 @@ public struct RepositoryInbox: Sendable, Equatable {
         var offset = 0
         func finish() {
             if let item = current {
+                var end = min(offset, bytes.count)
+                while end > itemStart && (bytes[end - 1] == 10 || bytes[end - 1] == 13) { end -= 1 }
+                ranges.append(itemStart..<end)
+                groups.append(group)
                 result.append(.init(title: item.title,
                                     notes: notes.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines),
                                     isComplete: item.complete, lineNumber: item.line, markerOffset: item.offset))
@@ -87,6 +155,7 @@ public struct RepositoryInbox: Sendable, Equatable {
                 let level = trimmed.prefix(while: { $0 == "#" }).count
                 if trimmed.dropFirst(level).first == " " {
                     finish()
+                    group += 1
                     if level <= 2 {
                         let heading = trimmed.dropFirst(level).trimmingCharacters(in: CharacterSet(charactersIn: " #\t"))
                         inTodos = level == 2 && heading.lowercased() == "todos"
@@ -99,6 +168,7 @@ public struct RepositoryInbox: Sendable, Equatable {
             if let match = pattern.firstMatch(in: line, range: nsRange),
                let marker = Range(match.range(at: 2), in: line), let title = Range(match.range(at: 3), in: line) {
                 finish()
+                itemStart = offset
                 current = (String(line[title]).trimmingCharacters(in: .whitespaces), line[marker] != " ", index + 1,
                            offset + line[..<marker.lowerBound].utf8.count)
             } else if current != nil {
@@ -106,12 +176,12 @@ public struct RepositoryInbox: Sendable, Equatable {
             }
         }
         finish()
-        return result
+        return (result, ranges, groups)
     }
 }
 
 public enum RepositoryInboxError: Error, LocalizedError, Equatable {
-    case missing, unsafePath, unsupported, changed, busy, unavailable, readOnly
+    case missing, unsafePath, unsupported, changed, busy, unavailable, readOnly, differentSection, unsupportedMove
 
     public var errorDescription: String? {
         switch self {
@@ -121,13 +191,14 @@ public enum RepositoryInboxError: Error, LocalizedError, Equatable {
         case .changed: return "The inbox changed. Refresh and try again."
         case .busy: return "Another inbox edit is in progress. Try again."
         case .unavailable: return "The inbox could not be read or saved. Check its file permissions."
-        case .readOnly: return "Checkbox editing requires an untracked inbox excluded by a root /INBOX.md ignore rule."
+        case .readOnly: return "Inbox editing requires an untracked inbox excluded by a root /INBOX.md ignore rule."
+        case .differentSection: return "Move todos within the same heading."
+        case .unsupportedMove: return "This task’s Markdown cannot be safely reordered. Edit the source inbox instead."
         }
     }
 }
 
-/// Local-only inbox I/O. Inspection never writes; only an explicit toggle calls setComplete.
-/// A one-byte write avoids replacing a whole document edited by another application.
+/// Local-only inbox I/O. Inspection never writes; explicit edits verify the displayed source.
 public enum RepositoryInboxFile {
     public static func read(at repository: URL) throws -> RepositoryInbox {
         let descriptor = try openInbox(repository, flags: O_RDONLY)
@@ -142,6 +213,39 @@ public enum RepositoryInboxFile {
     public static func setComplete(_ complete: Bool, task: RepositoryInboxTask,
                                    in snapshot: RepositoryInbox) throws -> RepositoryInbox {
         try setMarker(complete ? 120 : 32, task: task, in: snapshot)
+    }
+
+    public static func move(_ task: RepositoryInboxTask, relativeTo target: RepositoryInboxTask,
+                            after: Bool, in snapshot: RepositoryInbox) throws -> RepositoryInbox {
+        let updated = try snapshot.moving(task, relativeTo: target, after: after)
+        return try writeReordering(updated, replacing: snapshot)
+    }
+
+    public static func undoMove(previous: RepositoryInbox, current: RepositoryInbox) throws -> RepositoryInbox {
+        guard previous.isReordering(of: current) else { throw RepositoryInboxError.changed }
+        return try writeReordering(previous, replacing: current)
+    }
+
+    private static func writeReordering(_ updated: RepositoryInbox, replacing snapshot: RepositoryInbox) throws -> RepositoryInbox {
+        guard updated.isReordering(of: snapshot) else { throw RepositoryInboxError.changed }
+        try validateEditingPolicy(snapshot.repositoryURL)
+        let descriptor = try openInbox(snapshot.repositoryURL, flags: O_RDWR)
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw RepositoryInboxError.busy }
+        defer { flock(descriptor, LOCK_UN) }
+        guard try bytes(descriptor) == snapshot.source,
+              try isCurrent(descriptor, repository: snapshot.repositoryURL) else { throw RepositoryInboxError.changed }
+        guard let first = snapshot.source.indices.first(where: { snapshot.source[$0] != updated.source[$0] }),
+              let last = snapshot.source.indices.last(where: { snapshot.source[$0] != updated.source[$0] }) else { return snapshot }
+        let changed = updated.source.subdata(in: first..<(last + 1))
+        // Same-size writes preserve file identity and permissions, without touching other sections.
+        guard try bytes(descriptor) == snapshot.source else { throw RepositoryInboxError.changed }
+        let count = changed.withUnsafeBytes { pwrite(descriptor, $0.baseAddress, $0.count, off_t(first)) }
+        guard count == changed.count, fsync(descriptor) == 0 else { throw RepositoryInboxError.unavailable }
+        guard try isCurrent(descriptor, repository: snapshot.repositoryURL), try bytes(descriptor) == updated.source else {
+            throw RepositoryInboxError.changed
+        }
+        return updated
     }
 
     /// Reverses exactly one checkbox edit, including the original uppercase/lowercase marker.

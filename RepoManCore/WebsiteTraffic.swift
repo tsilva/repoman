@@ -84,9 +84,9 @@ struct WebsiteTrafficQuery: Hashable, Sendable {
             "metrics": (daily ? ["sessions"] : Self.metricNames).map { ["name": $0] },
             // An exact-host group retains full-window distinct users and gives empty reports explicit headers.
             "dimensions": [["name": daily ? "date" : "hostName"]],
-            "dimensionFilter": ["filter": ["fieldName": "hostName", "stringFilter": [
+            "dimensionFilter": GA4TrafficFilter.excludingPortugal(matching: ["filter": ["fieldName": "hostName", "stringFilter": [
                 "matchType": "EXACT", "value": hostname, "caseSensitive": false
-            ]]],
+            ]]]),
             "limit": daily ? count * 2 : 1,
             "returnPropertyQuota": true
         ]

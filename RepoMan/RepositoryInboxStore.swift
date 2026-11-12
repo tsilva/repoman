@@ -3,9 +3,61 @@ import Foundation
 
 @MainActor
 final class RepositoryInboxStore: ObservableObject {
+    enum SidebarSort: String, CaseIterable {
+        case openTasks = "Open todos", name = "Name"
+    }
+
+    enum SidebarStatus: Equatable {
+        case open(Int), missing, unavailable, loading
+
+        var count: Int? {
+            if case .open(let count) = self { return count }
+            return nil
+        }
+
+        var description: String {
+            switch self {
+            case .open(let count): return "\(count.formatted()) open inbox \(count == 1 ? "todo" : "todos")"
+            case .missing: return "No INBOX.md"
+            case .unavailable: return "Inbox unavailable"
+            case .loading: return "Reading inbox"
+            }
+        }
+    }
+
+    var sidebarStatuses: [String: SidebarStatus] {
+        Dictionary(uniqueKeysWithValues: entries.map { entry in
+            let status: SidebarStatus
+            if let document = entry.document {
+                status = .open(document.tasks.filter { !$0.isComplete }.count)
+            } else {
+                status = entry.missing ? .missing : .unavailable
+            }
+            return (entry.id, status)
+        })
+    }
+
+    func sidebarRepositories(_ repositories: [RepositorySnapshot], search: String,
+                             onlyOpen: Bool, sort: SidebarSort, ascending: Bool) -> [RepositorySnapshot] {
+        let statuses = sidebarStatuses
+        return repositories.filter {
+            (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search))
+                && (!onlyOpen || (statuses[$0.id]?.count ?? 0) > 0)
+        }.sorted { lhs, rhs in
+            if sort == .openTasks {
+                let left = statuses[lhs.id]?.count ?? -1
+                let right = statuses[rhs.id]?.count ?? -1
+                if left != right { return ascending ? left < right : left > right }
+            }
+            let order = lhs.name.localizedStandardCompare(rhs.name)
+            if order == .orderedSame { return lhs.id < rhs.id }
+            return sort == .name && !ascending ? order == .orderedDescending : order == .orderedAscending
+        }
+    }
+
     @Published var search = ""
     @Published var showAll = false
-    @Published var selectedTaskID: String?
+    @Published var expandedTaskIDs: Set<String> = []
     @Published var repositoryID: String?
     struct Entry: Identifiable, Sendable {
         let repositoryID: String
@@ -20,6 +72,7 @@ final class RepositoryInboxStore: ObservableObject {
     struct UndoEdit {
         let previous: RepositoryInbox
         let document: RepositoryInbox
+        var movedTaskIDs: [Int: Int] = [:]
     }
 
     @Published private(set) var entries: [Entry] = []
@@ -140,10 +193,17 @@ final class RepositoryInboxStore: ObservableObject {
         defer { isSaving = false }
         do {
             let restored = demo ? edit.previous : try await Task.detached(priority: .userInitiated) {
-                try RepositoryInboxFile.undo(previous: edit.previous, current: edit.document)
+                if !edit.movedTaskIDs.isEmpty {
+                    return try RepositoryInboxFile.undoMove(previous: edit.previous, current: edit.document)
+                }
+                return try RepositoryInboxFile.undo(previous: edit.previous, current: edit.document)
             }.value
             if let index = entries.firstIndex(where: { $0.id == entry.id }) { entries[index].document = restored }
-            recentlyCompleted = recentlyCompleted.filter { !$0.hasPrefix(entry.id + ":") }
+            if edit.movedTaskIDs.isEmpty {
+                recentlyCompleted = recentlyCompleted.filter { !$0.hasPrefix(entry.id + ":") }
+            } else {
+                remapTaskState(entryID: entry.id, mapping: Dictionary(uniqueKeysWithValues: edit.movedTaskIDs.map { ($0.value, $0.key) }))
+            }
             undoEdit = nil
             error = nil
             message = demo ? "Sample change undone" : "Change undone"
@@ -152,9 +212,47 @@ final class RepositoryInboxStore: ObservableObject {
 
     func clearRecentCompletions() { recentlyCompleted = [] }
 
+    func move(_ task: RepositoryInboxTask, relativeTo target: RepositoryInboxTask, after: Bool, entry: Entry) async {
+        guard !isSaving, entry.editable, let document = entry.document,
+              entries.contains(where: { $0.id == entry.id && $0.document?.revision == document.revision }) else { return }
+        isSaving = true
+        refreshID = UUID()
+        isRefreshing = false
+        error = nil
+        defer { isSaving = false }
+        do {
+            let order = try document.taskOrder(moving: task, relativeTo: target, after: after)
+            guard order != document.tasks else { return }
+            let updated: RepositoryInbox
+            if demo {
+                updated = try document.moving(task, relativeTo: target, after: after)
+            } else {
+                updated = try await Task.detached(priority: .userInitiated) {
+                    try RepositoryInboxFile.move(task, relativeTo: target, after: after, in: document)
+                }.value
+            }
+            guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
+            entries[index].document = updated
+            let mapping = Dictionary(uniqueKeysWithValues: zip(order, updated.tasks).map { ($0.id, $1.id) })
+            remapTaskState(entryID: entry.id, mapping: mapping)
+            undoEdit = UndoEdit(previous: document, document: updated, movedTaskIDs: mapping)
+            message = demo ? "Sample order changed · \(entry.name)/INBOX.md" : "Order saved to \(entry.name)/INBOX.md"
+        } catch {
+            self.error = error.localizedDescription
+            message = nil
+            undoEdit = nil
+        }
+    }
+
+    private func remapTaskState(entryID: String, mapping: [Int: Int]) {
+        let keys = Dictionary(uniqueKeysWithValues: mapping.map { ("\(entryID):\($0.key)", "\(entryID):\($0.value)") })
+        expandedTaskIDs = Set(expandedTaskIDs.map { keys[$0] ?? $0 })
+        recentlyCompleted = Set(recentlyCompleted.map { keys[$0] ?? $0 })
+    }
+
     private static func demoEntries(_ repositories: [RepositorySnapshot]) -> [Entry] {
         let examples: [(String, String)] = [
-            ("agentbridge", "- [ ] Improve keyboard navigation\n- [ ] Add loading state\n"),
+            ("agentbridge", "- [ ] Improve keyboard navigation. " + String(repeating: "Earlier checks and [reference notes](https://example.com/guide) provide context without changing the task. ", count: 16) + "\n- [ ] Add loading state\n"),
             ("modelarchviz", "- [ ] Clarify empty graph state\n\nExplain why no graph is visible and help the user take the next step.\n\n- Keep the selected model visible.\n- Offer a clear way to reset filters.\n\n- [ ] Improve export preview\n"),
             ("papertrail", "- [ ] Support multiline notes\n- [ ] Check timezone handling\n"),
             ("repoman", "- [ ] Refine repository filtering\n- [x] Fix toolbar spacing\n")

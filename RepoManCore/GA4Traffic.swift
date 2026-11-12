@@ -75,6 +75,19 @@ enum GA4TrafficError: Error {
     case invalidConfiguration, readerUnavailable, invalidReport
 }
 
+enum GA4TrafficFilter {
+    /// Apply before aggregation so distinct users and every derived metric share the same audience.
+    /// countryId is supported by both the historical and Realtime Data APIs.
+    static func excludingPortugal(matching scope: [String: Any]? = nil) -> [String: Any] {
+        let exclusion: [String: Any] = ["notExpression": ["filter": [
+            "fieldName": "countryId",
+            "stringFilter": ["matchType": "EXACT", "value": "PT", "caseSensitive": false]
+        ]]]
+        guard let scope else { return exclusion }
+        return ["andGroup": ["expressions": [scope, exclusion]]]
+    }
+}
+
 struct GA4TrafficQuery: Hashable, Sendable {
     let reader: String
     let propertyId: String
@@ -86,12 +99,11 @@ struct GA4TrafficQuery: Hashable, Sendable {
         if window == .sevenDays {
             report["dateRanges"] = [["startDate": "7daysAgo", "endDate": "yesterday"]]
         }
-        if !filterValues.isEmpty {
-            report["dimensionFilter"] = ["filter": [
+        let scope: [String: Any]? = filterValues.isEmpty ? nil : ["filter": [
                 "fieldName": window == .realtime ? "streamId" : "hostName",
                 "inListFilter": ["values": filterValues, "caseSensitive": window == .realtime]
-            ]]
-        }
+        ]]
+        report["dimensionFilter"] = GA4TrafficFilter.excludingPortugal(matching: scope)
         return try JSONSerialization.data(withJSONObject: report)
     }
 

@@ -42,6 +42,9 @@ struct ContentView: View {
     @AppStorage("repositoryFilter") private var repositoryFilter: RepositoryFilter = .all
     @AppStorage("repositorySort") private var repositorySort: RepositorySort = .name
     @AppStorage("repositorySortAscending") private var sortAscending = true
+    @AppStorage("inboxSidebarOnlyOpen") private var inboxSidebarOnlyOpen = true
+    @AppStorage("inboxSidebarSort") private var inboxSidebarSort: RepositoryInboxStore.SidebarSort = .openTasks
+    @AppStorage("inboxSidebarSortAscending") private var inboxSidebarSortAscending = false
     @AppStorage("sidebarWidth") private var sidebarWidth = 340.0
     @AppStorage("sidebarVisible") private var sidebarVisible = true
     @FocusState private var searchFocused: Bool
@@ -279,6 +282,41 @@ struct ContentView: View {
 
     private var repositoryListMenus: some View {
         HStack(spacing: 6) {
+            if overview == .inboxes {
+                ToolbarIconMenu(symbol: "line.3.horizontal.decrease", title: "Filter inbox repositories",
+                                value: inboxSidebarOnlyOpen ? "With open todos" : "All repositories",
+                                isActive: inboxSidebarOnlyOpen) {
+                    Picker("Filter inbox repositories", selection: $inboxSidebarOnlyOpen) {
+                        Text("All repositories").tag(false)
+                        Text("With open todos").tag(true)
+                    }
+                    .pickerStyle(.inline).labelsHidden()
+                }
+                .accessibilityIdentifier("inbox-sidebar-filter")
+                ToolbarIconMenu(symbol: "arrow.up.arrow.down", title: "Sort inbox repositories",
+                                value: "\(inboxSidebarSort.rawValue), \(inboxSidebarSortAscending ? "ascending" : "descending")") {
+                    ForEach(RepositoryInboxStore.SidebarSort.allCases, id: \.self) { sort in
+                        Button {
+                            if inboxSidebarSort != sort {
+                                inboxSidebarSort = sort
+                                inboxSidebarSortAscending = sort == .name
+                            }
+                        } label: { menuChoice(sort.rawValue, isSelected: inboxSidebarSort == sort) }
+                    }
+                    Divider()
+                    Button { inboxSidebarSortAscending = true } label: {
+                        menuChoice("Ascending", isSelected: inboxSidebarSortAscending)
+                    }
+                    Button { inboxSidebarSortAscending = false } label: {
+                        menuChoice("Descending", isSelected: !inboxSidebarSortAscending)
+                    }
+                }
+                .accessibilityIdentifier("inbox-sidebar-sort")
+                ToolbarActionButton(symbol: "arrow.clockwise", title: "Refresh inboxes", isRotating: inboxes.isRefreshing) {
+                    Task { await inboxes.refresh(repositories: store.repositories, demo: store.isDemo, force: true) }
+                }
+                .disabled(inboxes.isRefreshing || inboxes.isSaving)
+            } else {
             ToolbarIconMenu(
                 symbol: "line.3.horizontal.decrease",
                 title: "Filter repositories",
@@ -328,6 +366,7 @@ struct ContentView: View {
             }
             .disabled(store.folder == nil || store.isFetching || store.isScanning)
             .accessibilityIdentifier("refresh-all-repositories-button")
+            }
         }
     }
 
@@ -371,7 +410,11 @@ struct ContentView: View {
     }
 
     private var filteredRepositories: [RepositorySnapshot] {
-        repositorySort.repositories(
+        if overview == .inboxes {
+            return inboxes.sidebarRepositories(store.repositories, search: search, onlyOpen: inboxSidebarOnlyOpen,
+                                               sort: inboxSidebarSort, ascending: inboxSidebarSortAscending)
+        }
+        return repositorySort.repositories(
             store.repositories,
             filter: .all,
             search: search,
@@ -496,12 +539,13 @@ struct ContentView: View {
     @ViewBuilder
     private var repositoryList: some View {
         let repositories = filteredRepositories
+        let inboxStatuses = overview == .inboxes ? inboxes.sidebarStatuses : nil
         if !repositories.isEmpty {
             NativeRepositoryList(
                 rows: repositories.map {
                     RepositoryListRow(repository: $0, isLoading: store.loadingRepositoryIDs.contains($0.id),
                                       checkProgress: store.repositoryCheckProgress[$0.id], githubCounts: store.counts(for: $0),
-                                      traffic: store.traffic(for: $0))
+                                      inboxStatus: inboxStatuses == nil ? nil : (inboxStatuses?[$0.id] ?? .loading))
                 },
                 selectedPath: overview == .inboxes ? inboxes.repositoryID : store.selectedPath,
                 statusCounts: { store.issueStatusCounts(in: $0) },
@@ -518,8 +562,11 @@ struct ContentView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(Theme.secondary)
                             .padding(20)
-                        if repositoryFilter != .all {
-                            Button("Clear filter") { repositoryFilter = .all }
+                        if overview == .inboxes ? inboxSidebarOnlyOpen : repositoryFilter != .all {
+                            Button("Clear filter") {
+                                if overview == .inboxes { inboxSidebarOnlyOpen = false }
+                                else { repositoryFilter = .all }
+                            }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Theme.blue)
                                 .padding(.bottom, 12)
@@ -908,7 +955,7 @@ private struct RepositoryListRow: Equatable {
     let isLoading: Bool
     let checkProgress: RepositoryCheckProgress?
     let githubCounts: GitHubRepositoryCounts?
-    let traffic: [GA4TrafficWindow: GA4TrafficReading]?
+    let inboxStatus: RepositoryInboxStore.SidebarStatus?
 }
 
 /// NSTableView recycles a small set of independently hosted rows. Scrolling no
@@ -927,7 +974,7 @@ private struct NativeRepositoryList: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
-        let scroller = RepositoryScroller()
+        let scroller = DashboardNativeScroller()
         scroller.setAccessibilityLabel("Vertical scroll bar")
         scrollView.verticalScroller = scroller
         scrollView.scrollerStyle = .overlay
@@ -1028,7 +1075,7 @@ private struct NativeRepositoryList: NSViewRepresentable {
             cell.hosting.rootView = AnyView(
                 RepositoryRow(repository: data.repository, statusCounts: counts,
                               isLoading: data.isLoading, checkProgress: data.checkProgress, githubCounts: data.githubCounts,
-                              traffic: data.traffic,
+                              inboxStatus: data.inboxStatus,
                               isSelected: isSelected) { [weak self] in
                     self?.parent.onSelect(data.repository)
                 }
@@ -1049,7 +1096,7 @@ private struct NativeRepositoryList: NSViewRepresentable {
 
 /// AppKit owns thumb tracking and scroll offsets; drawing keeps the sidebar's
 /// thin, trackless indicator without publishing offsets into SwiftUI.
-private final class RepositoryScroller: NSScroller {
+final class DashboardNativeScroller: NSScroller {
     private var isHovered = false
     private var hoverTracking: NSTrackingArea?
     override class var isCompatibleWithOverlayScrollers: Bool { true }
@@ -1088,7 +1135,7 @@ private struct RepositoryRow: View {
     let isLoading: Bool
     let checkProgress: RepositoryCheckProgress?
     let githubCounts: GitHubRepositoryCounts?
-    let traffic: [GA4TrafficWindow: GA4TrafficReading]?
+    let inboxStatus: RepositoryInboxStore.SidebarStatus?
     let isSelected: Bool
     let action: () -> Void
 
@@ -1104,18 +1151,14 @@ private struct RepositoryRow: View {
                             .truncationMode(.tail)
                             .help(repository.name)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        RepositoryIssueStatusBadges(counts: statusCounts)
-                    }
-                    if !repository.branch.isEmpty {
-                        if let traffic {
-                            ViewThatFits(in: .horizontal) {
-                                branchLine(traffic: traffic)
-                                branchLine(traffic: traffic, compactTraffic: true)
-                                branchLine()
-                            }
+                        if let inboxStatus {
+                            inboxBadge(inboxStatus)
                         } else {
-                            branchLine()
+                            RepositoryIssueStatusBadges(counts: statusCounts)
                         }
+                    }
+                    if inboxStatus == nil, !repository.branch.isEmpty {
+                        branchLine()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1132,8 +1175,10 @@ private struct RepositoryRow: View {
                 ZStack {
                     Rectangle()
                         .fill(isSelected ? Theme.selection : (isHovered ? Theme.control : .clear))
-                    RepositoryScanProgressBackground(isLoading: isLoading, progress: checkProgress)
-                        .id(repository.id)
+                    if inboxStatus == nil {
+                        RepositoryScanProgressBackground(isLoading: isLoading, progress: checkProgress)
+                            .id(repository.id)
+                    }
                 }
                 .padding(.trailing, decorationInset)
             }
@@ -1142,10 +1187,10 @@ private struct RepositoryRow: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .overlay {
-            if isLoading { NativeTooltip(text: scanningHelp) }
+            if inboxStatus == nil, isLoading { NativeTooltip(text: scanningHelp) }
         }
         .accessibilityValue(activityDescription)
-        .accessibilityLabel("\(repository.name), \(repository.branch), \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
+        .accessibilityLabel(inboxStatus != nil ? repository.name : "\(repository.name), \(repository.branch), \(repository.ahead ?? 0) to push, \(repository.behind ?? 0) to pull, \(repository.changedFileCount) changed files, \(repository.staleBranches.count) stale branches, \(repository.worktrees.count) worktrees")
         .overlay(alignment: .bottom) {
             if !isSelected {
                 Rectangle()
@@ -1156,7 +1201,21 @@ private struct RepositoryRow: View {
         }
     }
 
-    private func branchLine(traffic: [GA4TrafficWindow: GA4TrafficReading]? = nil, compactTraffic: Bool = false) -> some View {
+    private func inboxBadge(_ status: RepositoryInboxStore.SidebarStatus) -> some View {
+        Group {
+            if let count = status.count {
+                Text("\(count.formatted()) open")
+                    .foregroundStyle(count > 0 ? Theme.blue : Theme.secondary)
+            } else {
+                Text("—").foregroundStyle(Theme.secondary)
+            }
+        }
+        .font(.system(size: 11)).monospacedDigit().fixedSize()
+        .help(status.description)
+        .accessibilityLabel(status.description)
+    }
+
+    private func branchLine() -> some View {
         HStack(spacing: 4) {
             if repository.branch != "main" {
                 Image(systemName: "arrow.triangle.branch")
@@ -1178,19 +1237,6 @@ private struct RepositoryRow: View {
                 .fixedSize()
                 .help(githubCountsDescription)
             }
-            if let traffic {
-                HStack(spacing: 5) {
-                    Image(systemName: "person.2")
-                    if !compactTraffic {
-                        Text(trafficLabel(.sevenDays, in: traffic))
-                        Text(trafficLabel(.realtime, in: traffic))
-                    }
-                }
-                .font(.system(size: 10))
-                .monospacedDigit()
-                .fixedSize()
-                .help(trafficDescription)
-            }
             Spacer(minLength: 2)
             RepositoryGitStatus(repository: repository)
         }
@@ -1206,12 +1252,12 @@ private struct RepositoryRow: View {
     }
 
     private var activityDescription: String {
+        if let inboxStatus { return inboxStatus.description }
         var descriptions = RepositoryIssueStatus.allCases.compactMap { status -> String? in
             guard let count = statusCounts[status], count > 0 else { return nil }
             return "\(status.title): \(count)"
         }
         if githubCounts != nil { descriptions.insert(githubCountsDescription, at: 0) }
-        if traffic != nil { descriptions.insert(trafficDescription, at: 0) }
         if isLoading { descriptions.append(scanningHelp) }
         return descriptions.joined(separator: ", ")
     }
@@ -1221,23 +1267,7 @@ private struct RepositoryRow: View {
         return "GitHub stars: \(githubCounts.stars.formatted()), forks: \(githubCounts.forks.formatted())"
     }
 
-    private func trafficLabel(_ window: GA4TrafficWindow, in traffic: [GA4TrafficWindow: GA4TrafficReading]) -> String {
-        let reading = traffic[window]
-        let count = reading?.count.map { $0.formatted(.number.notation(.compactName)) } ?? "—"
-        let prefix = reading?.isStale == true ? "~" : ""
-        return "\(prefix)\(count) \(window == .sevenDays ? "7d" : "30m")"
-    }
 
-    private var trafficDescription: String {
-        GA4TrafficWindow.allCases.map { window in
-            let period = window == .sevenDays ? "last seven complete days" : "last 30 minutes"
-            guard let reading = traffic?[window], let count = reading.count, let observedAt = reading.observedAt else {
-                return "GA4 active users in the \(period) unavailable"
-            }
-            let fetchedAt = observedAt.formatted(date: .abbreviated, time: .shortened)
-            return "\(count.formatted()) GA4 active users in the \(period). \(reading.isStale ? "Stale. " : "")Fetched \(fetchedAt)."
-        }.joined(separator: "\n")
-    }
 }
 
 private struct RepositoryScanProgressBackground: View {

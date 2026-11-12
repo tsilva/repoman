@@ -135,4 +135,97 @@ final class RepositoryInboxTests: XCTestCase {
             XCTAssertEqual($0 as? RepositoryInboxError, .busy)
         }
     }
+
+    func testReorderMovesCompleteUnicodeBlocksAndPreservesCRLFSectionsAndFileIdentity() throws {
+        let prefix = "# Inbox\r\n\r\n## Todos\r\n\r\nIntro stays here.\r\n\r\n"
+        let first = "* [ ] Fix café 🔧\r\n\r\n  Supporting context.\r\n  - Keep this detail."
+        let second = "1. [X] Done\r\n```md\r\n- [ ] Example only\r\n```\r\n<!-- Private context -->"
+        let third = "- [ ] Third"
+        let suffix = "\r\n\r\n## Notes\r\nLeave these notes unchanged."
+        let source = prefix + first + "\r\n\r\n" + second + "\r\n" + third + suffix
+        try write(source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: inbox.path)
+        let inode = try FileManager.default.attributesOfItem(atPath: inbox.path)[.systemFileNumber] as? NSNumber
+        let initial = try RepositoryInboxFile.read(at: directory)
+        let moved = try RepositoryInboxFile.move(initial.tasks[0], relativeTo: initial.tasks[2], after: true, in: initial)
+        XCTAssertEqual(moved.tasks.map(\.title), ["Done", "Third", "Fix café 🔧"])
+        XCTAssertEqual(try String(contentsOf: inbox), prefix + second + "\r\n\r\n" + third + "\r\n" + first + suffix)
+        let attributes = try FileManager.default.attributesOfItem(atPath: inbox.path)
+        XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, inode)
+        XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o640)
+        _ = try RepositoryInboxFile.undoMove(previous: initial, current: moved)
+        XCTAssertEqual(try Data(contentsOf: inbox), Data(source.utf8))
+    }
+
+    func testReorderLastTaskWithoutFinalNewlineAndDuplicateTitles() throws {
+        let source = "# Inbox\n## Todos\n- [ ] Same\n  First notes.\n- [x] Hidden\n- [ ] Same\n  Last notes."
+        try write(source)
+        let initial = try RepositoryInboxFile.read(at: directory)
+        let moved = try RepositoryInboxFile.move(initial.tasks[2], relativeTo: initial.tasks[0], after: false, in: initial)
+        XCTAssertEqual(try String(contentsOf: inbox), "# Inbox\n## Todos\n- [ ] Same\n  Last notes.\n- [ ] Same\n  First notes.\n- [x] Hidden")
+        XCTAssertEqual(moved.tasks.map(\.notes), ["Last notes.", "First notes.", ""])
+        _ = try RepositoryInboxFile.undoMove(previous: initial, current: moved)
+        XCTAssertEqual(try String(contentsOf: inbox), source)
+    }
+
+    func testReorderRelativeAnchorsKeepOtherTasksInOrderAndIgnoreNoOp() throws {
+        let snapshot = try RepositoryInbox(repositoryURL: directory, source: Data("## Todos\n- [ ] A\n- [x] Hidden\n- [ ] B\n- [ ] C\n".utf8))
+        let moved = try snapshot.moving(snapshot.tasks[0], relativeTo: snapshot.tasks[2], after: true)
+        XCTAssertEqual(moved.tasks.map(\.title), ["Hidden", "B", "A", "C"])
+        XCTAssertEqual(try snapshot.moving(snapshot.tasks[0], relativeTo: snapshot.tasks[0], after: true), snapshot)
+        XCTAssertEqual(try snapshot.moving(snapshot.tasks[0], relativeTo: snapshot.tasks[1], after: false), snapshot)
+    }
+
+    func testReorderDoesNotCrossHeadingsOrChangeMarkdownInterpretation() throws {
+        let snapshot = try RepositoryInbox(repositoryURL: directory, source: Data("## Todos\n- [ ] A\n### Later\n- [ ] B\n## Notes\nUnchanged\n".utf8))
+        XCTAssertThrowsError(try snapshot.moving(snapshot.tasks[0], relativeTo: snapshot.tasks[1], after: true)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .differentSection)
+        }
+        let unfinished = try RepositoryInbox(repositoryURL: directory, source: Data("## Todos\n- [ ] A\n- [ ] B\n```md\nExample\n".utf8))
+        XCTAssertThrowsError(try unfinished.moving(unfinished.tasks[1], relativeTo: unfinished.tasks[0], after: false)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .unsupportedMove)
+        }
+    }
+
+    func testReorderAndUndoRejectExternalChangesAndArbitrarySnapshots() throws {
+        let source = "## Todos\n- [ ] A\n- [ ] B\n## Notes\nKeep\n"
+        try write(source)
+        let initial = try RepositoryInboxFile.read(at: directory)
+        let moved = try RepositoryInboxFile.move(initial.tasks[1], relativeTo: initial.tasks[0], after: false, in: initial)
+        let unrelated = try RepositoryInbox(repositoryURL: directory, source: Data(source.replacingOccurrences(of: "Keep", with: "Gone").utf8))
+        XCTAssertThrowsError(try RepositoryInboxFile.undoMove(previous: unrelated, current: moved))
+        let external = source + "External notes\n"
+        try write(external)
+        XCTAssertThrowsError(try RepositoryInboxFile.undoMove(previous: initial, current: moved)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .changed)
+        }
+        XCTAssertThrowsError(try RepositoryInboxFile.move(initial.tasks[1], relativeTo: initial.tasks[0], after: false, in: initial)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .changed)
+        }
+        XCTAssertEqual(try String(contentsOf: inbox), external)
+    }
+
+    func testReorderEnforcesPolicyLocksAndSafePaths() throws {
+        let source = "## Todos\n- [ ] A\n- [ ] B\n"
+        try write(source)
+        let initial = try RepositoryInboxFile.read(at: directory)
+        let descriptor = open(inbox.path, O_RDWR)
+        XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+        XCTAssertThrowsError(try RepositoryInboxFile.move(initial.tasks[0], relativeTo: initial.tasks[1], after: true, in: initial)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .busy)
+        }
+        close(descriptor)
+        _ = try GitRunner.run(["add", "--force", "--", "INBOX.md"], at: directory)
+        XCTAssertThrowsError(try RepositoryInboxFile.move(initial.tasks[0], relativeTo: initial.tasks[1], after: true, in: initial)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .readOnly)
+        }
+        _ = try GitRunner.run(["rm", "--cached", "--", "INBOX.md"], at: directory)
+        let target = directory.appendingPathComponent("original.md")
+        try FileManager.default.moveItem(at: inbox, to: target)
+        try FileManager.default.createSymbolicLink(at: inbox, withDestinationURL: target)
+        XCTAssertThrowsError(try RepositoryInboxFile.move(initial.tasks[0], relativeTo: initial.tasks[1], after: true, in: initial)) {
+            XCTAssertEqual($0 as? RepositoryInboxError, .unsafePath)
+        }
+        XCTAssertEqual(try String(contentsOf: target), source)
+    }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Charts
 import SwiftUI
 
@@ -22,22 +23,20 @@ struct WebsiteTrafficView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            DashboardScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    header
-                    if let message = traffic.configurationMessage {
-                        ContentUnavailableView("Website traffic", systemImage: "chart.xyaxis.line", description: Text(message))
-                            .frame(height: 300)
-                    } else {
-                        summary
-                        dailyChart
-                        websiteTable
-                    }
+        TrafficScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                if let message = traffic.configurationMessage {
+                    ContentUnavailableView("Website traffic", systemImage: "chart.xyaxis.line", description: Text(message))
+                        .frame(height: 300)
+                } else {
+                    summary
+                    dailyChart
+                    websiteTable
                 }
-                .padding(24)
-                .frame(width: geometry.size.width, alignment: .topLeading)
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .foregroundStyle(Theme.primary)
         .background(Theme.background)
@@ -133,7 +132,16 @@ struct WebsiteTrafficView: View {
     }
 
     private var dailyChart: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        // Resolve portfolio data and axis labels once per view update, outside
+        // Charts' repeatedly evaluated axis builders.
+        let current = traffic.daily(previous: false).enumerated().map { TrafficChartPoint(day: $0.offset, sessions: $0.element) }
+        let previous = comparing ? traffic.daily(previous: true).enumerated().map { TrafficChartPoint(day: $0.offset, sessions: $0.element) } : []
+        let ticks = [0, traffic.period.rawValue / 3, traffic.period.rawValue * 2 / 3, traffic.period.rawValue - 1]
+        let days = traffic.reportingSites.first.flatMap { traffic.report(for: $0) }?.days ?? []
+        let labels = Dictionary(uniqueKeysWithValues: ticks.compactMap { index -> (Int, String)? in
+            days.indices.contains(index) ? (index, WebsiteTrafficStore.dateLabel(days[index].id)) : nil
+        })
+        return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Daily sessions").font(.system(size: 14, weight: .semibold))
                 Spacer()
@@ -142,25 +150,22 @@ struct WebsiteTrafficView: View {
             }
             if traffic.hasReports {
                 Chart {
-                    ForEach(Array(traffic.daily(previous: false).enumerated()), id: \.offset) { day, sessions in
-                        LineMark(x: .value("Day", day), y: .value("Sessions", sessions), series: .value("Period", "Current"))
-                            .foregroundStyle(Theme.blue).lineStyle(StrokeStyle(lineWidth: 2))
-                    }
+                    LinePlot(current, x: .value("Day", \.day), y: .value("Sessions", \.sessions),
+                             series: .value("Period", "Current"))
+                        .foregroundStyle(Theme.blue).lineStyle(StrokeStyle(lineWidth: 2))
                     if comparing {
-                        ForEach(Array(traffic.daily(previous: true).enumerated()), id: \.offset) { day, sessions in
-                            LineMark(x: .value("Day", day), y: .value("Sessions", sessions), series: .value("Period", "Previous"))
-                                .foregroundStyle(Theme.secondary).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
-                        }
+                        LinePlot(previous, x: .value("Day", \.day), y: .value("Sessions", \.sessions),
+                                 series: .value("Period", "Previous"))
+                            .foregroundStyle(Theme.secondary).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
                     }
                 }
                 .chartYScale(domain: .automatic(includesZero: true))
                 .chartXAxis {
-                    AxisMarks(values: [0, traffic.period.rawValue / 3, traffic.period.rawValue * 2 / 3, traffic.period.rawValue - 1]) { value in
+                    AxisMarks(values: ticks) { value in
                         AxisGridLine().foregroundStyle(Theme.border.opacity(0.5))
                         AxisValueLabel(anchor: .top) {
-                            if let index = value.as(Int.self), let report = traffic.reportingSites.first.flatMap({ traffic.report(for: $0) }),
-                               report.days.indices.contains(index) {
-                                Text(WebsiteTrafficStore.dateLabel(report.days[index].id)).foregroundStyle(Theme.secondary)
+                            if let index = value.as(Int.self), let label = labels[index] {
+                                Text(label).foregroundStyle(Theme.secondary)
                             }
                         }
                     }
@@ -227,11 +232,13 @@ struct WebsiteTrafficView: View {
             }
             .font(.system(size: 12)).padding(.horizontal, 16).frame(height: 36)
             ForEach(sortedSites) { site in
-                Divider().overlay(Theme.border)
-                siteRow(site)
-                if expandedSite == site.id, let query = site.query {
-                    WebsiteTrafficBreakdown(query: query, period: traffic.period, demo: isDemo)
-                        .id(site.id + String(traffic.period.rawValue))
+                VStack(spacing: 0) {
+                    Divider().overlay(Theme.border)
+                    siteRow(site)
+                    if expandedSite == site.id, let query = site.query {
+                        WebsiteTrafficBreakdown(query: query, period: traffic.period, demo: isDemo)
+                            .id(site.id + String(traffic.period.rawValue))
+                    }
                 }
             }
             Divider().overlay(Theme.border)
@@ -248,7 +255,7 @@ struct WebsiteTrafficView: View {
             }
             .font(.system(size: 11)).foregroundStyle(Theme.secondary).padding(.horizontal, 16).frame(height: 36)
         }
-        .background(Theme.panel).clipShape(RoundedRectangle(cornerRadius: 7))
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.border))
     }
 
@@ -302,6 +309,7 @@ struct WebsiteTrafficView: View {
             .foregroundStyle(stale ? Theme.secondary : Theme.primary)
             .padding(.horizontal, 16).frame(height: 48)
             .background(expandedSite == site.id ? Theme.selection : Color.clear)
+            .drawingGroup()
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -318,24 +326,66 @@ struct WebsiteTrafficView: View {
     }
 }
 
+/// Native scrolling moves the hosted dashboard without publishing viewport
+/// changes into its SwiftUI chart and row hierarchy on every frame.
+private struct TrafficScrollView<Content: View>: NSViewRepresentable {
+    @ViewBuilder let content: Content
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.scrollerStyle = .overlay
+        scroll.verticalScroller = DashboardNativeScroller()
+        scroll.verticalScroller?.setAccessibilityLabel("Vertical scroll bar")
+        scroll.automaticallyAdjustsContentInsets = false
+        let hosting = NSHostingView(rootView: content)
+        hosting.wantsLayer = true
+        hosting.sizingOptions = [.intrinsicContentSize]
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = hosting
+        NSLayoutConstraint.activate([
+            hosting.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)
+        ])
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        (scroll.documentView as? NSHostingView<Content>)?.rootView = content
+    }
+}
+
+private struct TrafficChartPoint {
+    let day: Int
+    let sessions: Int
+}
+
 private struct TrafficSparkline: View {
     let values: [Int]
     let color: Color
     var body: some View {
-        GeometryReader { geometry in
-            if !values.isEmpty {
-                let maximum = max(values.max() ?? 0, 1)
-                Path { path in
-                    for (index, value) in values.enumerated() {
-                        let point = CGPoint(x: geometry.size.width * Double(index) / Double(max(values.count - 1, 1)),
-                                            y: geometry.size.height - 2 - (geometry.size.height - 4) * Double(value) / Double(maximum))
-                        if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                    }
-                }
-                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+        TrafficSparklineShape(values: values)
+            .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
+            .accessibilityHidden(true)
+    }
+}
+
+private struct TrafficSparklineShape: Shape {
+    let values: [Int]
+
+    func path(in rect: CGRect) -> Path {
+        let maximum = Double(max(values.max() ?? 0, 1))
+        let step = rect.width / Double(max(values.count - 1, 1))
+        return Path { path in
+            for (index, value) in values.enumerated() {
+                let point = CGPoint(x: rect.minX + step * Double(index),
+                                    y: rect.maxY - 2 - (rect.height - 4) * Double(value) / maximum)
+                if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
             }
         }
-        .accessibilityHidden(true)
     }
 }
 

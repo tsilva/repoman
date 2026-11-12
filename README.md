@@ -40,7 +40,7 @@ Click **Choose Folder…** and select the parent folder containing your reposito
 
 Issue rows show current detector results. Incomplete checks remain visibly unknown, separate from confirmed findings. Queued and running checks appear while inspection is in progress; passed checks are hidden. Click the magnifying glass in the repository’s issue list after fixing something externally to check the result again. A spinner replaces the icon during the scan. Issue inspection has no repair presets, selection checkboxes, conversations, agent execution or automatic repair recovery. Earlier conversation files remain on disk but are no longer loaded or resumed.
 
-Choose **Inboxes** beside **Repositories** and **Traffic** to see repository todos together. **All repositories** groups tasks by repository; selecting a repository narrows the view. Search task titles and notes, switch between open and all tasks, and select a task to read its context beside the list. Checkbox changes save directly to the source `INBOX.md`, with **Undo** and conflict detection. **Open source** opens the inbox in its default editor. Missing inboxes are not created, and unavailable sources remain visible. The existing Traffic view and GA4 user counts remain available. See [inbox behavior and editing safeguards](docs/inboxes.md).
+Choose **Inboxes** beside **Repositories** and **Traffic** to see repository todos together. **All repositories** groups tasks by repository; selecting a repository narrows the view. Search task titles and notes, switch between open and all tasks, and expand long tasks in the full-width list to read their original context. Checkbox changes save directly to the source `INBOX.md`, with **Undo** and conflict detection. Each repository's **INBOX.md** link opens its source in the default editor. Missing inboxes are not created, and unavailable sources remain visible. The existing Traffic view and GA4 user counts remain available. See [inbox behavior and editing safeguards](docs/inboxes.md).
 
 The selected repository has one **Git synchronization** section combining ahead/behind counts, freshness and upstream findings. Individual CLI check IDs remain unchanged.
 
@@ -80,7 +80,7 @@ Runtime checks expand bounded literal quoted CI matrix axes and compare each con
 
 Project-reference checks map literal same-repository Actions checkout paths to local source. Other revisions, external repositories, conditional checkouts and unsupported layouts remain incomplete; known missing references stay visible.
 
-**Production website checks** flag public Vercel projects without a production `tsilva.eu` domain and check live Sentry and Google Analytics collection on their assigned production URLs, including `vercel.app` aliases. RepoMan compares assigned `tsilva.eu` domains with each repository's `.repoman.yaml` inventory and checks `/sitemap.xml` on those domains for public GitHub repositories. With a read-only Search Console reader configured, it also checks submission under `sc-domain:tsilva.eu`. The macOS app can display and sort by [seven-day and 30-minute GA4 active users](docs/website-checks.md#google-analytics-traffic-in-the-macos-app) for repositories with configured readers. Its **Traffic** tab compares website traffic over 7, 30, or 90 days with portfolio totals, daily trends, sortable site metrics, and source and landing-page breakdowns. An optional Mac-side installer renews approved GA4 access automatically. See [website checks and domain inventory](docs/website-checks.md).
+**Production website checks** flag public Vercel projects without a production `tsilva.eu` domain and check live Sentry and Google Analytics collection on their assigned production URLs, including `vercel.app` aliases. RepoMan compares assigned `tsilva.eu` domains with each repository's `.repoman.yaml` inventory and checks `/sitemap.xml` on those domains for public GitHub repositories. With a read-only Search Console reader configured, it also checks submission under `sc-domain:tsilva.eu`. The macOS app can sort repositories by [seven-day and 30-minute GA4 active users](docs/website-checks.md#google-analytics-traffic-in-the-macos-app) for repositories with configured readers. Its **Traffic** tab compares website traffic over 7, 30, or 90 days with portfolio totals, daily trends, sortable site metrics, and source and landing-page breakdowns. An optional Mac-side installer renews approved GA4 access automatically. See [website checks and domain inventory](docs/website-checks.md).
 
 See [the checker and issue-details architecture](docs/issues.md) for extending the workflow.
 
@@ -90,6 +90,9 @@ In Codex, `$repoman_build-release` or `/repoman_build-release` builds, verifies,
 GitHub Release. Request a local build explicitly to keep the artifacts local.
 The shell helper below builds local artifacts without publishing.
 Xcode puts the app in a `.noindex` build folder so Spotlight and Alfred skip the build copies.
+Development builds show a **DEV** Dock badge regardless of their install location.
+For an optimized local development installer, pass `--development` to the release
+helper; omit it when building production-parity artifacts.
 
 ```bash
 swift test  # run shared checker and Git integration tests

@@ -1,6 +1,6 @@
 ---
 name: repoman_build-release
-description: Prepare, monitor, and verify RepoMan macOS releases built and published in GitHub Actions. Use for /repoman_build-release, release packaging, publication, and validation; ordinary Debug runs do not need it.
+description: Build, publish, verify, and install RepoMan macOS releases, replacing the installed app and cleaning up obsolete copies. Use for /repoman_build-release, release packaging, publication, validation, and local installation; ordinary Debug runs do not need it.
 ---
 
 # Build Release
@@ -106,9 +106,63 @@ without tagging or publishing. Use `--version X.Y.Z` and `--output-dir DIR` only
 when requested; an explicit output directory must be empty. Default output is
 a fresh ignored `dist/build-release.*` directory.
 
-For a local install request, use the helper's DMG. For a published-release
-install request, download that release's DMG and checksum and verify those
-bytes. Stop the running RepoMan process, replace `/Applications/RepoMan.app`
-from the mounted DMG, launch the installed copy, and confirm its executable is
-under `/Applications`. Preserve the previous installed app until the new copy
-launches successfully. Builds are arm64, ad-hoc signed, and not notarized.
+For development builds and installs, add `--development`. This keeps Release
+optimization and compiles the `DEV` Dock badge into the app, including when it
+runs from `/Applications/RepoMan.app`. Use this flag for routine local development
+installs; omit it for production-parity artifacts and published releases. Debug
+builds also show the badge. The install location never determines development
+status, and the flag does not change the version or authorize publication.
+
+Builds are arm64, ad-hoc signed, and not notarized. A build-only request stops
+after artifact verification. An installation request includes replacement and
+the scoped cleanup below; perform both without a separate cleanup approval.
+
+### Install and retire old copies
+
+1. For a local install, use the helper's newly built DMG. For a published-release
+   install, download that release's DMG and checksum. Verify the checksum, mount
+   the image read-only without opening Finder, and stage its app in a unique
+   hidden task directory on the `/Applications` filesystem. Verify bundle ID
+   `com.tsilva.RepoMan`, version, arm64 architecture and the copied signature.
+2. Stop running RepoMan instances, identifying them by their actual executable
+   paths rather than a loose process-name match. Replace `/Applications/RepoMan.app`
+   with the staged app. Keep the previous installed app in the hidden task
+   directory until the replacement launches successfully; do not leave a visible
+   `Previous RepoMan.app` beside build artifacts.
+3. Launch `/Applications/RepoMan.app` with the user's saved repositories and
+   preferences, without `--demo` unless explicitly requested. Confirm that the
+   running executable is `/Applications/RepoMan.app/Contents/MacOS/RepoMan`, that
+   its hash matches the packaged executable, and that other RepoMan instances
+   have stopped. If installation or launch verification fails, restore the
+   previous app, preserve diagnostic evidence and stop before deleting old copies.
+4. After successful launch, inventory obsolete RepoMan app bundles under this
+   checkout's `.build/`, `DerivedData/` and `dist/`, plus the installation backup.
+   Inspect each bundle's `Contents/Info.plist` and require the exact RepoMan bundle
+   ID before removal. Reject symlinked or escaping paths, tracked files and
+   bundles with running executables. Limit cleanup to these verified app bundles
+   and older RepoMan installer DMGs with their matching checksum files under `dist/`.
+   Keep the installed app, the current verified installer/checksum and any
+   explicitly retained artifacts. Skip mounted images and their contents or
+   anything of uncertain ownership and report leftovers. Preserve source,
+   shared caches, settings, repository data and unrelated apps; do not sweep
+   entire build directories.
+5. Use `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister`
+   to unregister each obsolete bundle with `-u` before deleting it. Inspect
+   `-dump` for stale RepoMan paths belonging to this checkout or known RepoMan
+   installation scratch directories; unregister missing obsolete paths too.
+   A hidden backup may never have been registered: an unregister result of
+   `-10814` for that verified backup does not block its file cleanup. Report
+   other registration failures and still refresh the surviving installed app.
+   Delete the verified obsolete bundles and old installer/checksum pairs from
+   the inventory, retaining the successful replacement and current artifacts.
+   Do not reset the system-wide Launch Services database or clear unrelated
+   launcher caches. Force-register the surviving app with
+   `lsregister -f /Applications/RepoMan.app`, then run
+   `mdimport /Applications/RepoMan.app` to refresh its metadata.
+6. Detach the image and remove the successful installation's backup, staging
+   directory and disposable task files. Check that obsolete paths are gone,
+   query Spotlight with `mdfind "kMDItemCFBundleIdentifier == 'com.tsilva.RepoMan'"`,
+   and verify that only the installed copy remains indexed and running. Report
+   remaining duplicates or indexing delays accurately instead of claiming they
+   were cleared. Do not delete copies outside the scoped directories without
+   authorization.

@@ -57,6 +57,8 @@ Each synthetic file contained `let value = 42 // Ordinary source code to inspect
 
 ## Repository list scrolling
 
+For the separate Traffic overview, see [Traffic rendering](#traffic-rendering).
+
 The sidebar uses an `NSTableView` with fixed 52-point rows and independently hosted SwiftUI row contents. AppKit reuses the row views and owns the themed scrollbar's tracking. Issue badges are calculated for visible rows, and unchanged row contents are retained when other repositories update.
 
 Inspection progress is published in 100 ms batches. Each batch retains the latest cumulative report for each repository and loading token. Final scan results still apply immediately. Folder changes discard pending batches, and finished loading tokens cannot restore stale progress.
@@ -72,3 +74,9 @@ Tools/benchmark-scrolling.sh
 It snapshots and compiles the current sources, opens a temporary demo window with 300 repositories, moves the native viewport through two scrolling passes, and includes deferred layout and drawing in each timing. It also checks native selection, repeated scrollbar dragging, progress delivery, and completed-load cleanup. No Git scans or network requests run. Repeat the built benchmark with `.build/scrolling-benchmark/benchmark-scrolling --demo`.
 
 On October 1, 2026, the idle 95th-percentile scroll time fell from 14.97 ms to 5.94 ms with the same fixture and viewport. Scrolling while publishing inspection progress measured 6.74 ms after batching. The benchmark checks against the display's frame budget, which was 8.33 ms at 120 Hz on this machine. These timings include a 1 ms run-loop interval and describe this fixture, not every repository collection or hardware configuration.
+
+## Traffic rendering
+
+The Traffic overview uses an AppKit scroll view around its hosted SwiftUI content, with the same native trackless indicator as the repository list. Viewport movement stays in AppKit instead of publishing offsets through the chart and row hierarchy. The chart draws each daily series as one vectorized plot instead of creating a mark for every day. Axis labels and portfolio series are resolved outside the chart's axis builders. Sparklines draw directly as shapes, and each website row uses a cached drawing surface while scrolling. The table's rounded background does not clip the entire scrolling row collection.
+
+Run `bash Tools/benchmark-traffic-scrolling.sh` on macOS with Xcode installed. It snapshots sources, builds an optimized native window with 150 synthetic websites and 90-day comparison series, and scrolls through three passes, including deferred layout and drawing. Pass `--small` for eight websites, or `--verify-controls` to also check native indicator tracking, row expansion/collapse, resizing, and period switching. It checks the 95th-percentile time against the display's frame budget, uses no account access, and removes its temporary build directory on exit. Timings describe this synthetic viewport workload rather than trackpad latency or every hardware configuration. Use `bash Tools/verify-traffic-overview.sh` for cache-state and window-size checks.

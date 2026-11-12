@@ -2,13 +2,18 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s [--version X.Y.Z] [--output-dir DIR]\n' "$0" >&2
+  printf 'Usage: %s [--development] [--version X.Y.Z] [--output-dir DIR]\n' "$0" >&2
 }
 
 version=''
 output_dir=''
+development=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --development)
+      development=true
+      shift
+      ;;
     --version)
       [[ $# -ge 2 ]] || { usage; exit 2; }
       version="$2"
@@ -68,15 +73,17 @@ printf 'Testing RepoMan...\n'
 swift test
 
 printf 'Building RepoMan %s for arm64...\n' "$version"
+build_settings=(CODE_SIGNING_ALLOWED=NO ARCHS=arm64 "MARKETING_VERSION=$version")
+if [[ "$development" == true ]]; then
+  build_settings+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) REPOMAN_DEVELOPMENT')
+fi
 xcodebuild \
   -project RepoMan.xcodeproj \
   -scheme RepoMan \
   -configuration Release \
   -destination 'generic/platform=macOS' \
   -derivedDataPath "$work_dir/DerivedData" \
-  CODE_SIGNING_ALLOWED=NO \
-  ARCHS=arm64 \
-  MARKETING_VERSION="$version" \
+  "${build_settings[@]}" \
   build
 
 app_path="$work_dir/DerivedData/Build/Products/Release.noindex/RepoMan.app"
