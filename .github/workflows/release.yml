@@ -75,6 +75,20 @@ jobs:
             --version "$VERSION_NUMBER" \
             --output-dir dist
 
+      - name: Read reviewed release notes
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" == tag ]] || exit 1
+          title="$(git for-each-ref --format='%(contents:subject)' "refs/tags/$RELEASE_TAG")"
+          [[ "$title" == "RepoMan $RELEASE_TAG" ]] || exit 1
+          notes="$(git for-each-ref --format='%(contents:body)' "refs/tags/$RELEASE_TAG")"
+          [[ "$notes" =~ [^[:space:]] ]] || exit 1
+          printf '%s\n' "$notes" > dist/release-notes.md
+
       - name: Preserve validated candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -117,8 +131,9 @@ jobs:
           fi
           cd dist
           filename="RepoMan-$RELEASE_TAG-macOS-arm64-adhoc.dmg"
-          [[ "$(find . -type f | wc -l)" -eq 2 ]] || exit 1
+          [[ "$(find . -type f | wc -l)" -eq 3 ]] || exit 1
           [[ -f "$filename" && -f "$filename.sha256" ]] || exit 1
+          [[ -f release-notes.md ]] && grep -q '[^[:space:]]' release-notes.md || exit 1
           [[ "$(wc -l < "$filename.sha256")" -eq 1 ]] || exit 1
           [[ "$(cat "$filename.sha256")" == "$(sha256sum "$filename")" ]] || exit 1
           sha256sum --check "$filename.sha256"
@@ -130,8 +145,8 @@ jobs:
           filename="RepoMan-$RELEASE_TAG-macOS-arm64-adhoc.dmg"
           gh release create "$RELEASE_TAG" \
             "dist/$filename" "dist/$filename.sha256" \
-            --verify-tag --generate-notes --title "RepoMan $RELEASE_TAG" \
-            --notes 'Ad-hoc-signed build for macOS 27 or later on Apple Silicon. This app is not notarized; macOS Gatekeeper may require manual approval.'
+            --verify-tag --title "RepoMan $RELEASE_TAG" \
+            --notes-file dist/release-notes.md
 
       - name: Verify published source and fresh downloads
         shell: bash
@@ -143,6 +158,8 @@ jobs:
             tag_sha="$(gh api "repos/$GH_REPO/git/tags/$tag_sha" --jq '.object.sha')"
           fi
           [[ "$tag_sha" == "$RELEASE_SHA" ]] || exit 1
+          [[ "$(gh release view "$RELEASE_TAG" --json name --jq '.name')" == "RepoMan $RELEASE_TAG" ]] || exit 1
+          [[ "$(gh release view "$RELEASE_TAG" --json body --jq '.body')" == "$(cat dist/release-notes.md)" ]] || exit 1
           filename="RepoMan-$RELEASE_TAG-macOS-arm64-adhoc.dmg"
           gh release download "$RELEASE_TAG" --dir published \
             --pattern "$filename" --pattern "$filename.sha256"

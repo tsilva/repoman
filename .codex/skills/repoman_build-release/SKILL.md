@@ -44,11 +44,14 @@ intended metadata changes using `$private-skills_push`. Read the version again a
 clean synchronized checkout at the exact full release SHA. No Xcode, Swift,
 signing, or packaging commands run locally during this preparation.
 
-Create the annotated tag at that SHA and apply `$private-skills_push` to push only the exact
-tag to the verified destination:
+Prepare the full release title `RepoMan vX.Y.Z` and body for the user's draft
+approval before pushing the publication trigger. Put the approved title, a
+blank line and the complete approved body in an external annotation file.
+Create the annotated tag at that SHA and apply `$private-skills_push` to push
+only the exact tag to the verified destination:
 
 ```bash
-git tag -a vX.Y.Z <full-release-sha> -m "Release vX.Y.Z"
+git tag -a vX.Y.Z <full-release-sha> --cleanup=verbatim -F /external/release-annotation.txt
 git push origin refs/tags/vX.Y.Z:refs/tags/vX.Y.Z
 ```
 
@@ -60,11 +63,17 @@ arm64 Release app on the GitHub-hosted `xcode-27` image, applies an ad-hoc
 signature, validates the bundle version, architecture and icon, and packages
 and mounts the DMG to check its contents. It uploads the validated DMG and
 checksum as `repoman-<full-release-sha>`.
+For publication, the workflow also carries the approved tag body as
+`release-notes.md` in this candidate artifact. Its title must match the
+tag and its body must be nonempty. Validation-only runs do not need release notes.
+Keep `--cleanup=verbatim`: Git's default tag cleanup can strip Markdown headings.
 
 Only the separate publication job has `contents: write`. It downloads those
 exact artifacts, verifies their filenames and checksum, and publishes
 `RepoMan-vX.Y.Z-macOS-arm64-adhoc.dmg` and its `.sha256` file. Never rebuild or
-substitute artifacts between validation and publication.
+substitute artifacts between validation and publication. Publication uses the
+approved notes file without generating extra text, then verifies the published
+title and body against the candidate.
 
 Follow shared monitoring for the tag-push run at the exact release SHA. Require
 its build and publish jobs to succeed, including fresh public downloads,

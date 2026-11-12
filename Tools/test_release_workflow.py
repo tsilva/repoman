@@ -67,6 +67,11 @@ if name == 'gh':
             shutil.copy2(source, output / source.name)
         if os.environ.get('STUB_CORRUPT_DOWNLOAD'):
             next(output.glob('*.dmg')).write_bytes(b'corrupt download')
+    elif args[:2] == ['release', 'view']:
+        if args[-1] == '.name':
+            print('RepoMan ' + os.environ['RELEASE_TAG'])
+        elif args[-1] == '.body':
+            print(os.environ.get('STUB_PUBLISHED_NOTES', pathlib.Path('dist/release-notes.md').read_text()))
     elif args and args[0] == 'api':
         if any('/releases' in x for x in args):
             print(os.environ.get('STUB_RELEASES', ''))
@@ -250,6 +255,7 @@ sys.exit(91)  # Never allow a real native build or disk-image operation.
         artifact.write_bytes(b'validated candidate')
         checksum = hashlib.sha256(artifact.read_bytes()).hexdigest()
         artifact.with_suffix('.dmg.sha256').write_text(checksum + '  ' + artifact.name + '\n')
+        (dist / 'release-notes.md').write_text('Reviewed release notes.\n')
         shim = self.bin / 'sha256sum'
         shim.write_text('#!/bin/sh\nexec shasum -a 256 "$@"\n'); shim.chmod(0o755)
         return artifact
@@ -262,6 +268,42 @@ sys.exit(91)  # Never allow a real native build or disk-image operation.
         self.candidate()
         result = self.run_step('Verify candidate before publication')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_reviewed_annotation_is_carried_to_publication_without_generated_notes(self):
+        body = '## Changes\n\n- Preserve `code` and $(literal text).\n'
+        self.git('tag', '-a', 'v0.1.1', '--cleanup=verbatim', '-m', 'RepoMan v0.1.1\n\n' + body)
+        self.candidate()
+        result = self.run_step('Read reviewed release notes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        notes = self.repo / 'dist/release-notes.md'
+        self.assertEqual(notes.read_text(), body)
+        self.assertEqual(self.run_step('Publish GitHub Release').returncode, 0)
+        command = next(args for args in self.commands() if args[:3] == ['gh', 'release', 'create'])
+        self.assertNotIn('--generate-notes', command)
+        self.assertEqual(command[command.index('--notes-file') + 1], 'dist/release-notes.md')
+
+    def test_release_requires_an_annotated_tag_with_matching_title_and_nonempty_body(self):
+        (self.repo / 'dist').mkdir()
+        for annotation in [None, 'Wrong title\n\nNotes', 'RepoMan v0.1.1']:
+            with self.subTest(annotation=annotation):
+                if annotation is None: self.git('tag', 'v0.1.1')
+                else: self.git('tag', '-a', 'v0.1.1', '-m', annotation)
+                self.assertNotEqual(self.run_step('Read reviewed release notes').returncode, 0)
+                self.assertFalse((self.repo / 'dist/release-notes.md').exists())
+                self.git('tag', '-d', 'v0.1.1')
+
+    def test_missing_or_empty_reviewed_notes_fail_publication_gate(self):
+        self.candidate()
+        notes = self.repo / 'dist/release-notes.md'
+        notes.unlink()
+        self.assertNotEqual(self.run_step('Verify candidate before publication').returncode, 0)
+        notes.write_text(' \n')
+        self.assertNotEqual(self.run_step('Verify candidate before publication').returncode, 0)
+
+    def test_changed_published_notes_fail_verification(self):
+        self.candidate()
+        self.env['STUB_PUBLISHED_NOTES'] = 'Unexpected generated text.'
+        self.assertNotEqual(self.run_step('Verify published source and fresh downloads').returncode, 0)
 
     def test_corrupt_candidate_fails_publication_gate(self):
         self.candidate().write_bytes(b'corrupt')
