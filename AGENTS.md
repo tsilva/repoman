@@ -23,6 +23,12 @@
 - Keep generated output in `.build/` or `DerivedData/`; do not commit it.
 - `Tools/package-dmg.sh` packages a built `RepoMan.app` into a DMG. The repoman_build-release skill helper drives tests, the Release build, signing, and validation in `.github/workflows/release.yml`. Run it locally only for an explicitly requested local build; `dist/` is generated output.
 
+## GitHub API security
+
+Preserve the Swift request, environment and error guards for explicitly selected
+proxied GitHub access. API credentials, Git HTTPS/Keychain, GA4 and Vercel are
+separate flows; failed API access must not silently select a personal login.
+
 ## Behavior to preserve
 
 - Discover only visible direct child repositories containing a `.git` file or directory. Exclude linked worktrees from the repository list; keep their details on the primary repository.
