@@ -14,7 +14,7 @@ enum RepositorySkillChecks {
             do { prefix = try expectedPrefix(context) }
             catch {
                 prefix = nil
-                reasons.append(".repo-metadata.toml: Repository label could not be inspected.")
+                reasons.append(".repoman.json: Repository label could not be inspected.")
             }
             for path in paths {
                 do {
@@ -79,7 +79,7 @@ enum RepositorySkillChecks {
                     }
                 }
             }
-            if prefix == nil { reasons.append("Owning repository label cannot be resolved unambiguously within 20 characters; provide a valid root .repo-metadata.toml short-name. Format and identity checks still ran.") }
+            if prefix == nil { reasons.append("Owning repository label cannot be resolved unambiguously within 20 characters; provide a valid root .repoman.json short-name. Format and identity checks still ran.") }
             findings = context.applyingExceptions(findings, policy: policy)
             return reasons.isEmpty ? .findings(findings) : .partial(findings, reasons.joined(separator: "\n"))
         })]
@@ -111,6 +111,9 @@ enum RepositorySkillChecks {
     }
 
     private static func expectedPrefix(_ context: RepositoryInspectionContext) throws -> String? {
+        if let label = try RepoManManifest.object(context)["short-name"] as? String,
+           (1...20).contains(label.utf8.count), CheckSupport.matches(label, #"^[A-Za-z0-9_-]+$"#),
+           let prefix = normalizedLabel(label) { return prefix }
         if try context.exists(".repo-metadata.toml") {
             let source = try context.readText(".repo-metadata.toml")
             if let metadata = try? InspectionConfig.toml(source, allSections: true),

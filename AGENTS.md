@@ -31,6 +31,7 @@ separate flows; failed API access must not silently select a personal login.
 
 ## Behavior to preserve
 
+- Use one optional root `.repoman.json` for repository identity, website inventory and check policy. See `docs/repository-manifest.md`; keep naming tools aligned with its top-level `short-name`.
 - Discover only visible direct child repositories containing a `.git` file or directory. Exclude linked worktrees from the repository list; keep their details on the primary repository.
 - Keep repository inspection responsive: Git work runs off the main actor, and batches use at most four concurrent tasks.
 - Refresh may fetch remote-tracking refs, but must not merge, pull, push, or change working files in monitored repositories.

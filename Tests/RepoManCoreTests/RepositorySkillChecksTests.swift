@@ -172,4 +172,10 @@ final class RepositorySkillChecksTests: XCTestCase {
             rootFiles: try FileManager.default.contentsOfDirectory(atPath: root.path))
         return await RepositoryIssueCatalog(checks: RepositorySkillChecks.checks()).inspect(snapshot)
     }
+    func testJSONShortNameSharesThePolicyManifest() async throws {
+        try write(".repoman.json", #"{"version":1,"short-name":"Compact_Label","stashAgeDays":90}"#)
+        try skill("skills/compact-label_run-checks", name: "compact-label_run-checks")
+        try await expectStatus(.passed, remote: "https://github.com/user/long-repository-name-for-fixture.git")
+    }
+
 }

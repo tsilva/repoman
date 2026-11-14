@@ -53,7 +53,9 @@ def local_repositories(root):
                 repositories.setdefault(repository, []).append(path)
             link = path / ".vercel/project.json"
             project_id = json.loads(link.read_text()).get("projectId") if link.exists() else None
-            manifest = path / ".repoman.yaml"
+            manifest = path / ".repoman.json"
+            if not manifest.exists() and not manifest.is_symlink():
+                manifest = path / ".repoman.yaml"
             if manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_size <= 64 * 1024:
                 _, manifest_id = read_manifest(manifest.read_text())
                 if project_id and manifest_id and project_id != manifest_id:
@@ -79,7 +81,7 @@ def domain_valid(domain):
                     for part in host.split(".")))
 
 
-def read_manifest(source):
+def read_legacy_manifest(source):
     """Read the documented block mapping without interpreting general YAML."""
     if "\t" in source:
         raise ValueError("Unsupported manifest indentation")
@@ -127,7 +129,20 @@ def read_manifest(source):
             raise ValueError("Unsupported manifest syntax")
     if version != "1" or (websites not in (None, "{}") and not sites):
         raise ValueError("Missing website inventory")
+    validate_sites(sites)
+    return (list(sites) if websites is not None else None), project_id
+
+
+def validate_sites(sites):
+    if not isinstance(sites, dict) or len(sites) > 32:
+        raise ValueError("Invalid website mapping")
+    allowed = {"url", "checked-on", "redirect-to", "availability", "ga4", "sentry"}
+    allowed.update(f"{service}-{field}" for service in ("ga4", "sentry")
+                   for field in ("expectation", "verification-path", "exception-reason"))
     for host, fields in sites.items():
+        if (not isinstance(fields, dict) or not set(fields) <= allowed
+                or not all(isinstance(value, str) for value in fields.values())):
+            raise ValueError("Invalid website fields")
         if not domain_valid(host) or fields.get("url") not in {f"https://{host}", f"https://{host}/"}:
             raise ValueError("Invalid website URL")
         for service in ("ga4", "sentry"):
@@ -152,7 +167,33 @@ def read_manifest(source):
             url for other in sites if other != host for url in (f"https://{other}", f"https://{other}/")
         }:
             raise ValueError("Invalid website redirect")
-    return (list(sites) if websites is not None else None), project_id
+
+
+def read_manifest(source):
+    if not source.lstrip().startswith(("{", "[")):
+        return read_legacy_manifest(source)
+    def unique_object(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("Duplicate manifest key")
+            obj[key] = value
+        return obj
+    obj = json.loads(source, object_pairs_hook=unique_object,
+                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    if (not isinstance(obj, dict) or type(obj.get("version", 1)) is not int
+            or obj.get("version", 1) != 1):
+        raise ValueError("Unsupported JSON manifest version")
+    if not set(obj) <= {"version", "short-name", "tagline", "github-url", "vercel-project-id", "websites",
+                       "ci", "exceptions", "notebooks", "stashAgeDays", "maximumTrackedFileBytes"}:
+        raise ValueError("Unknown manifest fields")
+    project_id = obj.get("vercel-project-id")
+    if "vercel-project-id" in obj and (not isinstance(project_id, str) or not re.fullmatch(r"prj_[A-Za-z0-9]{1,124}", project_id)):
+        raise ValueError("Invalid Vercel project ID")
+    if "websites" in obj:
+        validate_sites(obj["websites"])
+        return list(obj["websites"]), project_id
+    return None, project_id
 
 
 def manifest_domains(source):
@@ -160,14 +201,20 @@ def manifest_domains(source):
 
 
 def compare_metadata(path, expected):
-    manifest = path / ".repoman.yaml"
     metadata = path / ".repo-metadata.toml"
     try:
         declared = None
-        if manifest.exists() or manifest.is_symlink():
-            if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 64 * 1024:
-                return "invalid-metadata", expected
-            declared = manifest_domains(manifest.read_text())
+        for name in (".repoman.json", ".repoman.yaml"):
+            manifest = path / name
+            if manifest.exists() or manifest.is_symlink():
+                if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 64 * 1024:
+                    return "invalid-metadata", expected
+                source = manifest.read_text()
+                if name.endswith(".json"):
+                    json.loads(source)  # Never interpret malformed canonical JSON as YAML.
+                declared = manifest_domains(source)
+                if declared is not None:
+                    break
         if declared is None:
             values = tomllib.loads(metadata.read_text()) if metadata.exists() else {}
             declared = values.get("domains", [])

@@ -25,5 +25,7 @@
         "app": "github-actions"
       }
     ]
-  }
+  },
+  "tagline": "🔎 Check your Git repositories and inspect every issue 🧭",
+  "github-url": null
 }

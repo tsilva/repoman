@@ -3,7 +3,7 @@ import Foundation
 /// Production sites declared in the repository's root RepoMan manifest.
 /// Metadata declares tsilva.eu hosts. Vercel inventory can supply production aliases.
 enum WebsiteDomains {
-    static let manifest = RepoManManifest.path
+    static let manifest = RepoManManifest.legacyPath
 
     struct TelemetryPolicy {
         enum Expectation: String { case required, optional, disabled }
@@ -17,6 +17,12 @@ enum WebsiteDomains {
     }
 
     static func projectID(_ context: RepositoryInspectionContext) throws -> String? {
+        if let raw = try RepoManManifest.object(context)["vercel-project-id"] {
+            guard let id = raw as? String, CheckSupport.matches(id, #"^prj_[A-Za-z0-9]{1,124}\z"#) else {
+                throw InspectionError.blocked("Invalid Vercel project ID in .repoman.json.")
+            }
+            return id
+        }
         guard try context.exists(manifest),
               let id = InspectionConfig.scalar(try context.yaml(manifest).values["vercel-project-id"]) else { return nil }
         guard CheckSupport.matches(id, #"^prj_[A-Za-z0-9]{1,124}\z"#) else {
@@ -26,6 +32,9 @@ enum WebsiteDomains {
     }
 
     static func inventory(_ context: RepositoryInspectionContext) throws -> [String: [String: TelemetryPolicy]] {
+        if let raw = try RepoManManifest.object(context)["websites"] {
+            return try jsonInventory(raw)
+        }
         if try context.exists(manifest) {
             let config = try context.yaml(manifest)
             if config.values["websites"] != nil || config.values.keys.contains(where: { $0.hasPrefix("websites.") }) {
@@ -39,6 +48,38 @@ enum WebsiteDomains {
         let config = try InspectionConfig.toml(context.readText(".repo-metadata.toml"), allSections: true)
         guard let raw = config.values["domains"] else { return [:] }
         return Dictionary(uniqueKeysWithValues: try parse(raw).map { ($0, [:]) })
+    }
+
+    private static func jsonInventory(_ raw: Any) throws -> [String: [String: TelemetryPolicy]] {
+        let invalid = InspectionError.blocked("Invalid .repoman.json website inventory or telemetry policy.")
+        guard let sites = raw as? [String: [String: String]], sites.count <= 32 else { throw invalid }
+        let allowed: Set<String> = ["url", "checked-on", "redirect-to", "availability", "ga4", "sentry",
+            "ga4-expectation", "ga4-verification-path", "ga4-exception-reason",
+            "sentry-expectation", "sentry-verification-path", "sentry-exception-reason"]
+        var result: [String: [String: TelemetryPolicy]] = [:]
+        for (domain, fields) in sites {
+            guard valid(domain), Set(fields.keys).isSubset(of: allowed),
+                  fields["url"] == "https://\(domain)" || fields["url"] == "https://\(domain)/" else { throw invalid }
+            var policies: [String: TelemetryPolicy] = [:]
+            for service in ["ga4", "sentry"] {
+                if let status = fields[service] {
+                    guard ["accepted", "observed", "tag-detected", "source-detected", "unverified"].contains(status) else { throw invalid }
+                }
+                let expectation = fields[service + "-expectation"] ?? "required"
+                let path = fields[service + "-verification-path"] ?? "/"
+                let reason = fields[service + "-exception-reason"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let value = TelemetryPolicy.Expectation(rawValue: expectation), validPath(path),
+                      value == .required ? reason == nil : reason.map({ (1...240).contains($0.count) }) == true else { throw invalid }
+                policies[service] = TelemetryPolicy(expectation: value, path: path, exceptionReason: reason)
+            }
+            if let date = fields["checked-on"], !CheckSupport.matches(date, #"^\d{4}-\d{2}-\d{2}$"#) { throw invalid }
+            if let state = fields["availability"], !["reachable", "unavailable", "unverified"].contains(state) { throw invalid }
+            if let redirect = fields["redirect-to"] {
+                guard sites.keys.contains(where: { $0 != domain && (redirect == "https://\($0)" || redirect == "https://\($0)/") }) else { throw invalid }
+            }
+            result[domain] = policies
+        }
+        return result
     }
 
     private static func manifestInventory(_ config: InspectionConfig) throws -> [String: [String: TelemetryPolicy]] {
@@ -246,7 +287,7 @@ public enum RepositoryWebsiteChecks {
                 if id == "website.domains" {
                     for domain in domains where WebsiteDomains.valid(domain) && !declared.contains(domain) {
                         findings.append(CheckSupport.finding(context, id, domain, "Production domain missing from metadata",
-                            "\(domain): Vercel assigns this production domain to this repository, but the repository website inventory does not declare it. Add it to .repoman.yaml. Telemetry checks include it automatically.", .setup, symbol))
+                            "\(domain): Vercel assigns this production domain to this repository, but the repository website inventory does not declare it. Add it to .repoman.json. Telemetry checks include it automatically.", .setup, symbol))
                     }
                     let aliases = Set(resolution.projectsWithoutDomain.flatMap(\.productionAliases))
                     let paths = Dictionary(uniqueKeysWithValues: aliases.map { ($0, "/") })

@@ -1,5 +1,6 @@
 """Run with python3 -m unittest discover -s Tools -p 'test_*.py'."""
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,27 @@ spec.loader.exec_module(audit)
 
 
 class DomainAuditTests(unittest.TestCase):
+    def test_single_json_manifest_covers_sites_without_interpreting_check_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = json.dumps({"version": 1, "short-name": "app", "github-url": None,
+                "ci": {"components": [{"path": ".", "requires": ["test"]}]},
+                "websites": {"app.tsilva.eu": {"url": "https://app.tsilva.eu/",
+                    "sentry-expectation": "optional", "sentry-exception-reason": 'Reviewed "server" capture.'}}})
+            manifest = root / ".repoman.json"
+            manifest.write_text(source)
+            self.assertEqual(audit.compare_metadata(root, ["app.tsilva.eu"]), ("covered", []))
+            self.assertEqual(manifest.read_text(), source)
+
+    def test_invalid_json_never_falls_through_to_legacy_domains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".repo-metadata.toml").write_text('domains=["app.tsilva.eu"]')
+            for source in ['{', '{"version":true}', '{"version":1,"version":1}',
+                           '{"websites":[]}', '{"websites":{"app.tsilva.eu":{"url":true}}}']:
+                (root / ".repoman.json").write_text(source)
+                self.assertEqual(audit.compare_metadata(root, ["app.tsilva.eu"])[0], "invalid-metadata")
+
     def test_assigned_domains_include_apex_and_only_its_subdomains(self):
         values = {"domains": [{"name": name} for name in ["tsilva.eu", "APP.tsilva.eu", "eviltsilva.eu", "tsilva.eu.evil.com", "app.vercel.app"]]}
         self.assertEqual(audit.assigned_domains(values), ["app.tsilva.eu", "tsilva.eu"])

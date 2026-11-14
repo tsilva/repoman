@@ -28,11 +28,80 @@ extension GitHubRepositoryAbout {
 }
 
 enum RepoManManifest {
-    static let path = ".repoman.yaml"
+    static let path = ".repoman.json"
+    static let legacyPath = ".repoman.yaml"
+
+    /// Shared repository metadata is data; consumers need no RepoMan installation.
+    static func object(_ context: RepositoryInspectionContext) throws -> [String: Any] {
+        guard try context.exists(path) else { return [:] }
+        let data = Data(try context.readText(path).utf8)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw InspectionError.blocked("Invalid .repoman.json object.")
+        }
+        try rejectDuplicateKeys(data)
+        struct Header: Decodable { var version: Int? }
+        let header = try JSONDecoder().decode(Header.self, from: data)
+        guard header.version == nil || header.version == 1 else {
+            throw InspectionError.blocked("Unsupported .repoman.json version.")
+        }
+        return object
+    }
+
+    private static func rejectDuplicateKeys(_ data: Data) throws {
+        // JSONSerialization accepts duplicate keys. Reject them at every depth,
+        // including equivalent escaped spellings, before any policy is consumed.
+        let bytes = Array(data)
+        var objects: [Set<String>?] = [], index = 0
+        while index < bytes.count {
+            switch bytes[index] {
+            case 123: objects.append([])
+            case 91: objects.append(nil)
+            case 125, 93: objects.removeLast()
+            case 34:
+                let start = index
+                index += 1
+                while index < bytes.count {
+                    if bytes[index] == 92 { index += 2; continue }
+                    if bytes[index] == 34 { break }
+                    index += 1
+                }
+                var next = index + 1
+                while next < bytes.count, [9, 10, 13, 32].contains(bytes[next]) { next += 1 }
+                if next < bytes.count, bytes[next] == 58, var keys = objects.last ?? nil {
+                    let key = try JSONDecoder().decode(String.self, from: Data(bytes[start...index]))
+                    guard keys.insert(key).inserted else { throw InspectionError.blocked("Duplicate .repoman.json setting.") }
+                    objects[objects.count - 1] = keys
+                }
+            default: break
+            }
+            index += 1
+        }
+    }
+
+    static func metadataPath(_ key: String, in context: RepositoryInspectionContext) throws -> String {
+        try object(context)[key] != nil ? path : legacyPath
+    }
 
     static func metadata(_ key: String, in context: RepositoryInspectionContext) throws -> String? {
-        guard try context.exists(path) else { return nil }
-        let values = try context.yaml(path).values
+        let object = try object(context)
+        if let raw = object[key] {
+            let invalid = InspectionError.blocked("Invalid \(key) in \(path).")
+            if key == "github-url", raw is NSNull { return "" }
+            guard let value = raw as? String, !value.isEmpty,
+                  value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+                  !value.unicodeScalars.contains(where: CharacterSet.newlines.contains) else { throw invalid }
+            if key == "tagline" {
+                guard value.unicodeScalars.count <= 350 else { throw invalid }
+            } else {
+                guard let url = URLComponents(string: value), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+                      url.host?.isEmpty == false, url.user == nil, url.password == nil,
+                      !value.contains(where: \.isWhitespace) else { throw invalid }
+            }
+            return value
+        }
+        guard try context.exists(legacyPath) else { return nil }
+        let values = try context.yaml(legacyPath).values
         guard let raw = values[key] else { return nil }
         let requirement = key == "tagline" ? "a single-line plain-text tagline of at most 350 characters" : "an absolute HTTP or HTTPS URL without credentials, or unquoted null"
         let invalid = InspectionError.blocked("Invalid \(key) in \(path). Use \(requirement).")
@@ -84,7 +153,7 @@ enum RepositoryMetadataChecks {
                 let about = try await context.githubAbout.value { try await loadAbout(repository) }
                 guard about.description != tagline else { return [] }
                 return [CheckSupport.finding(context, "github.description", subject,
-                    "GitHub description drift", ".repoman.yaml tagline: \(tagline)\nGitHub description: \(about.description ?? "(empty)")", .documentation, "text.bubble")]
+                    "GitHub description drift", "\(try RepoManManifest.metadataPath("tagline", in: context)) tagline: \(tagline)\nGitHub description: \(about.description ?? "(empty)")", .documentation, "text.bubble")]
             }
             let metadata: PublishedRepositoryMetadata
             if let load { metadata = try await load(context.snapshot) }
@@ -99,17 +168,17 @@ enum RepositoryMetadataChecks {
                 "GitHub description drift", "Published README on \(metadata.branch) at \(metadata.sha.prefix(8)) declares: \(tagline)\nGitHub description: \(metadata.description ?? "(empty)"). Local and feature-branch README changes are not used.", .documentation, "text.bubble")]
         }), CheckSupport.check("docs.readmeTagline", "README tagline drift", .documentation, "doc.text", inspect: { context, _ in
             guard let expected = try RepoManManifest.metadata("tagline", in: context) else {
-                throw InspectionError.notApplicable("No tagline declared in .repoman.yaml.")
+                throw InspectionError.notApplicable("No tagline declared in .repoman.json.")
             }
             let path = GitHubTagline.readmePath(try CheckSupport.rootFiles(context))
             let actual = try path.flatMap { try GitHubTagline.tagline(context.readText($0), source: "Local") }
             guard actual != expected else { return [] }
             let evidence = path.map { "\($0) marked tagline: \(actual ?? "(missing)")" } ?? "No root README found."
             return [CheckSupport.finding(context, "docs.readmeTagline", path ?? "README.md", "README tagline drift",
-                ".repoman.yaml tagline: \(expected)\n\(evidence)", .documentation, "doc.text")]
+                "\(try RepoManManifest.metadataPath("tagline", in: context)) tagline: \(expected)\n\(evidence)", .documentation, "doc.text")]
         }), CheckSupport.check("github.website", "GitHub website URL drift", .documentation, "link", inspect: { context, _ in
             guard let expected = try RepoManManifest.metadata("github-url", in: context) else {
-                throw InspectionError.notApplicable("No github-url declared in .repoman.yaml.")
+                throw InspectionError.notApplicable("No github-url declared in .repoman.json.")
             }
             guard let repository = GitHubCI.repository(context.snapshot.remoteURL) else {
                 throw InspectionError.notApplicable("No supported GitHub remote.")
@@ -118,7 +187,7 @@ enum RepositoryMetadataChecks {
             let actual = about.homepage ?? ""
             guard actual != expected else { return [] }
             return [CheckSupport.finding(context, "github.website", repository.owner + "/" + repository.name,
-                "GitHub website URL drift", ".repoman.yaml github-url: \(expected.isEmpty ? "(empty)" : expected)\nGitHub Website: \(actual.isEmpty ? "(empty)" : actual)", .documentation, "link")]
+                "GitHub website URL drift", "\(try RepoManManifest.metadataPath("github-url", in: context)) github-url: \(expected.isEmpty ? "(empty)" : expected)\nGitHub Website: \(actual.isEmpty ? "(empty)" : actual)", .documentation, "link")]
         }), RepositoryCheck(id: "github.privateVisibility", title: "Private repository visibility", category: .setup, symbol: "lock.shield", evaluate: { context in
             try await privateVisibility(context, load: loadVisibility)
         })]

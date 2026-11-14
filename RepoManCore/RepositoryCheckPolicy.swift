@@ -87,8 +87,8 @@ struct RepositoryCheckPolicy: Decodable, Sendable {
     static func load(_ context: RepositoryInspectionContext) throws -> Self {
         guard try context.exists(".repoman.json") else { return Self() }
         let data = Data(try context.readText(".repoman.json").utf8)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "exceptions", "stashAgeDays", "maximumTrackedFileBytes", "notebooks", "ci"]),
+        let object = try RepoManManifest.object(context)
+        guard Set(object.keys).isSubset(of: ["version", "exceptions", "stashAgeDays", "maximumTrackedFileBytes", "notebooks", "ci", "short-name", "tagline", "github-url", "vercel-project-id", "websites"]),
               (object["notebooks"] as? [String: Any]).map({ Set($0.keys).isSubset(of: ["enabled", "maximumOutputBytes"]) }) ?? true else {
             throw InspectionError.blocked("Unsupported .repoman.json fields.")
         }

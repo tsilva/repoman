@@ -13,39 +13,44 @@ RepoMan checks public production websites through shared dashboard and CLI check
 
 ## Domain coverage
 
-An authenticated Vercel CLI is required to establish domain coverage. RepoMan enumerates accessible teams, paginates their projects and production domain assignments, and matches GitHub project links to the monitored repository's remote. For projects without a Git link, set the top-level `vercel-project-id` in `.repoman.yaml` or use an existing `.vercel/project.json` link. Both IDs must agree when present. RepoMan never guesses from folder or project names. Projects absent from `latestDeployments` are included. Branch domains, custom environments and explicitly unverified assignments are excluded. Missing access, invalid responses and pagination limits keep coverage incomplete.
+An authenticated Vercel CLI is required to establish domain coverage. RepoMan enumerates accessible teams, paginates their projects and production domain assignments, and matches GitHub project links to the monitored repository's remote. For projects without a Git link, set the top-level `vercel-project-id` in `.repoman.json` or use an existing `.vercel/project.json` link. Both IDs must agree when present. RepoMan never guesses from folder or project names. Projects absent from `latestDeployments` are included. Branch domains, custom environments and explicitly unverified assignments are excluded. Missing access, invalid responses and pagination limits keep coverage incomplete.
 
-When a mapped project has no production `tsilva.eu` assignment, RepoMan checks its assigned production `vercel.app` aliases and other verified production hostnames. A successful anonymous HTTPS response within that project confirms public access and triggers one missing-domain finding per project. Protected or unreachable URLs leave public access unverified. Both GA4 and Sentry are required on these fallback URLs by default. Once Vercel assigns a production `tsilva.eu` domain, RepoMan uses that domain for telemetry. A manifest can contain only the project binding with `websites: {}` while the custom domain is pending.
+When a mapped project has no production `tsilva.eu` assignment, RepoMan checks its assigned production `vercel.app` aliases and other verified production hostnames. A successful anonymous HTTPS response within that project confirms public access and triggers one missing-domain finding per project. Protected or unreachable URLs leave public access unverified. Both GA4 and Sentry are required on these fallback URLs by default. Once Vercel assigns a production `tsilva.eu` domain, RepoMan uses that domain for telemetry. A manifest can contain only the project binding with `"websites": {}` while the custom domain is pending.
 
-Use a root `.repoman.yaml` to record production URLs and the latest telemetry evidence for each site:
+Use a root `.repoman.json` to record production URLs and the latest telemetry evidence for each site:
 
-```yaml
-version: 1
-websites:
-  example.tsilva.eu:
-    url: https://example.tsilva.eu/
-    ga4: tag-detected
-    ga4-expectation: required
-    ga4-verification-path: /pricing
-    sentry: unverified
-    sentry-expectation: required
-    sentry-verification-path: /
-    checked-on: 2026-11-03
-  www.example.tsilva.eu:
-    url: https://www.example.tsilva.eu/
-    redirect-to: https://example.tsilva.eu/
-    ga4-expectation: disabled
-    ga4-exception-reason: Redirect alias. GA4 is checked on the destination.
-    sentry-expectation: disabled
-    sentry-exception-reason: Redirect alias. Sentry is checked on the destination.
-    checked-on: 2026-11-03
+```json
+{
+  "version": 1,
+  "websites": {
+    "example.tsilva.eu": {
+      "url": "https://example.tsilva.eu/",
+      "ga4": "tag-detected",
+      "ga4-expectation": "required",
+      "ga4-verification-path": "/pricing",
+      "sentry": "unverified",
+      "sentry-expectation": "required",
+      "sentry-verification-path": "/",
+      "checked-on": "2026-11-03"
+    },
+    "www.example.tsilva.eu": {
+      "url": "https://www.example.tsilva.eu/",
+      "redirect-to": "https://example.tsilva.eu/",
+      "ga4-expectation": "disabled",
+      "ga4-exception-reason": "Redirect alias. GA4 is checked on the destination.",
+      "sentry-expectation": "disabled",
+      "sentry-exception-reason": "Redirect alias. Sentry is checked on the destination.",
+      "checked-on": "2026-11-03"
+    }
+  }
+}
 ```
 
-Use a block mapping with at most 32 unique lowercase hostnames under `tsilva.eu`, including the apex. Each `url` must be the HTTPS root for its hostname. A redirect can point to another HTTPS root in the same manifest. Use `websites: {}` for an explicitly empty inventory. Optional `ga4` and `sentry` values describe dated observations. `accepted` records a successful collection response, `observed` records a request with no visible response, `tag-detected` records a live loader or initialization signal, `source-detected` records initialization code at the serving revision, and `unverified` records inconclusive evidence. Optional `availability` records `reachable`, `unavailable` or `unverified`. Use `checked-on` for the observation date. RepoMan evaluates live collection separately from these recorded values.
+Use a block mapping with at most 32 unique lowercase hostnames under `tsilva.eu`, including the apex. Each `url` must be the HTTPS root for its hostname. A redirect can point to another HTTPS root in the same manifest. Use `"websites": {}` for an explicitly empty inventory. Optional `ga4` and `sentry` values describe dated observations. `accepted` records a successful collection response, `observed` records a request with no visible response, `tag-detected` records a live loader or initialization signal, `source-detected` records initialization code at the serving revision, and `unverified` records inconclusive evidence. Optional `availability` records `reachable`, `unavailable` or `unverified`. Use `checked-on` for the observation date. RepoMan evaluates live collection separately from these recorded values.
 
 Set `ga4-expectation` and `sentry-expectation` to `required`, `optional` or `disabled`. Both services default to `required` and use their respective `*-verification-path`, which defaults to `/`. Use a same-site path starting with one slash. Path segments may contain letters, digits, periods, underscores, tildes and hyphens. Queries, fragments and traversal segments are invalid. RepoMan skips automatic verification for `optional` and `disabled` services and records their required `*-exception-reason` in the report. Use `optional` when telemetry may be present and `disabled` when the site is expected to omit it. Existing domain-specific exceptions in `.repoman.json` take precedence. Domain inventory still includes sites with telemetry exceptions.
 
-When `.repoman.yaml` is absent or omits the `websites` field, RepoMan accepts the legacy top-level `domains` array in `.repo-metadata.toml`. Keep existing short names there for tools that use repository identity metadata. Invalid website metadata keeps the check incomplete. RepoMan inspects discovered domains even when the manifest omits them, and `website.domains` reports the omission. When Vercel inventory fails, RepoMan still inspects declared domains and reports incomplete discovery. Unmapped projects and projects without a monitored checkout remain outside the dashboard's repository list. The standalone inventory reports those gaps.
+The root `.repoman.json` is the shared manifest for website inventory, repository identity and check policy. Store an optional `short-name` there for naming tools. During transition, missing JSON fields can still be read from legacy `.repoman.yaml` and `.repo-metadata.toml` files; migrated repositories use only JSON. Invalid website metadata keeps the check incomplete. RepoMan inspects discovered domains even when the manifest omits them, and `website.domains` reports the omission. When Vercel inventory fails, RepoMan still inspects declared domains and reports incomplete discovery. Unmapped projects and projects without a monitored checkout remain outside the dashboard's repository list. The standalone inventory reports those gaps.
 
 ## Live evidence
 
