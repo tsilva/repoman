@@ -157,8 +157,11 @@ the scoped cleanup below; perform both without a separate cleanup approval.
    entire build directories.
 5. Use `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister`
    to unregister each obsolete bundle with `-u` before deleting it. Inspect
-   `-dump` for stale RepoMan paths belonging to this checkout or known RepoMan
-   installation scratch directories; unregister missing obsolete paths too.
+   `-dump` to confirm RepoMan identity and unregister stale records for missing
+   copies, including old build, installation scratch and mounted-image paths.
+   Removing a stale registration does not authorize deleting files outside the
+   cleanup scope. Avoid unregistering the same removed path again; verify its
+   absence in the final dump instead.
    A hidden backup may never have been registered: an unregister result of
    `-10814` for that verified backup does not block its file cleanup. Report
    other registration failures and still refresh the surviving installed app.
@@ -169,9 +172,41 @@ the scoped cleanup below; perform both without a separate cleanup approval.
    `lsregister -f /Applications/RepoMan.app`, then run
    `mdimport /Applications/RepoMan.app` to refresh its metadata.
 6. Detach the image and remove the successful installation's backup, staging
-   directory and disposable task files. Check that obsolete paths are gone,
-   query Spotlight with `mdfind "kMDItemCFBundleIdentifier == 'com.tsilva.RepoMan'"`,
-   and verify that only the installed copy remains indexed and running. Report
-   remaining duplicates or indexing delays accurately instead of claiming they
-   were cleared. Do not delete copies outside the scoped directories without
-   authorization.
+   directory and disposable task files. Check that obsolete paths are gone and
+   only the installed executable is running. Complete the Spotlight checks below
+   before reporting installation complete. Do not delete copies outside the
+   scoped directories without authorization.
+
+### Verify Spotlight before completing installation
+
+Run these checks after detaching the installer so its mounted app cannot appear
+as a duplicate:
+
+```bash
+mdls -name kMDItemCFBundleIdentifier -name kMDItemVersion /Applications/RepoMan.app
+mdfind "kMDItemCFBundleIdentifier == 'com.tsilva.RepoMan'"
+mdfind 'kMDItemContentTypeTree == "com.apple.application-bundle" && (kMDItemFSName == "RepoMan.app"cd || kMDItemDisplayName == "RepoMan"cd)'
+mdfind 'kMDItemContentTypeTree == "com.apple.application-bundle" && (kMDItemFSName == "*RepoMan*.app"cd || kMDItemCFBundleIdentifier == "com.tsilva.RepoMan*"cd)'
+```
+
+Require non-null metadata identifying `com.tsilva.RepoMan` at the installed
+version, and exactly `/Applications/RepoMan.app` from **each** search. An empty
+result, a successful `mdimport`, or matching bundle-ID results alone does not
+establish success: differently identified verification apps may share the name.
+
+For duplicates, inspect their actual paths, bundle metadata and Launch Services
+records. Apply the scoped cleanup above; unregister confirmed missing copies
+without deleting unrelated files. Preserve apps with other bundle IDs and
+explicitly retained artifacts; if they still appear, report their exact paths
+and the additional authorization needed rather than claiming completion.
+
+For missing or stale metadata, check `mdutil -s /` and
+`mdutil -s /System/Volumes/Data`, then force-register and import only the installed
+app again. Poll the metadata and all three searches every ten seconds for up to
+five minutes, keeping the user informed. Finish as soon as every check passes;
+record the final results. If indexing is disabled, a command fails, or results
+remain empty or duplicated after that bound, preserve the working installation
+and report Spotlight verification as incomplete with the specific blocker.
+Do not reset the system-wide Spotlight or Launch Services databases, change
+global indexing settings, clear unrelated caches, or treat elapsed time as
+verification.
