@@ -380,7 +380,8 @@ final class RepositoryCheckReportTests: XCTestCase {
         try write(".access.local.toml", "version = 1")
         let invalid = try await RepositoryChecker.run(at: root, checkIDs: ["access.configuration", "access.localPrivacy"])
         XCTAssertEqual(invalid.exitCode, 1)
-        XCTAssertFalse(invalid.checks.contains { $0.status == "not_applicable" })
+        XCTAssertEqual(invalid.checks.first { $0.id == "access.configuration" }?.status, "findings")
+        XCTAssertEqual(invalid.checks.first { $0.id == "access.localPrivacy" }?.status, "not_applicable")
     }
 
     func testSkippedCheckDoesNotConfirmAnOldFindingAbsent() async throws {

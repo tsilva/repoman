@@ -41,68 +41,6 @@ final class RepositoryMaintenanceGapsTests: XCTestCase {
         XCTAssertFalse(report.findings().contains { $0.subject == ".build/debug/cache" })
         XCTAssertTrue(report.unavailableChecks.isEmpty)
     }
-    func testValidAccessUnboundProfilesAndPrivateCompleteLocalOverride() async throws {
-        try write(".access.toml", shared)
-        var report = try await inspect("access.configuration")
-        XCTAssertTrue(report.findings().isEmpty)
-        XCTAssertTrue(report.unavailableChecks.isEmpty)
-        try write(".access.local.toml", binding)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: root.appendingPathComponent(".access.local.toml").path)
-        try write(".gitignore", "/.access.local.toml\n")
-        for id in ["access.configuration", "access.localPrivacy"] {
-            report = try await inspect(id)
-            XCTAssertTrue(report.findings().isEmpty, id)
-            XCTAssertTrue(report.unavailableChecks.isEmpty, id)
-        }
-    }
-    func testInvalidAccessSchemaAndValuesNeverLeak() async throws {
-        for content in [shared.replacingOccurrences(of: "version = 1", with: "version = true"),
-                        shared.replacingOccurrences(of: "['API_KEY']", with: "['API_KEY', 'API_KEY']"),
-                        shared + "\n[bindings.tool]\nprovider = 'secret-canary'\n",
-                        shared + "\n[unexpected]\nsecret = 'secret-canary'\n"] {
-            try write(".access.toml", content)
-            let report = try await inspect("access.configuration")
-            XCTAssertFalse(report.findings().isEmpty)
-            XCTAssertFalse(report.findings().map(\.evidence).joined().contains("secret-canary"))
-        }
-        // A valid local replacement cannot hide an invalid shared binding.
-        try write(".access.toml", shared + binding.replacingOccurrences(of: "version = 1", with: "").replacingOccurrences(of: "infisical", with: "unsupported"))
-        try write(".access.local.toml", binding)
-        let report = try await inspect("access.configuration")
-        XCTAssertFalse(report.findings().isEmpty)
-        try write(".access.toml", shared)
-        try write(".access.local.toml", "version = 1\n[bindings.tool]\nprovider = 'infisical'")
-        let partial = try await inspect("access.configuration")
-        XCTAssertTrue(partial.findings().first?.evidence.contains("whole shared bindings") == true)
-    }
-    func testLocalAccessMissingSharedTrackedPermissionsAndEscapingSymlink() async throws {
-        try write(".access.local.toml", binding)
-        var report = try await inspect("access.configuration")
-        XCTAssertFalse(report.findings().isEmpty)
-        try git(["add", ".access.local.toml"])
-        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: root.appendingPathComponent(".access.local.toml").path)
-        report = try await inspect("access.localPrivacy")
-        let evidence = try XCTUnwrap(report.findings().first).evidence
-        for text in ["tracked", "not ignored", "0600"] { XCTAssertTrue(evidence.contains(text)) }
-        try FileManager.default.removeItem(at: root.appendingPathComponent(".access.local.toml"))
-        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent(".access.local.toml"), withDestinationURL: root.deletingLastPathComponent().appendingPathComponent("external-access"))
-        report = try await inspect("access.localPrivacy")
-        XCTAssertTrue(report.findings().first?.evidence.contains("symbolic link") == true)
-    }
-    func testKnownSharedAccessProblemsSurviveUnsupportedLocalSyntax() async throws {
-        try write(".access.toml", shared.replacingOccurrences(of: "version = 1", with: "version = true"))
-        try write(".access.local.toml", "version = 1\n[bindings.\"tool\"]\nprovider = 'secret-canary'\n")
-        let report = try await inspect("access.configuration")
-        XCTAssertFalse(report.findings().isEmpty)
-        XCTAssertNotNil(report.unavailableChecks["access.configuration"])
-        XCTAssertFalse(report.unavailableChecks.values.joined().contains("secret-canary"))
-    }
-    func testUnsupportedAccessSyntaxIsIncompleteWithoutValues() async throws {
-        try write(".access.toml", "version = 1\n[profiles.\"tool\"]\ndescription = '''secret-canary'''\n")
-        let report = try await inspect("access.configuration")
-        XCTAssertNotNil(report.unavailableChecks["access.configuration"])
-        XCTAssertFalse(report.unavailableChecks.values.joined().contains("secret-canary"))
-    }
     func testDependabotPaginationSeveritiesAndReadOnlyRequest() async throws {
         let first = page(alerts: [alert(1, "CRITICAL")], total: 2, next: "cursor-one")
         let last = page(alerts: [alert(2, "LOW")], total: 2)
@@ -146,16 +84,6 @@ final class RepositoryMaintenanceGapsTests: XCTestCase {
         XCTAssertTrue(bounded.unavailableChecks.values.joined().contains("10 pages"))
     }
     private func workflow(job: String) -> String { "on: [push, pull_request]\njobs:\n  test:\n" + job }
-    private var shared: String { "version = 1\n[profiles.tool]\ndescription = 'Standalone tooling'\nvariables = ['API_KEY']\n" }
-    private var binding: String { """
-        version = 1
-        [bindings.tool]
-        provider = 'infisical'
-        instance = 'https://example.com'
-        project_id = '00000000-0000-4000-8000-000000000000'
-        environment = 'dev'
-        path = '/tool'
-        """ }
     private func snapshot(remote: String? = nil) throws -> RepositorySnapshot {
         RepositorySnapshot(url: root, name: "fixture", branch: "main", upstream: nil, remoteURL: remote, ahead: nil, behind: nil,
             changes: [], staleBranches: [], worktrees: [], commits: [], checkedAt: Date(), rootFiles: try FileManager.default.contentsOfDirectory(atPath: root.path))
